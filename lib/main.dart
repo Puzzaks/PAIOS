@@ -29,7 +29,7 @@ class MyAppState extends State<MyApp> {
     super.initState();
     WidgetsFlutterBinding.ensureInitialized();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      Provider.of<aiEngine>(context, listen: false).start();
+      Provider.of<aiEngine>(context, listen: false).initEngine();
     });
   }
   Widget build(BuildContext context) {
@@ -181,8 +181,8 @@ class MyAppState extends State<MyApp> {
                     : engine.prompt.text.isEmpty?Container():cards.cardGroup([
                       cardContents.tap(
                           title: "Generate",
-                          subtitle: engine.isInitialized?"":"Initialize with current settings and generate",
-                        action: (){engine.generate();}
+                          subtitle: engine.isInitialized?engine.isError?"":"Responded in ${((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)}s, using ${engine.response.tokenCount} tokens (${(engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2)} token/s).":"Initialize with current settings and generate",
+                          action: (){engine.generateStream();},
                       )
                     ]),
                     engine.isLoading
@@ -192,7 +192,7 @@ class MyAppState extends State<MyApp> {
                       borderRadius: BorderRadiusGeometry.circular(15),
                     ),)
                         : Container(),
-                    if (engine.responseText.isNotEmpty&&!engine.isLoading)
+                    if (engine.responseText.isNotEmpty)
                       Expanded(
                         child: Card(
                           clipBehavior: Clip.hardEdge,
@@ -211,6 +211,7 @@ class MyAppState extends State<MyApp> {
                                     horizontal: 20
                                 ),
                                 child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     MarkdownBody(
                                       data: !engine.isAvailable
@@ -219,10 +220,6 @@ class MyAppState extends State<MyApp> {
                                           ? "Gemini Nano is not initialized. If this message is here long enough for you to read it, it means that there is a problem. Please check if *Google AICore* app is installed and available. The app is designed for Google Pixel phones starting from Pixel 9 series and newer."
                                           : engine.responseText,
                                     ),
-                                    if(!engine.isError)Divider(),
-                                    if(!engine.isError)Text(
-                                        "Responded in ${((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)}s, using ${engine.response.tokenCount} tokens (${(engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2)} token/s)."
-                                    )
                                   ],
                                 ),
                               ),

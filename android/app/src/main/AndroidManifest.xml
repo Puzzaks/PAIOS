@@ -3,6 +3,7 @@
         android:label="Gemini Nano"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <uses-library android:name="com.google.android.aicore" android:required="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

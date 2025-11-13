@@ -86,13 +86,6 @@
             </list>
           </value>
         </entry>
-        <entry key="flutter_local_ai">
-          <value>
-            <list>
-              <option value="$PROJECT_DIR$/../flutter_local_ai/lib" />
-            </list>
-          </value>
-        </entry>
         <entry key="flutter_markdown">
           <value>
             <list>
@@ -428,7 +421,6 @@
       <root url="file://$USER_HOME$/AppData/Local/Pub/Cache/hosted/pub.dev/vm_service-15.0.2/lib" />
       <root url="file://$USER_HOME$/AppData/Local/Pub/Cache/hosted/pub.dev/web-1.1.1/lib" />
       <root url="file://$USER_HOME$/AppData/Local/Pub/Cache/hosted/pub.dev/xdg_directories-1.1.0/lib" />
-      <root url="file://$PROJECT_DIR$/../flutter_local_ai/lib" />
     </CLASSES>
     <JAVADOC />
     <SOURCES />

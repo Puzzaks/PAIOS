@@ -4,7 +4,10 @@ plugins {
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
-
+dependencies {
+    implementation("com.google.mlkit:genai-prompt:1.0.0-alpha1")
+    implementation("com.google.android.gms:play-services-tasks:18.0.2")
+}
 android {
     namespace = "page.puzzak.geminilocal"
     compileSdk = flutter.compileSdkVersion
