@@ -149,11 +149,13 @@ class settingsPageState extends State<settingsPage> {
                                     setState(() {
                                       engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
                                     });
+                                    engine.saveSettings();
                                   },
                                   switcher: (value){
                                     setState(() {
                                       engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
                                     });
+                                    engine.saveSettings();
                                   },
                                   value: engine.addCurrentTimeToRequests
                               ),

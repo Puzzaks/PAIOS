@@ -34,5 +34,7 @@
   "clear_context": "Clear context",
   "waiting_for_AI": "Waiting for Gemini to start generating. If you see this message for longer than expected, this could mean either some error occurred with ML Kit or you've hit the quota (in which case just wait a minute and try again).",
   "context_desc": "~%c tokens",
-  "context_title": "Context size"
+  "context_title": "Context size",
+  "add_time": "Tell model Date & Time",
+  "add_time_desc": "Insert Date & Time into model instructions"
 }

@@ -52,6 +52,7 @@ class aiEngine with md.ChangeNotifier {
     prefs.setDouble("temperature", temperature);
     prefs.setInt("tokens", tokens);
     prefs.setString("instructions", instructions.text);
+    prefs.setBool("addCurrentTimeToRequests", addCurrentTimeToRequests);
   }
 
   scrollChatlog (Duration speed){
@@ -66,6 +67,7 @@ class aiEngine with md.ChangeNotifier {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     context = await prefs.getString("context")??"";
     firstLaunch = await prefs.getBool("firstLaunch")??true;
+    firstLaunch = await prefs.getBool("addCurrentTimeToRequests")??false;
     await dict.setup();
     modelInfo = await gemini.getModelInfo();
     instructions.text = await prefs.getString("instructions")??"";
