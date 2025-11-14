@@ -146,6 +146,7 @@ class cardContents {
     required String subtitle,
     required VoidCallback action,
   }) {
+    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     return InkWell(
       onTap: action,
       child: Padding(
@@ -160,13 +161,19 @@ class cardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?10:0,),
-                Text(
-                  title,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                Container(
+                  width: width - 180,
+                  child: Text(
+                    title,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
                 ),
                 subtitle == ""?Container(height: 10,):
-                Text(
-                  subtitle,
+                Container(
+                  width: width - 180,
+                  child: Text(
+                    subtitle
+                  ),
                 ),
               ],
             ),
@@ -276,6 +283,7 @@ class cardContents {
     required VoidCallback action,
     required VoidCallback longAction,
   }) {
+    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     return InkWell(
       onTap: action,
       onLongPress: longAction,
@@ -291,13 +299,19 @@ class cardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?10:0,),
-                Text(
-                  title,
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                Container(
+                  width: width - 70,
+                  child: Text(
+                    title,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
                 ),
                 subtitle == ""?Container(height: 10,):
-                Text(
-                  subtitle,
+                Container(
+                  width: width - 70,
+                  child: Text(
+                    subtitle
+                  ),
                 ),
               ],
             ),
@@ -508,8 +522,8 @@ class text {
               children: [
                 Padding(
                   padding: EdgeInsetsGeometry.only(
-                      bottom: 10,
-                      top: 10
+                      bottom: 0,
+                      top: 0
                   ),
                   child: Card(
                     elevation: 0,
@@ -525,12 +539,10 @@ class text {
                             maxWidth: width - 200,
                             minWidth: 0
                         ),
-                        child: Flexible(
-                          child: Text(
-                            userMessage,
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.onSecondary,
-                            ),
+                        child: Text(
+                          userMessage,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onSecondary,
                           ),
                         ),
                       ),
@@ -548,8 +560,8 @@ class text {
               children: [
                 Padding(
                   padding: EdgeInsetsGeometry.only(
-                      bottom: 10,
-                      top: 10
+                      bottom: 0,
+                      top: 0
                   ),
                   child: Card(
                     elevation: 0,
@@ -564,11 +576,9 @@ class text {
                             maxWidth: width - 150,
                             minWidth: 0.0
                         ),
-                        child: Flexible(
-                          child: MarkdownBody(
-                            selectable: true,
-                            data: AIMessage,
-                          ),
+                        child: MarkdownBody(
+                          selectable: true,
+                          data: AIMessage,
                         ),
                       ),
                     ),
@@ -579,14 +589,15 @@ class text {
       );
       }
     }).toList().cast<Widget>();
-    splits.add(
+    if(!(lastUser == "")) {
+      splits.add(
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
             Padding(
               padding: EdgeInsetsGeometry.only(
-                  bottom: 10,
-                  top: 10
+                  bottom: 0,
+                  top: 0
               ),
               child: Card(
                 elevation: 0,
@@ -602,12 +613,10 @@ class text {
                         maxWidth: width - 200,
                         minWidth: 0
                     ),
-                    child: Flexible(
-                      child: Text(
-                        lastUser,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onSecondary,
-                        ),
+                    child: Text(
+                      lastUser,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSecondary,
                       ),
                     ),
                   ),
@@ -617,14 +626,16 @@ class text {
           ],
         )
     );
-    splits.add(
+    }
+    if(!(aiChunk == "")) {
+      splits.add(
         Row(
           mainAxisAlignment: MainAxisAlignment.start,
           children: [
             Padding(
               padding: EdgeInsetsGeometry.only(
-                  bottom: 10,
-                  top: 10
+                  bottom: 0,
+                  top: 0
               ),
               child: Card(
                 elevation: 0,
@@ -639,11 +650,9 @@ class text {
                         maxWidth: width - 150,
                         minWidth: 0.0
                     ),
-                    child: Flexible(
-                      child: MarkdownBody(
-                        selectable: true,
-                        data: aiChunk,
-                      ),
+                    child: MarkdownBody(
+                      selectable: true,
+                      data: aiChunk,
                     ),
                   ),
                 ),
@@ -652,6 +661,7 @@ class text {
           ],
         )
     );
+    }
     return splits;
   }
 }

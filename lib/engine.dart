@@ -77,7 +77,6 @@ class aiEngine with md.ChangeNotifier {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     context = "$context\nPROMPT: ${lastPrompt}\nRESPONSE: $responseText";
     await prefs.setString("context", context);
-    print("Context saved: $context");
     notifyListeners();
   }
   clearContext() async {
@@ -208,11 +207,10 @@ class aiEngine with md.ChangeNotifier {
     status = "Sending prompt...";
     notifyListeners();
 
-    // Get the unified event stream
     final stream = gemini.generateTextEvents(
       prompt: "THIS IS USER'S CURRENT REQUEST:\n${prompt.text}",
       config: GenerationConfig(maxTokens: tokens, temperature: temperature),
-      stream: true, // Make sure we ask for the streaming method
+      stream: true,
     );
     lastPrompt = prompt.text;
 
@@ -227,22 +225,30 @@ class aiEngine with md.ChangeNotifier {
             break;
 
           case AiEventStatus.streaming:
-            isLoading = true; // Still loading, but receiving data
+            isLoading = true;
+            String? finishReason = event.response?.finishReason;
+            if(!(event.response?.finishReason=="null")) {
+              switch(finishReason??"null"){
+                case "0": print("Generation stopped (MAX_TOKENS): The maximum number of output tokens as specified in the request was reached.");break;
+                case "1": print("Generation stopped (OTHER): Generic stop reason.");break;
+                case "-100": print("Generation stopped (STOP): Natural stop point of the model.");break;
+                default: print("Generation stopped (Code ${event.response?.finishReason}): Reason for stop was not specified");break;
+              }
+            }
             status = "Streaming response...";
             if (event.response != null) {
               response = event.response!;
               responseText = event.response!.text;
-              scrollChatlog(Duration(milliseconds: 100));
             }
+            scrollChatlog(Duration(milliseconds: 250));
             break;
 
           case AiEventStatus.done:
             isLoading = false;
             status = "Done";
             addToContext();
-            print("ADDING TO CONTEXT");
-            scrollChatlog(Duration(milliseconds: 100));
             prompt.clear();
+            scrollChatlog(Duration(milliseconds: 250));
             break;
 
           case AiEventStatus.error:

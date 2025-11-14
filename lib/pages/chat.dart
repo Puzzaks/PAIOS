@@ -126,8 +126,8 @@ class chatPageState extends State<chatPage> {
                                   scrollDirection: Axis.vertical,
                                   child: Padding(
                                     padding: EdgeInsets.symmetric(
-                                        vertical: 0,
-                                        horizontal: 10
+                                        vertical: 5,
+                                        horizontal: 5
                                     ),
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.end,
@@ -161,6 +161,7 @@ class chatPageState extends State<chatPage> {
                             child: TextField(
                               controller: engine.prompt,
                               autofocus: true,
+                              onChanged: (change){engine.scrollChatlog(Duration(milliseconds: 250));},
                               readOnly: engine.isLoading,
                               decoration: InputDecoration(
                                 isDense: true,
@@ -185,7 +186,7 @@ class chatPageState extends State<chatPage> {
                                   ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
                                   : engine.responseText==""
                                     ? engine.dict.value("no_context_yet")
-                                    : engine.dict.value("generated_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2)),
+                                    : engine.dict.value("generated_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.text.split(" ").length.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2)),
                               ),
                               maxLines: 3,
                               minLines: 1,

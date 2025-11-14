@@ -70,11 +70,11 @@ class Dictionary {
 
   String value (String entry){
     if(!dictionary.containsKey(locale)){
-      return "Localisation engine FAILED [Default locale not initialized]";
+      return "Loading...";
     }
     if(!dictionary[locale].containsKey(entry)){
       if(!dictionary["en"].containsKey(entry)){
-        return "No translation for $entry";
+        return "!!! $entry";
       }
       return "!${dictionary["en"][entry].toString()}!";
     }

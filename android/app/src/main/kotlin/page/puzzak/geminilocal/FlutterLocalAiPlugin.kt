@@ -170,7 +170,7 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
                 }
                 val response = generateTextAsync(prompt, configMap)
                 withContext(Dispatchers.Main) {
-                    events.success(mapOf("status" to "Done", "response" to response, "error" to null))
+                    events.success(mapOf("status" to "Done", "response" to null, "error" to null, "reason" to null))
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -186,12 +186,13 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
 
     private fun handleGenerateTextStream(payload: Map<String, Any>, events: EventChannel.EventSink) {
         val prompt = payload["prompt"] as? String
+        val reason = payload["reason"] as? String
         if (prompt == null) {
             events.error("INVALID_ARG", "Prompt is required for streaming", null)
             return
         }
         val configMap = payload["config"] as? Map<String, Any>
-
+        var lastFinishReason: String? = "UNKNOWN"
         coroutineScope.launch {
             try {
                 withContext(Dispatchers.Main) {
@@ -200,13 +201,17 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
 
                 generateTextStream(prompt, configMap)
                     .onEach { chunkMap ->
+                        val reasonFromChunk = chunkMap["reason"] as? String
+                        if (reasonFromChunk != null && reasonFromChunk != "null") {
+                            lastFinishReason = reasonFromChunk
+                        }
                         withContext(Dispatchers.Main) {
                             events.success(mapOf("status" to "Streaming", "response" to chunkMap, "error" to null))
                         }
                     }
                     .onCompletion {
                         withContext(Dispatchers.Main) {
-                            events.success(mapOf("status" to "Done", "response" to null, "error" to null))
+                            events.success(mapOf("status" to "Done", "response" to null, "error" to null, "reason" to lastFinishReason))
                             events.endOfStream()
                         }
                     }
@@ -331,11 +336,13 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
         } else {
             prompt
         }
+        val candidateCountValue = configMap?.get("candidates")?.let { (it as Number).toInt() }
         val maxOutputTokensValue = configMap?.get("maxTokens")?.let { (it as Number).toInt() }
         val temperatureValue = configMap?.get("temperature")?.let { (it as Number).toDouble()?.toFloat() }
         val request = generateContentRequest(TextPart(fullPrompt)) {
             maxOutputTokens = maxOutputTokensValue
             temperature = temperatureValue
+            candidateCount = candidateCountValue
         }
         var fullResponse = ""
         val startTime = System.currentTimeMillis()
@@ -343,6 +350,7 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
         return generativeModel!!.generateContentStream(request)
             .transform { chunk ->
                 val newChunkText = chunk.candidates.firstOrNull()?.text ?: ""
+                val finishReason = chunk.candidates.firstOrNull()?.finishReason.toString()
                 fullResponse += newChunkText
                 val generationTime = System.currentTimeMillis() - startTime
                 val tokenCount = fullResponse.split(" ").filter { it.isNotEmpty() }.size
@@ -350,7 +358,8 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
                     "text" to fullResponse,
                     "chunk" to newChunkText,
                     "generationTimeMs" to generationTime,
-                    "tokenCount" to tokenCount
+                    "tokenCount" to tokenCount,
+                    "reason" to finishReason
                 ))
             }
             .catch { e ->
