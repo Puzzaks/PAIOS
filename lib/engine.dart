@@ -87,7 +87,6 @@ class aiEngine with md.ChangeNotifier {
     for (var element in prompts) {
       output = "$output\n$element";
     }
-    print(output);
     return output;
   }
 
@@ -307,9 +306,13 @@ class aiEngine with md.ChangeNotifier {
         }
         notifyListeners();
       },
-      onError: (e) {
-        // Handle stream-level errors
-        analyzeError("Streaming", e);
+      onError: (e) async {
+        if(errorRetry){
+          await Future.delayed(Duration(milliseconds: 500));
+          generateStream();
+        }else {
+          analyzeError("Streaming", e);
+        }
       },
       onDone: () {
         // Final state update when stream closes
