@@ -3,7 +3,7 @@
 ![Play Store Screenshots](.assets/bundle_android.jpg)
 ![Play Store Screenshots](.assets/bundle_tablet.jpg)
 A 100% offline, private, and powerful interface for Google's Gemini Nano.
-[![PlayStore](.assets/PlayStoreButton.png)](https://play.google.com/store/apps/details?id=page.puzzak.geminilocal)[![GitHub](.assets/GHButton.png)](https://github.com/Puzzaks/geminilocal/releases)
+[![PlayStore](.assets/PlayStoreButton.png)](https://play.google.com/store/apps/details?id=page.puzzak.geminilocal)[![GitHub](.assets/GHButton.png)](https://github.com/Puzzaks/gemininano/releases)
 ### Features
  - 100% Offline & Private
  - Full Model Control
@@ -76,4 +76,5 @@ This is an independent, third-party app and is not officially affiliated with, e
 
 ### Thanks
 Huge thanks to @kekko7072 for inspiring this whole project with [this plugin](https://github.com/kekko7072/flutter_local_ai)!
+
 And to Armed forces of Ukraine for keeping me safe. [Stand with Ukraine](https://war.ukraine.ua/support-ukraine/)!
