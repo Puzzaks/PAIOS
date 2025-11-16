@@ -2,7 +2,7 @@ name: geminilocal
 description: "Gemini Nano on-device client"
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 0.2.4
+version: 1.0.0
 
 environment:
   sdk: ^3.9.2
@@ -21,6 +21,8 @@ dependencies:
   intl: ^0.20.2
   pubspec_yaml: ^3.1.0
   package_info_plus: ^4.0.2
+  collection: ^1.17.0
+  fluttertoast: ^8.1.1
 
 
 dev_dependencies:
@@ -37,3 +39,5 @@ flutter:
     - assets/translations/languages.json
     - assets/translations/uk.json
     - assets/translations/en.json
+    - assets/system_prompt.txt
+    - assets/additional_resources.json

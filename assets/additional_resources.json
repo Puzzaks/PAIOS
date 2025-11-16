@@ -1,0 +1,38 @@
+[
+  {
+    "type": "link",
+    "collection": "modeldocs",
+    "name": "Gemini Nano Availability",
+    "value": "https://developers.google.com/ml-kit/genai#prompt-device"
+  },
+  {
+    "type": "link",
+    "collection": "modeldocs",
+    "name": "Google ML Kit Guides",
+    "value": "https://developers.google.com/ml-kit/guides"
+  },
+  {
+    "type": "link",
+    "collection": "appdocs",
+    "name": "Original app idea",
+    "value": "https://github.com/kekko7072/flutter_local_ai"
+  },
+  {
+    "type": "link",
+    "collection": "appdocs",
+    "name": "Application's GitHub repository",
+    "value": "https://github.com/Puzzaks/geminilocal"
+  },
+  {
+    "type": "link",
+    "collection": "appdocs",
+    "name": "Application's Google Store page",
+    "value": "https://play.google.com/store/apps/details?id=page.puzzak.geminilocal"
+  },
+  {
+    "type": "link",
+    "collection": "appdocs",
+    "name": "Developer's Website",
+    "value": "https://puzzak.page"
+  }
+]

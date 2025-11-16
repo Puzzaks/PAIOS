@@ -1,11 +1,12 @@
 import 'dart:ui';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geminilocal/pages/settings.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../engine.dart';
-import '../elements.dart';
+import 'support/elements.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 
@@ -54,7 +55,9 @@ class chatPageState extends State<chatPage> {
                           style: TextStyle(
                           ),
                         ),
-                        labelPadding: EdgeInsets.all(0),
+                        labelPadding: EdgeInsets.symmetric(
+                          horizontal: 5
+                        ),
                         visualDensity: VisualDensity.compact,
                         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         backgroundColor: Theme.of(context).colorScheme.onPrimaryFixed,
@@ -83,11 +86,23 @@ class chatPageState extends State<chatPage> {
                       );
                     },
                   ),
-                  IconButton(
+                  if(engine.context.isNotEmpty)IconButton(
                     icon: Icon(Icons.delete_outline_rounded),
                     tooltip: engine.dict.value("clear_context"),
                     onPressed: engine.isLoading?null:() {
+                      Fluttertoast.showToast(
+                          msg: engine.dict.value("long_tap_clear"),
+                          toastLength: Toast.LENGTH_SHORT,
+                          fontSize: 16.0
+                      );
+                    },
+                    onLongPress: (){
                       engine.clearContext();
+                      Fluttertoast.showToast(
+                          msg: engine.dict.value("long_tap_cleared"),
+                          toastLength: Toast.LENGTH_SHORT,
+                          fontSize: 16.0
+                      );
                     },
                   ),
                   IconButton(
@@ -97,6 +112,7 @@ class chatPageState extends State<chatPage> {
                         MaterialPageRoute(builder: (context) => settingsPage()),
                       );
                     },
+                    tooltip: engine.dict.value("settings"),
                     icon: Icon(Icons.tune_rounded),
                   )
                 ],
@@ -134,7 +150,53 @@ class chatPageState extends State<chatPage> {
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.end,
                                           children: [
-                                            Column(
+                                            (engine.context.isEmpty && !engine.isLoading)
+                                            ? Column(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Column(
+                                                  children: tWid.chatlog(
+                                                      conversation: [
+                                                        {
+                                                          "user": "User",
+                                                          "message": engine.dict.value("mock_user_1")
+                                                        },
+                                                        {
+                                                          "user": "Gemini",
+                                                          "message": engine.dict.value("mock_gemini_1")
+                                                        },
+                                                        {
+                                                          "user": "User",
+                                                          "message": engine.dict.value("mock_user_2")
+                                                        },
+                                                        {
+                                                          "user": "Gemini",
+                                                          "message": engine.dict.value("mock_gemini_2")
+                                                        },
+                                                        {
+                                                          "user": "User",
+                                                          "message": engine.dict.value("mock_user_3")
+                                                        },
+                                                        {
+                                                          "user": "Gemini",
+                                                          "message": engine.dict.value("mock_gemini_3")
+                                                        }
+                                                      ],
+                                                      context: context,
+                                                      aiChunk: "",
+                                                      lastUser: ""
+                                                  ),
+                                                ),
+                                                text.infoShort(
+                                                    title: engine.dict.value("welcome"),
+                                                    context: context,
+                                                    subtitle: "",
+                                                    action: (){}
+                                                )
+                                              ],
+                                            )
+                                            : Column(
                                               children: tWid.chatlog(
                                                   conversation: engine.context,
                                                   context: context,
@@ -171,7 +233,6 @@ class chatPageState extends State<chatPage> {
                               ),
                             ),
                           ),
-                         SizedBox(height: 10,),
                           Padding(
                             padding: const EdgeInsets.symmetric(
                                 vertical: 10,
@@ -200,11 +261,10 @@ class chatPageState extends State<chatPage> {
                                       tooltip: engine.dict.value("generate"),
                                       onPressed: (){engine.generateStream();},
                                     ),
-                                labelText: engine.dict.value("prompt"),
                                 border: OutlineInputBorder(
                                     borderRadius: BorderRadius.all(Radius.circular(20))
                                 ),
-                                hintText: engine.dict.value("prompt_hint"),
+                                hintText: engine.dict.value("prompt"),
                                 alignLabelWithHint: true,
                                 helperText: engine.isLoading && !(engine.responseText == "")
                                   ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))

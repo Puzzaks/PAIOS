@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 
 class Cards {
@@ -162,7 +163,7 @@ class cardContents {
               children: [
                 Container(height: subtitle == ""?10:0,),
                 Container(
-                  width: width - 180,
+                  width: width - 70,
                   child: Text(
                     title,
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
@@ -170,9 +171,108 @@ class cardContents {
                 ),
                 subtitle == ""?Container(height: 10,):
                 Container(
-                  width: width - 180,
+                  width: width - 70,
                   child: Text(
-                    subtitle
+                      subtitle
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  static Widget halfTap({
+    required String title,
+    required String subtitle,
+    required VoidCallback action,
+  }) {
+    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    return InkWell(
+      onTap: action,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+            horizontal: 20, vertical: 10
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.start,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(height: subtitle == ""?10:0,),
+                Container(
+                  width: width - 150,
+                  child: Text(
+                    title,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+                subtitle == ""?Container(height: 10,):
+                Container(
+                  width: width - 150,
+                  child: Text(
+                      subtitle
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  static Widget tapIcon({
+    required String title,
+    required String subtitle,
+    required VoidCallback action,
+    required IconData icon,
+    required Color color,
+    required Color colorBG
+  }) {
+    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    return InkWell(
+      onTap: action,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+            horizontal: 20, vertical: 10
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.start,
+          children: [
+            ClipRRect(
+              clipBehavior: Clip.hardEdge,
+              borderRadius: BorderRadius.all(Radius.circular(35)),
+              child: Container(
+                height: 35,
+                width: 35,
+                color: colorBG,
+                child: Icon(
+                  icon,
+                  color: color,
+                ),
+              ),
+            ),
+            SizedBox(width: 15,),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(height: subtitle == ""?10:0,),
+                Container(
+                  width: width - 120,
+                  child: Text(
+                    title,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ),
+                subtitle == ""?Container(height: 10,):
+                Container(
+                  width: width - 120,
+                  child: Text(
+                      subtitle
                   ),
                 ),
               ],
@@ -461,7 +561,55 @@ class text {
               subtitle == ""?Container():InkWell(
                 onTap: action,
                 child: Text(
-                  title,
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.bold,
+                      decoration: TextDecoration.underline
+                  ),
+                ),
+              )
+            ],
+          )
+      ),
+    );
+  }
+  static Widget infoShort({
+    required String title,
+    required String subtitle,
+    required VoidCallback action,
+    required BuildContext context
+  }) {
+    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    return Padding(
+      padding: EdgeInsetsGeometry.only(
+          bottom: 0,
+          left: 20,
+          right: 20,
+          top: 10
+      ),
+      child: Container(
+          width: width - 40,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.info_outline_rounded,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                size: 24,
+              ),
+              const SizedBox(height: 20),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              subtitle == ""?Container():const SizedBox(height: 5),
+              subtitle == ""?Container():InkWell(
+                onTap: action,
+                child: Text(
+                  subtitle,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontWeight: FontWeight.bold,
@@ -580,6 +728,12 @@ class text {
                               minWidth: 0.0
                           ),
                           child: MarkdownBody(
+                            onTapLink: (String text, String? href, String title) async {
+                              await launchUrl(
+                                  Uri.parse(href!),
+                                  mode: LaunchMode.externalApplication
+                              );
+                            },
                             selectable: true,
                             data: AIMessage,
                           ),
@@ -655,6 +809,12 @@ class text {
                         minWidth: 0.0
                     ),
                     child: MarkdownBody(
+                      onTapLink: (String text, String? href, String title) async {
+                        await launchUrl(
+                          Uri.parse(href!),
+                          mode: LaunchMode.externalApplication
+                        );
+                      },
                       selectable: true,
                       data: aiChunk,
                     ),

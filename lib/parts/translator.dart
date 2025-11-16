@@ -37,6 +37,7 @@ class Dictionary {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     for(int a = 0; a < languages.length;a++){
       if(languages[a]["id"] == variant){
+        locale = variant;
         prefs.setString("language", variant);
       }
     }

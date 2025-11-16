@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
-import '../../gemini.dart';
+import '../../parts/gemini.dart';
 import 'models/ai_response.dart';
 import 'models/generation_config.dart';
 

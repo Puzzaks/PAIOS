@@ -5,7 +5,6 @@ import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/pages/intro.dart';
 import 'package:provider/provider.dart';
 import 'engine.dart';
-import 'elements.dart';
 
 
 
@@ -28,10 +27,10 @@ class MyAppState extends State<MyApp> {
 
   void initState() {
     super.initState();
-    WidgetsFlutterBinding.ensureInitialized();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      Provider.of<aiEngine>(context, listen: false).start();
-    });
+    Provider.of<aiEngine>(context, listen: false).start();
+    // WidgetsFlutterBinding.ensureInitialized();
+    // WidgetsBinding.instance.addPostFrameCallback((_) async {
+    // });
   }
   Widget build(BuildContext context) {
     final _defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
@@ -57,7 +56,6 @@ class MyAppState extends State<MyApp> {
         theme: _themeData(lightColorScheme ?? _defaultLightColorScheme).copyWith(
             pageTransitionsTheme: const PageTransitionsTheme(
               builders: {
-                // Use PredictiveBackPageTransitionsBuilder to get the predictive back route transition!
                 TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
               },
             ),
@@ -86,7 +84,6 @@ class MyAppState extends State<MyApp> {
         darkTheme: _themeData(darkColorScheme ?? _defaultDarkColorScheme).copyWith(
           pageTransitionsTheme: const PageTransitionsTheme(
             builders: {
-              // Use PredictiveBackPageTransitionsBuilder to get the predictive back route transition!
               TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
             },
           ),
@@ -96,7 +93,6 @@ class MyAppState extends State<MyApp> {
         home: LayoutBuilder(builder: (BuildContext context, BoxConstraints constraints) {
           double scaffoldHeight = constraints.maxHeight;
           double scaffoldWidth = constraints.maxWidth;
-          Cards cards = Cards(context: context);
           return Consumer<aiEngine>(builder: (context, engine, child) {
             Widget settingsDivider(String name,{double leftPadding = 20}){
               return Padding(
@@ -112,10 +108,31 @@ class MyAppState extends State<MyApp> {
                 ),
               );
             }
-            if(!engine.firstLaunch){
-              return chatPage();
-            }
-            return introPage();
+            return AnimatedCrossFade(
+                alignment: Alignment.center,
+                duration: const Duration(milliseconds: 500),
+                firstChild: AnimatedCrossFade(
+                  alignment: Alignment.center,
+                  duration: const Duration(milliseconds: 250),
+                  firstChild: Container(
+                    height: scaffoldHeight,
+                    width: scaffoldWidth,
+                    child: introPage(),
+                  ),
+                  secondChild: Container(
+                    height: scaffoldHeight,
+                    width: scaffoldWidth,
+                    child: chatPage(),
+                  ),
+                  crossFadeState: engine.firstLaunch? CrossFadeState.showFirst : CrossFadeState.showSecond,
+                ),
+                secondChild: Center(
+                  child: CircularProgressIndicator(
+                    strokeCap: StrokeCap.round,
+                  ),
+                ),
+              crossFadeState: engine.appStarted? CrossFadeState.showFirst : CrossFadeState.showSecond,
+            );
           });
         }),
       );
