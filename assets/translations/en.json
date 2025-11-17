@@ -54,6 +54,8 @@
   "context_desc": "~%c tokens",
   "context_title": "Context size",
   "downloading_model": "Downloading Gemini Nano",
+  "downloading_model_error": "Couldn't download Gemini Nano",
+  "waiting_network": "Waiting for WiFi",
   "whoops": "Tap to check the AI Core",
   "add_time": "Tell model Date & Time",
   "add_time_desc": "Insert Date & Time into instructions",

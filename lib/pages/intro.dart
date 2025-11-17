@@ -19,6 +19,7 @@ class introPageState extends State<introPage> {
   void initState() {
     super.initState();
   }
+  int latestSpeed = 0;
   final MaterialStateProperty<Icon?> thumbIcon = MaterialStateProperty.resolveWith<Icon?>(
         (Set<MaterialState> states) {
       if (states.contains(MaterialState.selected)) {
@@ -47,7 +48,6 @@ class introPageState extends State<introPage> {
     TextStyle blacker = const TextStyle(
         color: Colors.black
     );
-    int latestSpeed = 0;
     String convertSize(int size, bool isSpeed) {
       if (size < 1024) {
         return '$size B${isSpeed?"/s":""}';
@@ -81,28 +81,28 @@ class introPageState extends State<introPage> {
         int prevSize = int.parse(log[log.length-2]["value"]);
         int prevTime = (log[log.length-2]["time"] / 1000).toInt();
         if(lastTime == prevTime || lastSize == prevSize){
-          return convertSize(0, true);
+          return convertSize(latestSpeed, true);
         }
         if(lastTime == prevTime || lastSize == prevSize){
-          return convertSize(0, true);
+          return convertSize(latestSpeed, true);
         }
         int speed = ((lastSize - prevSize) / (lastTime - prevTime)).toInt();
         if(log.length > 2){
           int anotherSize = int.parse(log[log.length-3]["value"]);
           int anotherTime = (log[log.length-3]["time"] / 1000).toInt();
           if(prevSize == anotherSize || prevTime == anotherTime){
-            return convertSize(0, true);
+            return convertSize(latestSpeed, true);
           }
           int lastSpeed = ((prevSize - anotherSize) / (prevTime - anotherTime)).toInt();
           int avgSpeed = ((speed + lastSpeed)/2).toInt();
-          if(avgSpeed == 0){
+          if(avgSpeed < 100){
             return convertSize(latestSpeed, true);
           }else{
             latestSpeed = avgSpeed;
             return convertSize(avgSpeed, true);
           }
         }else{
-          if(speed == 0){
+          if(speed < 100){
             return convertSize(latestSpeed, true);
           }else{
             latestSpeed = speed;
@@ -110,7 +110,7 @@ class introPageState extends State<introPage> {
           }
         }
       }else{
-        return convertSize(0, true);
+        return convertSize(latestSpeed, true);
       }
     }
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
@@ -173,18 +173,18 @@ class introPageState extends State<introPage> {
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download")
                                 if(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) > 0)
                                   cardContents.progress(
-                                      title: engine.dict.value("downloading_model"),
-                                      subtitle: "${convertSize(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]), false)}/${convertSize(engine.usualModelSize, false)} (${((int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) / engine.usualModelSize)*100).toStringAsFixed(2)}%)",
-                                      subsubtitle: calcSpeed(engine.modelDownloadLog),
+                                      title: engine.dict.value(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"]),
+                                      subtitle: "${convertSize(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]), false)}/~${convertSize(engine.usualModelSize, false)} (~${((int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) / engine.usualModelSize)*100).toStringAsFixed(2)}%)",
+                                      subsubtitle: engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"] == "waiting_network"?"": calcSpeed(engine.modelDownloadLog),
                                       progress: (int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"])/engine.usualModelSize)
                                   ),
                             if(engine.modelDownloadLog.isNotEmpty)
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download")
                                 if(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) == 0)
                                   cardContents.progress(
-                                      title: engine.dict.value("downloading_model"),
+                                      title: engine.dict.value(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"]),
                                       subtitle: "${convertSize(0, false)}/${convertSize(engine.usualModelSize, false)} (0%)",
-                                      subsubtitle: convertSize(0,true),
+                                      subsubtitle: "",
                                       progress: 0
                                   ),
                             if(engine.modelDownloadLog.isNotEmpty)

@@ -351,7 +351,9 @@ class cardContents {
             child: LinearProgressIndicator(
               value: progress == 0
                   ? null
-                  : progress,
+                  : progress >= 1
+                    ? null
+                    : progress,
               borderRadius: BorderRadius.circular(20),
             ),
           )

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart' as md;
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geminilocal/interface/flutter_local_ai.dart';
@@ -8,6 +9,7 @@ import 'package:geminilocal/parts/prompt.dart';
 import 'package:geminilocal/parts/translator.dart';
 import 'parts/gemini.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:async/async.dart';
 
 
 class aiEngine with md.ChangeNotifier {
@@ -17,7 +19,7 @@ class aiEngine with md.ChangeNotifier {
 
   Dictionary dict = Dictionary(
       path: "assets/translations",
-      url: "https://raw.githubusercontent.com/Puzzaks/geminilocal/mains"
+      url: "https://raw.githubusercontent.com/Puzzaks/geminilocal/main"
   );
   Prompt promptEngine = Prompt(ghUrl: "https://github.com/Puzzaks/geminilocal");
   late AiResponse response;
@@ -49,6 +51,7 @@ class aiEngine with md.ChangeNotifier {
 
   /// Subscription to manage the active AI stream
   StreamSubscription<AiEvent>? _aiSubscription;
+
 
 
 
@@ -116,6 +119,16 @@ class aiEngine with md.ChangeNotifier {
   }
 
 
+  Future<void> lateNetCheck(int time) async {
+    await Future.delayed(Duration(seconds: 1));
+    if(time == modelDownloadLog[modelDownloadLog.length-1]["time"]){
+      final connectivityResult = await (Connectivity().checkConnectivity());
+      if (!connectivityResult.contains(ConnectivityResult.wifi)) {
+        addDownloadLog("Download=waiting_network=${modelDownloadLog[modelDownloadLog.length-1]["value"]}");
+      }
+    }
+  }
+
   Future<void> checkEngine() async {
     gemini.statusStream = gemini.downloadChannel.receiveBroadcastStream().map((dynamic event) => event.toString());
     gemini.statusStream.listen((String downloadStatus) async {
@@ -127,7 +140,6 @@ class aiEngine with md.ChangeNotifier {
           }else{
             endFirstLaunch();
           }
-
           addDownloadLog(downloadStatus);
           break;
         case "Download":
@@ -138,6 +150,7 @@ class aiEngine with md.ChangeNotifier {
               addDownloadLog(downloadStatus);
             }
           }
+          lateNetCheck(modelDownloadLog[modelDownloadLog.length-1]["time"]);
           break;
         case "Error":
           addDownloadLog(downloadStatus);

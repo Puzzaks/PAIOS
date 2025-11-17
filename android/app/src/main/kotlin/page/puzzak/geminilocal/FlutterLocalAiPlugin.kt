@@ -89,12 +89,12 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
                 FeatureStatus.UNAVAILABLE -> emit("Error=AICore=Unavailable")
                 FeatureStatus.DOWNLOADING,
                 FeatureStatus.DOWNLOADABLE -> {
-                    emit("Download=In Progress=0")
+                    emit("Download=downloading_model=0")
 
                     generativeModel!!.download().collect { downloadStatus ->
                         when (downloadStatus) {
-                            is DownloadStatus.DownloadStarted ->   emit("Download=In Progress=0")
-                            is DownloadStatus.DownloadProgress ->  emit("Download=In Progress=${downloadStatus.totalBytesDownloaded}")
+                            is DownloadStatus.DownloadStarted ->   emit("Download=downloading_model=0")
+                            is DownloadStatus.DownloadProgress ->  emit("Download=downloading_model=${downloadStatus.totalBytesDownloaded}")
                             is DownloadStatus.DownloadCompleted -> emit("Available=Download=0")
                             is DownloadStatus.DownloadFailed ->    emit("Error=Download=${downloadStatus.e.message}")
                             else ->                                emit("Error=Download=Unknown")
