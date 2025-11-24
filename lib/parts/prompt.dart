@@ -59,7 +59,7 @@ class Prompt{
     }
   }
 
-  Future<String> generate(String userprompt, List chatlog, Map modelInfo, {bool addTime = false, bool shareLocale = false, String currentLocale = "en"}) async {
+  Future<String> generate(String userprompt, List chatlog, Map modelInfo, {bool addTime = false, bool shareLocale = false, String currentLocale = "en", bool ignoreInstructions = false}) async {
     String output = basePrompt;
     /// Static data section
     output = output.replaceAll("%modelversion%", modelInfo["version"]);
@@ -68,28 +68,6 @@ class Prompt{
     output = output.replaceAll("%appversion%", appInfo["version"]);
     output = output.replaceAll("%ghrepolink%", ghUrl);
     /// Dynamic rules section
-    /// Rule "if we don't have context we don't need some instructions":
-    if(chatlog.isEmpty){
-      output = output.replaceAll("%chathistoryrules%", "");
-      output = output.replaceAll("%chatlog%", "");
-    }
-    else{
-      String compileChatlog = "\n\n### [CHAT HISTORY]";
-      for (var line in chatlog){
-        compileChatlog = "$compileChatlog\n - ${line["user"]} (${DateFormat('dd/MM/yyyy, HH:mm').format(DateTime.fromMillisecondsSinceEpoch(line["time"]))}): ${line["message"]}";
-      }
-      output = output.replaceAll(
-          "%chathistoryrules%",
-          "${
-              "- You MUST NOT quote the \"User:\" or \"Gemini:\" markers from the history. They are for your context only.\n"+
-              "- Focus only on answering the user\'s LATEST prompt, using the chat history for context."
-          }"
-      );
-      output = output.replaceAll(
-          "%chatlog%",
-          compileChatlog
-      );
-    }
     ///Rule "if user toggled something tell model about it
     if(addTime || shareLocale || userprompt.isNotEmpty){
       String localRules = "\n\n## 4. DATA & INSTRUCTION RULES";
@@ -142,6 +120,34 @@ class Prompt{
         "%additionalresources%",
         compileResources
     );
+
+    /// Rule "if we don't have context we don't need some instructions":
+    if(chatlog.isEmpty){
+      output = output.replaceAll("%chathistoryrules%", "");
+      output = output.replaceAll("%chatlog%", "");
+      if(ignoreInstructions){
+        output = "";
+      }
+    }
+    else{
+      String compileChatlog = "\n\n### [CHAT HISTORY]";
+      for (var line in chatlog){
+        compileChatlog = "$compileChatlog\n - ${line["user"]} (${DateFormat('dd/MM/yyyy, HH:mm').format(DateTime.fromMillisecondsSinceEpoch(line["time"]))}): ${line["message"]}";
+      }
+      output = output.replaceAll(
+          "%chathistoryrules%",
+          "- You MUST NOT quote the \"User:\" or \"Gemini:\" markers from the history. They are for your context only.\n"
+              "- Focus only on answering the user\'s LATEST prompt, using the chat history for context."
+      );
+      if(ignoreInstructions){
+        output = "You are having a conversation with the User.\nDon't append \"Gemini\" and time before your answer, don't give an explanation. Only reply with what you are answering the user with.\nBelow is your conversation history:${compileChatlog}";
+      }else{
+        output = output.replaceAll(
+            "%chatlog%",
+            compileChatlog
+        );
+      }
+    }
     return output;
   }
 

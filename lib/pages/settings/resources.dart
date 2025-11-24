@@ -5,13 +5,13 @@ import '../../engine.dart';
 import '../support/elements.dart';
 
 
-class settingsResources extends StatefulWidget {
-  const settingsResources({super.key});
+class SettingsResources extends StatefulWidget {
+  const SettingsResources({super.key});
   @override
-  settingsResourcesState createState() => settingsResourcesState();
+  SettingsResourcesState createState() => SettingsResourcesState();
 }
 
-class settingsResourcesState extends State<settingsResources> {
+class SettingsResourcesState extends State<SettingsResources> {
   @override
   void initState() {
     super.initState();
@@ -23,7 +23,7 @@ class settingsResourcesState extends State<settingsResources> {
         child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
               Cards cards = Cards(context: context);
-              return Consumer<aiEngine>(builder: (context, engine, child) {
+              return Consumer<AIEngine>(builder: (context, engine, child) {
                 return Scaffold(
                   body: CustomScrollView(
                     slivers: <Widget>[
@@ -53,13 +53,13 @@ class settingsResourcesState extends State<settingsResources> {
                                     context: context
                                 ),
                                 cards.cardGroup(
-                                    engine.resources[collection].map((resourse){
-                                  return cardContents.tap(
-                                      title: resourse["name"],
-                                      subtitle: resourse["value"].split("://")[1].split("/")[0],
+                                    engine.resources[collection].map((resource){
+                                  return CardContents.tap(
+                                      title: resource["name"],
+                                      subtitle: resource["value"].split("://")[1].split("/")[0],
                                       action: () async {
                                         await launchUrl(
-                                          Uri.parse(resourse["value"]),
+                                          Uri.parse(resource["value"]),
                                           mode: LaunchMode.externalApplication
                                         );
                                       }

@@ -1,5 +1,3 @@
-import 'dart:ui';
-import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geminilocal/pages/settings.dart';
@@ -7,37 +5,27 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../engine.dart';
 import 'support/elements.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 
 
-class chatPage extends StatefulWidget {
-  const chatPage({super.key});
+class ChatPage extends StatefulWidget {
+  const ChatPage({super.key});
   @override
-  chatPageState createState() => chatPageState();
+  ChatPageState createState() => ChatPageState();
 }
 
-class chatPageState extends State<chatPage> {
+class ChatPageState extends State<ChatPage> {
   text tWid = text();
   @override
   @override
   void initState() {
     super.initState();
   }
-  final MaterialStateProperty<Icon?> thumbIcon = MaterialStateProperty.resolveWith<Icon?>(
-        (Set<MaterialState> states) {
-      if (states.contains(MaterialState.selected)) {
-        return const Icon(Icons.check);
-      }
-      return const Icon(Icons.close);
-    },
-  );
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
-          double scaffoldHeight = constraints.maxHeight;
           double scaffoldWidth = constraints.maxWidth;
-          return Consumer<aiEngine>(builder: (context, engine, child) {
+          return Consumer<AIEngine>(builder: (context, engine, child) {
             return Scaffold(
               appBar: AppBar(
                 title: Row(
@@ -109,7 +97,7 @@ class chatPageState extends State<chatPage> {
                     onPressed: (){
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => settingsPage()),
+                        MaterialPageRoute(builder: (context) => SettingsPage()),
                       );
                     },
                     tooltip: engine.dict.value("settings"),
@@ -135,7 +123,7 @@ class chatPageState extends State<chatPage> {
                                 ),
                               ),
                               color: Theme.of(context).colorScheme.onPrimaryFixed,
-                              child: Container(
+                              child: SizedBox(
                                 width: scaffoldWidth - 30,
                                 child: Stack(
                                   children: [

@@ -2,18 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as md;
 import 'package:fluttertoast/fluttertoast.dart';
-import 'package:geminilocal/interface/flutter_local_ai.dart';
 import 'package:geminilocal/parts/prompt.dart';
 import 'package:geminilocal/parts/translator.dart';
 import 'parts/gemini.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:async/async.dart';
 
 
-class aiEngine with md.ChangeNotifier {
-  final gemini = FlutterLocalAi();
+class AIEngine with md.ChangeNotifier {
+  final gemini = GeminiNano();
   final prompt = md.TextEditingController();
   final instructions = md.TextEditingController();
 
@@ -48,11 +47,13 @@ class aiEngine with md.ChangeNotifier {
   String testPrompt = "";
   Map resources = {};
   List modelDownloadLog = [];
+  bool ignoreInstructions = false;
+
+  Map<int, Map> chats = {};
+  int currentChat = "";
 
   /// Subscription to manage the active AI stream
   StreamSubscription<AiEvent>? _aiSubscription;
-
-
 
 
 
@@ -71,6 +72,7 @@ class aiEngine with md.ChangeNotifier {
     prefs.setBool("addCurrentTimeToRequests", addCurrentTimeToRequests);
     prefs.setBool("shareLocale", shareLocale);
     prefs.setBool("errorRetry", errorRetry);
+    prefs.setBool("ignoreInstructions", ignoreInstructions);
   }
 
   scrollChatlog (Duration speed){
@@ -87,15 +89,16 @@ class aiEngine with md.ChangeNotifier {
     await promptEngine.initialize();
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     if(prefs.containsKey("context")){
-      context = jsonDecode(await prefs.getString("context")??"[]");
-      contextSize = await prefs.getInt("contextSize")??0;
+      context = jsonDecode(prefs.getString("context")??"[]");
+      contextSize = prefs.getInt("contextSize")??0;
     }
-    addCurrentTimeToRequests = await prefs.getBool("addCurrentTimeToRequests")??false;
-    shareLocale = await prefs.getBool("shareLocale")??false;
-    errorRetry = await prefs.getBool("errorRetry")??true;
-    instructions.text = await prefs.getString("instructions")??"";
-    temperature = await prefs.getDouble("temperature")??0.7;
-    tokens = await prefs.getInt("tokens")??256;
+    addCurrentTimeToRequests = prefs.getBool("addCurrentTimeToRequests")??false;
+    shareLocale = prefs.getBool("shareLocale")??false;
+    errorRetry = prefs.getBool("errorRetry")??true;
+    ignoreInstructions = prefs.getBool("ignoreInstructions")??false;
+    instructions.text = prefs.getString("instructions")??"";
+    temperature = prefs.getDouble("temperature")??0.7;
+    tokens = prefs.getInt("tokens")??256;
     appStarted = true;
     notifyListeners();
     await Future.delayed(Duration(milliseconds: 250));
@@ -105,7 +108,6 @@ class aiEngine with md.ChangeNotifier {
   }
 
   void addDownloadLog(String log){
-    print("Adding from ${log.split("=")[0]} (${log.split("=")[1]}, ${log.split("=")[2]})");
     modelDownloadLog.add(
         {
           "status": log.split("=")[0],
@@ -118,19 +120,18 @@ class aiEngine with md.ChangeNotifier {
 
   }
 
-
   lateNetCheck() async {
     while(firstLaunch){
       final connectivityResult = await (Connectivity().checkConnectivity());
       if (!connectivityResult.contains(ConnectivityResult.wifi)) {
-        if(modelDownloadLog.length > 0) {
+        if(modelDownloadLog.isNotEmpty) {
           if (!(modelDownloadLog[modelDownloadLog.length - 1]["info"] == "waiting_network")) {
             if(modelDownloadLog[modelDownloadLog.length - 1]["info"] == "downloading_model"){
               addDownloadLog("Download=waiting_network=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}");}
           }
         }
       } else {
-        if(modelDownloadLog.length > 0){
+        if(modelDownloadLog.isNotEmpty){
           if ((modelDownloadLog[modelDownloadLog.length - 1]["info"] == "waiting_network")) {
             addDownloadLog("Download=downloading_model=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}");
           }
@@ -150,8 +151,7 @@ class aiEngine with md.ChangeNotifier {
         }
       }
       if(modelDownloadLog.isNotEmpty){
-        if(lastUpdate == modelDownloadLog[modelDownloadLog.length - 1]){
-          print("Nothing changed in the last 15 seconds, assume we have restarted and are not getting updates; We must restart the checkEngine. So...");
+        if(lastUpdate == modelDownloadLog[modelDownloadLog.length - 1]){ /// Nothing changed in the last 15 seconds, assume we have restarted and are not getting updates; We must restart the checkEngine. So...
           checkEngine();
         }else{
           lastUpdate = modelDownloadLog[modelDownloadLog.length - 1];
@@ -161,7 +161,6 @@ class aiEngine with md.ChangeNotifier {
   }
 
   Future<void> checkEngine() async {
-    print("Starting Engine Init");
     if(modelDownloadLog.isEmpty){
       lateNetCheck();
       lateProgressCheck();
@@ -169,16 +168,15 @@ class aiEngine with md.ChangeNotifier {
     modelDownloadLog.clear();
     gemini.statusStream = gemini.downloadChannel.receiveBroadcastStream().map((dynamic event) => event.toString());
     gemini.statusStream.listen((String downloadStatus) async {
-      print("Received: $downloadStatus");
       switch (downloadStatus.split("=")[0]){
         case "Available":
           modelInfo = await gemini.getModelInfo();
-          print("Checked: $modelInfo");
           if(modelInfo["version"]==null){
             await Future.delayed(Duration(seconds: 2));
             checkEngine();
           }else{
             if(modelInfo["status"]=="Available"){
+              addDownloadLog("Available=Available=0");
               endFirstLaunch();
             }else{
               if(downloadStatus.split("=")[1] == "Download"){
@@ -226,6 +224,7 @@ class aiEngine with md.ChangeNotifier {
       },
     );
   }
+  
   addToContext() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     contextSize = contextSize + responseText.split(' ').length + lastPrompt.split(' ').length;
@@ -241,8 +240,33 @@ class aiEngine with md.ChangeNotifier {
     });
     await prefs.setString("context", jsonEncode(context));
     await prefs.setInt("contextSize", contextSize);
+    if(currentChat == 0) {
+      currentChat = DateTime.now().millisecondsSinceEpoch;
+    }
     notifyListeners();
   }
+
+  saveChat(List conversation, {int chatID = 0}){
+    if(chatID == 0) {
+      chatID = DateTime.now().millisecondsSinceEpoch;
+    }
+    if(conversation.isNotEmpty){
+      if(chats.containsKey(chatID)){
+        if(chats[chatID]!.containsKey("name")){
+          /// Make up a name for the conversation
+          chats[chatID]!["history"] = conversation;
+        }else{
+          chats[chatID]!["history"] = conversation;
+        }
+      }else{
+        /// Make up a name for the conversation
+        chats[chatID] = {
+          "history": conversation
+        };
+      }
+    }
+  }
+
   clearContext() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     context.clear();
@@ -255,7 +279,6 @@ class aiEngine with md.ChangeNotifier {
   }
 
   Future<void> initEngine() async {
-    print("Reloading model");
     if (isInitializing) return;
     isInitializing = true;
     isError = false;
@@ -268,10 +291,8 @@ class aiEngine with md.ChangeNotifier {
           currentLocale: dict.value("current_language"),
           addTime: addCurrentTimeToRequests,
           shareLocale: shareLocale,
+          ignoreInstructions: ignoreInstructions
       ).then((instruction) async {
-        print("RULES");
-        print(instruction.split("# 3. CONVERSATION RULES")[0]);
-        print("# 3. CONVERSATION RULES${instruction.split("# 3. CONVERSATION RULES")[1]}");
         await gemini.init(instructions: instruction).then((initStatus){
           if (initStatus == null) {
             analyzeError("Initialization", "Did not get response from AICore communication attempt");
@@ -360,10 +381,10 @@ class aiEngine with md.ChangeNotifier {
             String? finishReason = event.response?.finishReason;
             if(!(event.response?.finishReason=="null")) {
               switch(finishReason??"null"){
-                case "0": print("Generation stopped (MAX_TOKENS): The maximum number of output tokens as specified in the request was reached.");break;
-                case "1": print("Generation stopped (OTHER): Generic stop reason.");break;
-                case "-100": print("Generation stopped (STOP): Natural stop point of the model.");break;
-                default: print("Generation stopped (Code ${event.response?.finishReason}): Reason for stop was not specified");break;
+                case "0": if (kDebugMode) {print("Generation stopped (MAX_TOKENS): The maximum number of output tokens as specified in the request was reached.");}break;
+                case "1": if (kDebugMode) {print("Generation stopped (OTHER): Generic stop reason.");}break;
+                case "-100": if (kDebugMode) {print("Generation stopped (STOP): Natural stop point of the model.");}break;
+                default: if (kDebugMode) {print("Generation stopped (Code ${event.response?.finishReason}): Reason for stop was not specified");}break;
               }
             }
             status = "Streaming response...";

@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:geminilocal/pages/settings/modelSettingsContext.dart';
+import 'package:geminilocal/pages/settings/context.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../engine.dart';
 import '../support/elements.dart';
 
 
-class modelSettings extends StatefulWidget {
-  const modelSettings({super.key});
+class ModelSettings extends StatefulWidget {
+  const ModelSettings({super.key});
   @override
-  modelSettingsState createState() => modelSettingsState();
+  ModelSettingsState createState() => ModelSettingsState();
 }
 
-class modelSettingsState extends State<modelSettings> {
+class ModelSettingsState extends State<ModelSettings> {
   @override
   void initState() {
     super.initState();
@@ -24,7 +23,7 @@ class modelSettingsState extends State<modelSettings> {
         child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
               Cards cards = Cards(context: context);
-              return Consumer<aiEngine>(builder: (context, engine, child) {
+              return Consumer<AIEngine>(builder: (context, engine, child) {
                 return Scaffold(
                   body: CustomScrollView(
                     slivers: <Widget>[
@@ -51,13 +50,30 @@ class modelSettingsState extends State<modelSettings> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.tap(
+                              CardContents.turn(
+                                  title: engine.dict.value("ignore_instructions"),
+                                  subtitle: engine.dict.value("ignore_instructions_desc"),
+                                  action: (){
+                                    setState(() {
+                                      engine.ignoreInstructions = !engine.ignoreInstructions;
+                                    });
+                                    engine.saveSettings();
+                                  },
+                                  switcher: (value){
+                                    setState(() {
+                                      engine.ignoreInstructions = !engine.ignoreInstructions;
+                                    });
+                                    engine.saveSettings();
+                                  },
+                                  value: engine.ignoreInstructions
+                              ),
+                              CardContents.tap(
                                   title: engine.dict.value("system_prompt"),
                                   subtitle: engine.dict.value("system_prompt_desc"),
                                   action: () async {
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => modelSettingsContext()),
+                                      MaterialPageRoute(builder: (context) => ModelSettingsContext()),
                                     );
                                     engine.testPrompt = await engine.promptEngine.generate(
                                         "replaceme",
@@ -75,7 +91,7 @@ class modelSettingsState extends State<modelSettings> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.addretract(
+                              CardContents.addretract(
                                   title: engine.dict.value("temperature"),
                                   subtitle: engine.temperature.toStringAsFixed(1),
                                   actionAdd: (){
@@ -95,7 +111,7 @@ class modelSettingsState extends State<modelSettings> {
                                     }
                                   }
                               ),
-                              cardContents.addretract(
+                              CardContents.addretract(
                                   title: engine.dict.value("tokens"),
                                   subtitle: engine.tokens.toString(),
                                   actionAdd: engine.tokens > 225?(){}:(){
@@ -117,7 +133,7 @@ class modelSettingsState extends State<modelSettings> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.turn(
+                              CardContents.turn(
                                   title: engine.dict.value("add_time"),
                                   subtitle: engine.dict.value("add_time_desc"),
                                   action: (){
@@ -134,7 +150,7 @@ class modelSettingsState extends State<modelSettings> {
                                   },
                                   value: engine.addCurrentTimeToRequests
                               ),
-                              cardContents.turn(
+                              CardContents.turn(
                                   title: engine.dict.value("add_lang"),
                                   subtitle: engine.dict.value("add_lang_desc"),
                                   action: (){
@@ -157,14 +173,14 @@ class modelSettingsState extends State<modelSettings> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.tap(
+                              CardContents.tap(
                                   title: engine.dict.value("reset_model_context"),
                                   subtitle: engine.dict.value("context_desc").replaceAll("%c", engine.contextSize.toString()),
                                   action: (){
                                     engine.clearContext();
                                   }
                               ),
-                              cardContents.tap(
+                              CardContents.tap(
                                   title: engine.dict.value("reset_model_prompt"),
                                   subtitle: engine.instructions.text.isEmpty?engine.dict.value("reset_model_prompt_desc"):"",
                                   action: engine.instructions.text.isEmpty?(){}:(){
@@ -173,7 +189,7 @@ class modelSettingsState extends State<modelSettings> {
                                     setState(() {});
                                   }
                               ),
-                              cardContents.tap(
+                              CardContents.tap(
                                   title: engine.dict.value("reset_model_params"),
                                   subtitle: engine.dict.value("reset_model_params_desc"),
                                   action: () async {

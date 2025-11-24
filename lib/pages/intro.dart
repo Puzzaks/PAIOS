@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,32 +6,24 @@ import '../engine.dart';
 import 'support/elements.dart';
 
 
-class introPage extends StatefulWidget {
-  const introPage({super.key});
+class IntroPage extends StatefulWidget {
+  const IntroPage({super.key});
   @override
-  introPageState createState() => introPageState();
+  IntroPageState createState() => IntroPageState();
 }
 
-class introPageState extends State<introPage> {
+class IntroPageState extends State<IntroPage> {
   @override
   @override
   void initState() {
     super.initState();
   }
   int latestSpeed = 0;
-  final MaterialStateProperty<Icon?> thumbIcon = MaterialStateProperty.resolveWith<Icon?>(
-        (Set<MaterialState> states) {
-      if (states.contains(MaterialState.selected)) {
-        return const Icon(Icons.check);
-      }
-      return const Icon(Icons.close);
-    },
-  );
   @override
   Widget build(BuildContext context) {
-    final _defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
-    final _defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
-    ThemeData _themeData (colorSheme){
+    final defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
+    final defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
+    ThemeData themeData (colorSheme){
       return ThemeData(
         colorScheme: colorSheme,
         cardTheme: CardThemeData(
@@ -115,7 +106,7 @@ class introPageState extends State<introPage> {
     }
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
       return MaterialApp(
-        theme: _themeData(lightColorScheme ?? _defaultLightColorScheme).copyWith(
+        theme: themeData(lightColorScheme ?? defaultLightColorScheme).copyWith(
           cardColor: Colors.grey,
           iconTheme: const IconThemeData(
               color: Colors.black
@@ -138,15 +129,13 @@ class introPageState extends State<introPage> {
               labelSmall: blacker
           )
         ),
-        darkTheme: _themeData(darkColorScheme ?? _defaultDarkColorScheme),
+        darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme),
         themeMode: ThemeMode.system,
         debugShowCheckedModeBanner: false,
         home: LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
-            double scaffoldHeight = constraints.maxHeight;
-            double scaffoldWidth = constraints.maxWidth;
             Cards cards = Cards(context: context);
-            return Consumer<aiEngine>(builder: (context, engine, child) {
+            return Consumer<AIEngine>(builder: (context, engine, child) {
               return Scaffold(
                 // The entire body is a CustomScrollView
                 body: CustomScrollView(
@@ -172,7 +161,7 @@ class introPageState extends State<introPage> {
                             if(engine.modelDownloadLog.isNotEmpty)
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download" && !(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"] == "Error"))
                                 if(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) > 0)
-                                  cardContents.progress(
+                                  CardContents.progress(
                                       title: engine.dict.value(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"]),
                                       subtitle: "${convertSize(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]), false)}/${convertSize(engine.usualModelSize, false)} (${((int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) / engine.usualModelSize)*100).toStringAsFixed(2)}%)",
                                       subsubtitle: engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"] == "waiting_network"?"": calcSpeed(engine.modelDownloadLog),
@@ -181,7 +170,7 @@ class introPageState extends State<introPage> {
                             if(engine.modelDownloadLog.isNotEmpty)
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download")
                                 if(int.parse(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["value"]) == 0)
-                                  cardContents.progress(
+                                  CardContents.progress(
                                       title: engine.dict.value(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"]),
                                       subtitle: "",
                                       subsubtitle: "",
@@ -189,7 +178,7 @@ class introPageState extends State<introPage> {
                                   ),
                             if(engine.modelDownloadLog.isNotEmpty)
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Available")
-                                cardContents.static(
+                                CardContents.static(
                                     title: "Gemini Nano ${engine.dict.value("available")}",
                                     subtitle: engine.modelInfo["version"] == null
                                         ? ""
@@ -197,7 +186,7 @@ class introPageState extends State<introPage> {
                                 ),
                             if(engine.modelDownloadLog.isNotEmpty)
                               if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Error")
-                                cardContents.doubleTap(
+                                CardContents.doubleTap(
                                     title: "Gemini Nano ${engine.dict.value("unavailable")}",
                                     subtitle: engine.dict.value("whoops"),
                                     action: () async {
@@ -210,7 +199,7 @@ class introPageState extends State<introPage> {
                                   icon: Icons.refresh_rounded
                                 ),
                             if(engine.modelDownloadLog.isEmpty)
-                              cardContents.progress(
+                              CardContents.progress(
                                   title: engine.dict.value("waiting_engine"),
                                   subtitle: "",
                                   subsubtitle: "",
@@ -230,7 +219,7 @@ class introPageState extends State<introPage> {
                               context: context
                           ),
                           cards.cardGroup([
-                            cardContents.longTap(
+                            CardContents.longTap(
                                 title: engine.dict.value("select_language"),
                                 subtitle: engine.dict.value("select_language_auto_long"),
                                 action: () {
@@ -252,7 +241,7 @@ class introPageState extends State<introPage> {
                                           content: SingleChildScrollView(
                                               child: cards.cardGroup(
                                                   engine.dict.languages.map((language) {
-                                                    return cardContents.halfTap(
+                                                    return CardContents.halfTap(
                                                         title: language["origin"],
                                                         subtitle: language["name"] == language["origin"] ? "" : language["name"],
                                                         action: () async {
@@ -280,7 +269,7 @@ class introPageState extends State<introPage> {
                               context: context
                           ),
                           cards.cardGroup([
-                            cardContents.tap(
+                            CardContents.tap(
                                 title: engine.dict.value("gh_repo"),
                                 subtitle: engine.dict.value("tap_to_open"),
                                 action: () async {
@@ -290,7 +279,7 @@ class introPageState extends State<introPage> {
                                   );
                                 }
                             ),
-                            cardContents.tap(
+                            CardContents.tap(
                                 title: engine.dict.value("documentation"),
                                 subtitle: engine.dict.value("tap_to_open"),
                                 action: () async {

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:geminilocal/pages/settings/modelSettings.dart';
-import 'package:geminilocal/pages/settings/settingsResources.dart';
+import 'package:geminilocal/pages/settings/model.dart';
+import 'package:geminilocal/pages/settings/resources.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../engine.dart';
@@ -8,13 +8,13 @@ import 'support/elements.dart';
 import 'package:intl/intl.dart';
 
 
-class settingsPage extends StatefulWidget {
-  const settingsPage({super.key});
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
   @override
-  settingsPageState createState() => settingsPageState();
+  SettingsPageState createState() => SettingsPageState();
 }
 
-class settingsPageState extends State<settingsPage> {
+class SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
@@ -26,7 +26,7 @@ class settingsPageState extends State<settingsPage> {
         child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
               Cards cards = Cards(context: context);
-              return Consumer<aiEngine>(builder: (context, engine, child) {
+              return Consumer<AIEngine>(builder: (context, engine, child) {
                 return Scaffold(
                   body: CustomScrollView(
                     slivers: <Widget>[
@@ -53,7 +53,7 @@ class settingsPageState extends State<settingsPage> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.longTap(
+                              CardContents.longTap(
                                   title: engine.dict.value("select_language"),
                                   subtitle: engine.dict.value("select_language_auto_long"),
                                   action: () {
@@ -75,7 +75,7 @@ class settingsPageState extends State<settingsPage> {
                                             content: SingleChildScrollView(
                                                 child: cards.cardGroup(
                                                     engine.dict.languages.map((language) {
-                                                      return cardContents.halfTap(
+                                                      return CardContents.halfTap(
                                                           title: language["origin"],
                                                           subtitle: language["name"] == language["origin"] ? "" : language["name"],
                                                           action: () async {
@@ -97,7 +97,7 @@ class settingsPageState extends State<settingsPage> {
                                     });
                                   }
                               ),
-                              cardContents.turn(
+                              CardContents.turn(
                                   title: engine.dict.value("error_retry"),
                                   subtitle: engine.dict.value("error_retry_desc"),
                                   action: (){
@@ -114,7 +114,7 @@ class settingsPageState extends State<settingsPage> {
                                   },
                                   value: engine.errorRetry
                               ),
-                              cardContents.tap(
+                              CardContents.tap(
                                   title: engine.dict.value("open_aicore_settings"),
                                   subtitle: engine.dict.value("in_play_store"),
                                   action: () async {
@@ -127,7 +127,7 @@ class settingsPageState extends State<settingsPage> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.tapIcon(
+                              CardContents.tapIcon(
                                   title: engine.dict.value("settings_ai"),
                                   subtitle: engine.dict.value("settings_ai_desc"),
                                   icon: Icons.auto_awesome_rounded,
@@ -136,7 +136,7 @@ class settingsPageState extends State<settingsPage> {
                                   action: (){
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => modelSettings()),
+                                      MaterialPageRoute(builder: (context) => ModelSettings()),
                                     );
                                   }
                               )
@@ -146,7 +146,7 @@ class settingsPageState extends State<settingsPage> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              cardContents.tapIcon(
+                              CardContents.tapIcon(
                                   title: engine.dict.value("settings_resources"),
                                   subtitle: engine.dict.value("settings_resources_desc"),
                                   icon: Icons.dataset_linked_rounded,
@@ -165,7 +165,7 @@ class settingsPageState extends State<settingsPage> {
                                     }
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => settingsResources()),
+                                      MaterialPageRoute(builder: (context) => SettingsResources()),
                                     );
                                   }
                               )

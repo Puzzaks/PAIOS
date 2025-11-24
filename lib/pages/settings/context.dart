@@ -6,13 +6,13 @@ import '../support/elements.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
 
-class modelSettingsContext extends StatefulWidget {
-  const modelSettingsContext({super.key});
+class ModelSettingsContext extends StatefulWidget {
+  const ModelSettingsContext({super.key});
   @override
-  modelSettingsContextState createState() => modelSettingsContextState();
+  ModelSettingsContextState createState() => ModelSettingsContextState();
 }
 
-class modelSettingsContextState extends State<modelSettingsContext> {
+class ModelSettingsContextState extends State<ModelSettingsContext> {
   @override
   void initState() {
     super.initState();
@@ -23,7 +23,7 @@ class modelSettingsContextState extends State<modelSettingsContext> {
         canPop: true,
         child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
-              return Consumer<aiEngine>(builder: (context, engine, child) {
+              return Consumer<AIEngine>(builder: (context, engine, child) {
                 return Scaffold(
                   body: CustomScrollView(
                     slivers: <Widget>[
@@ -66,7 +66,7 @@ class modelSettingsContextState extends State<modelSettingsContext> {
                               ),
                               child: TextField(
                                 controller: engine.instructions,
-                                onChanged: (text){
+                                onChanged: (whatever){
                                   engine.saveSettings();
                                 },
                                 decoration: InputDecoration(

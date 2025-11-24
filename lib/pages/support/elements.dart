@@ -18,7 +18,6 @@ class Cards {
 
   Widget cardGroup(List<Widget> cards) {
     double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
-    double height = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).height;
     switch(cards.length){
       case 0: return Container();
       case 1: return Card(
@@ -31,7 +30,7 @@ class Cards {
             horizontal: cardMarginH,
             vertical: cardMarginV
         ),
-        child: Container(
+        child: SizedBox(
           width: width - (cardMarginH * 2),
           child: cards[0],
         ),
@@ -141,7 +140,7 @@ class Cards {
   }
 }
 
-class cardContents {
+class CardContents {
   static Widget tap({
     required String title,
     required String subtitle,
@@ -369,7 +368,6 @@ class cardContents {
     required IconData icon
   }) {
     double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
-    double height = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).height;
 
     return InkWell(
       onTap: action,

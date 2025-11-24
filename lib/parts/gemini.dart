@@ -1,45 +1,36 @@
+import 'dart:async';
+import 'package:flutter/services.dart';
 
-import 'package:geminilocal/interface/flutter_local_ai.dart';
-
-
-/// Defines the status of an AI event.
-enum AiEventStatus {
-  /// The request has been sent and is processing.
-  loading,
-
-  /// A new chunk of data has arrived (for streaming).
-  streaming,
-
-  /// The full response is complete (for both streaming and one-shot).
-  done,
-
-  /// An error occurred.
-  error,
+class GenerationConfig {
+  final int maxTokens;
+  final double? temperature;
+  final int candidates;
+  const GenerationConfig({required this.maxTokens, this.temperature, this.candidates = 1});
+  Map<String, dynamic> toMap() {
+    return {
+      'maxTokens': maxTokens,
+      'candidates': 1,
+      if (temperature != null) 'temperature': temperature,
+    };
+  }
 }
 
-/// A wrapper class for all events coming from the native AI plugin.
+enum AiEventStatus {loading, streaming, done, error}
+
 class AiEvent {
   final AiEventStatus status;
   final AiResponse? response;
   final String? error;
 
-  AiEvent({
-    required this.status,
-    this.response,
-    this.error,
-  });
+  AiEvent({required this.status, this.response, this.error});
 
-  /// Factory to create an AiEvent from the raw map from Kotlin.
   factory AiEvent.fromMap(Map<dynamic, dynamic> map) {
     final statusString = map['status'] as String;
-
-    // FIX: Safely cast the nested response map
     final dynamic rawResponse = map['response'];
-    final Map<String, dynamic>? responseMap =
-    (rawResponse is Map) ? Map<String, dynamic>.from(rawResponse) : null;
-
+    final Map<String, dynamic>? responseMap = (rawResponse is Map)
+        ? Map<String, dynamic>.from(rawResponse)
+        : null;
     final errorString = map['error'] as String?;
-
     AiEventStatus status;
     switch (statusString) {
       case 'Loading':
@@ -60,23 +51,117 @@ class AiEvent {
 
     return AiEvent(
       status: status,
-      response: responseMap != null ? AiResponse.fromMap(responseMap) : null,
+      response: responseMap != null
+          ? AiResponse.fromMap(responseMap)
+          : null,
       error: errorString,
     );
   }
 }
-class Gemini {
 
-  late FlutterLocalAi gemini;
-  int tokens = 200;
-  double temperature = 0.7; // Controls randomness (0.0 = deterministic, 1.0 = very random)
-  bool isLoading = false;
-  bool isAvailable = false;
-  bool isInitialized = false;
-  bool isInitializing = false;
+class AiResponse {
+  final String text;
+  final int? tokenCount;
+  final String? chunk;
+  final int? generationTimeMs;
+  final String? finishReason;
 
-  Gemini._internal(this.gemini);
-  factory Gemini({required FlutterLocalAi gemini}){
-    return Gemini._internal(gemini);
+  const AiResponse({required this.text, this.tokenCount, this.chunk, this.generationTimeMs, this.finishReason});
+
+  factory AiResponse.fromMap(Map<String, dynamic> map) {
+    return AiResponse(
+      text: map['text'] as String,
+      chunk: map['chunk'] as String?,
+      tokenCount: map['tokenCount'] as int?,
+      generationTimeMs: map['generationTimeMs'] as int?,
+      finishReason: map['reason'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'text': text,
+      if (tokenCount != null) 'tokenCount': tokenCount,
+      if (generationTimeMs != null) 'generationTimeMs': generationTimeMs,
+    };
+  }
+}
+
+
+class GeminiNano {
+  static const MethodChannel _methodChannel = MethodChannel('flutter_local_ai');      /// Send instructions for Kotlin part
+  static const EventChannel _eventChannel = EventChannel('flutter_local_ai_events');  /// Receive updates
+  EventChannel downloadChannel = EventChannel('download_channel');                    /// Status of model
+  late Stream<String> statusStream;
+
+  Future<Map<String, String>> getModelInfo() async {
+    try {
+      final Map<dynamic, dynamic>? info = await _methodChannel.invokeMethod('getModelInfo');
+      if (info == null) {
+        return {'status': 'Error', 'version': 'Null response from platform'};
+      }
+      return info.map((key, value) => MapEntry(key.toString(), value.toString()));
+    } catch (e) {
+      return {'status': 'Error', 'version': e.toString()};
+    }
+  }
+
+  Future<String?> init({String? instructions}) async {
+    final String? status = await _methodChannel.invokeMethod(
+      'init',
+      {'instructions': instructions},
+    );
+    return status;
+  }
+
+  Stream<AiEvent> _getAiEvents({required String prompt, GenerationConfig? config, required bool stream}){
+    final arguments = {
+      'method': stream ? 'generateTextStream' : 'generateText',
+      'payload': {
+        'prompt': prompt,
+        'config': config?.toMap(),
+      }
+    };
+    return _eventChannel.receiveBroadcastStream(arguments).map((event) {
+      final Map<dynamic, dynamic> eventMap = Map<dynamic, dynamic>.from(event as Map);
+      return AiEvent.fromMap(eventMap);
+    });
+  }
+
+  Future<AiResponse> generateText({required String prompt, GenerationConfig? config}) async {
+    final stream = _getAiEvents(
+      prompt: prompt,
+      config: config,
+      stream: false,
+    );
+    final event = await stream.firstWhere((e) => e.status == AiEventStatus.done || e.status == AiEventStatus.error);
+    if (event.status == AiEventStatus.error) {
+      throw Exception(event.error ?? 'Unknown Error while generating');
+    }
+    return event.response!;
+  }
+
+  Stream<AiResponse> generateTextStream({required String prompt, GenerationConfig? config}) {
+    return _getAiEvents(
+      prompt: prompt,
+      config: config,
+      stream: true,
+    ).where((event) => event.status == AiEventStatus.streaming).map((event) => event.response!);
+  }
+
+  Stream<AiEvent> generateTextEvents({required String prompt, GenerationConfig? config, bool stream = true}) {
+    return _getAiEvents(
+      prompt: prompt,
+      config: config,
+      stream: stream,
+    );
+  }
+
+  Future<void> openAICorePlayStore() async {
+    await _methodChannel.invokeMethod('openAICorePlayStore');
+  }
+
+  Future<void> dispose() async {
+    await _methodChannel.invokeMethod('dispose');
   }
 }

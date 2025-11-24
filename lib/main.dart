@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,7 +11,7 @@ import 'engine.dart';
 
 void main() {
   runApp(ChangeNotifierProvider(
-    create: (context) => aiEngine(),
+    create: (context) => AIEngine(),
     child: const MyApp(),
   ));
 }
@@ -25,18 +24,19 @@ class MyApp extends StatefulWidget {
 
 class MyAppState extends State<MyApp> {
 
-
+@override
   void initState() {
     super.initState();
-    Provider.of<aiEngine>(context, listen: false).start();
+    Provider.of<AIEngine>(context, listen: false).start();
     // WidgetsFlutterBinding.ensureInitialized();
     // WidgetsBinding.instance.addPostFrameCallback((_) async {
     // });
   }
+  @override
   Widget build(BuildContext context) {
-    final _defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
-    final _defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
-    ThemeData _themeData (colorSheme){
+    final defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
+    final defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
+    ThemeData themeData (colorSheme){
       return ThemeData(
         colorScheme: colorSheme,
         cardTheme: CardThemeData(
@@ -54,7 +54,7 @@ class MyAppState extends State<MyApp> {
     );
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
       return MaterialApp(
-        theme: _themeData(lightColorScheme ?? _defaultLightColorScheme).copyWith(
+        theme: themeData(lightColorScheme ?? defaultLightColorScheme).copyWith(
             pageTransitionsTheme: const PageTransitionsTheme(
               builders: {
                 TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
@@ -82,7 +82,7 @@ class MyAppState extends State<MyApp> {
                 labelSmall: blacker
             )
         ),
-        darkTheme: _themeData(darkColorScheme ?? _defaultDarkColorScheme).copyWith(
+        darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme).copyWith(
           pageTransitionsTheme: const PageTransitionsTheme(
             builders: {
               TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
@@ -94,36 +94,22 @@ class MyAppState extends State<MyApp> {
         home: LayoutBuilder(builder: (BuildContext context, BoxConstraints constraints) {
           double scaffoldHeight = constraints.maxHeight;
           double scaffoldWidth = constraints.maxWidth;
-          return Consumer<aiEngine>(builder: (context, engine, child) {
-            Widget settingsDivider(String name,{double leftPadding = 20}){
-              return Padding(
-                padding: EdgeInsets.only(
-                    top:10, left: leftPadding, right: 15, bottom: 5
-                ),
-                child: Text(
-                  name,
-                  style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w100
-                  ),
-                ),
-              );
-            }
+          return Consumer<AIEngine>(builder: (context, engine, child) {
             return AnimatedCrossFade(
                 alignment: Alignment.center,
                 duration: const Duration(milliseconds: 500),
                 firstChild: AnimatedCrossFade(
                   alignment: Alignment.center,
                   duration: const Duration(milliseconds: 250),
-                  firstChild: Container(
+                  firstChild: SizedBox(
                     height: scaffoldHeight,
                     width: scaffoldWidth,
-                    child: introPage(),
+                    child: IntroPage(),
                   ),
-                  secondChild: Container(
+                  secondChild: SizedBox(
                     height: scaffoldHeight,
                     width: scaffoldWidth,
-                    child: chatPage(),
+                    child: ChatPage(),
                   ),
                   crossFadeState: engine.firstLaunch? CrossFadeState.showFirst : CrossFadeState.showSecond,
                 ),
