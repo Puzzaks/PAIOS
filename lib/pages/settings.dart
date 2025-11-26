@@ -53,9 +53,10 @@ class SettingsPageState extends State<SettingsPage> {
                                 context: context
                             ),
                             cards.cardGroup([
-                              CardContents.longTap(
+                              CardContents.doubleTap(
                                   title: engine.dict.value("select_language"),
                                   subtitle: engine.dict.value("select_language_auto_long"),
+                                  icon: Icons.app_settings_alt_rounded,
                                   action: () {
                                     showDialog(
                                       context: context,
@@ -91,7 +92,7 @@ class SettingsPageState extends State<SettingsPage> {
                                           ),
                                     );
                                   },
-                                  longAction: (){
+                                  secondAction: (){
                                     setState(() {
                                       engine.dict.setSystemLanguage();
                                     });

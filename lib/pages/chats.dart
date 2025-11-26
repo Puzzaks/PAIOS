@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/pages/settings.dart';
@@ -133,7 +134,7 @@ class ChatsPageState extends State<ChatsPage> {
                               );
                             },
                             tooltip: engine.dict.value("settings"),
-                            icon: Icon(Icons.tune_rounded),
+                            icon: Icon(Icons.settings_rounded),
                           )
                         ],
                         pinned: true,
@@ -142,29 +143,106 @@ class ChatsPageState extends State<ChatsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if(engine.chats.isNotEmpty)
-                            divider.settings(
+                            if(engine.chats.isNotEmpty)divider.settings(
+                                title: engine.dict.value("pinned_chats"),
+                                context: context
+                            ),
+                            cards.cardGroup(
+                                <Widget>[
+                                  ...engine.chats.keys.toList().reversed.map((key){
+                                    Map chat = engine.chats[key]??{
+                                      "name": "Nonameyet",
+                                      "tokens":  "0",
+                                      "history": {},
+                                      "created": DateTime.now().millisecondsSinceEpoch.toString(),
+                                      "updated": DateTime.now().millisecondsSinceEpoch.toString()
+                                    };
+                                    if(chat["pinned"]??false){return CardContents.doubleTap(
+                                        title: chat["name"]??"Loading...",
+                                        subtitle: timeAgo(chat["updated"]) == "just now"
+                                            ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}"
+                                            : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}",
+                                        action: () async {
+                                          if(!engine.isLoading){
+                                            engine.prompt.text = "";
+                                            engine.responseText = "";
+                                          }
+                                          engine.contextSize = int.parse(chat["tokens"]);
+                                          engine.context = jsonDecode(chat["history"]);
+                                          engine.currentChat = key;
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(builder: (context) => ChatPage()),
+                                          );
+                                        },
+                                        icon: Icons.tune_rounded,
+                                        secondAction: (){
+                                          engine.isLoading = false;
+                                          engine.context.clear();
+                                          engine.contextSize = 0;
+                                          engine.context = jsonDecode(chat["history"]);
+                                          engine.currentChat = key;
+                                          showModalBottomSheet<void>(
+                                              context: context,
+                                              barrierLabel: chat["name"],
+                                              isScrollControlled: false,
+                                              enableDrag: true,
+                                              useSafeArea: true,
+                                              showDragHandle: true,
+                                              builder: (BuildContext topContext) {
+                                                return ChatSettingsPage();
+                                              }
+                                          );
+                                        }
+                                    );}
+                                  }).toList().whereNot((crd) => crd == null).cast<Widget>(),
+                                  if(engine.isLoading)
+                                    CardContents.static(
+                                        title: engine.dict.value("loading"),
+                                        subtitle: "${engine.dict.value("created")} ${engine.dict.value("just_now")}"
+                                    ),
+                                ]
+                            ),
+                            if(engine.chats.keys.toList().map((key){
+                              Map chat = engine.chats[key]??{
+                                "name": "Nonameyet",
+                                "tokens":  "0",
+                                "history": {},
+                                "created": DateTime.now().millisecondsSinceEpoch.toString(),
+                                "updated": DateTime.now().millisecondsSinceEpoch.toString()
+                              };
+                              if(chat["pinned"]??false){return Container();}
+                            }).toList().whereNot((crd) => crd == null).isEmpty)text.infoShort(
+                              title: engine.dict.value("pinned_chats_desc"),
+                              subtitle: "",
+                              action: (){},
+                              context: context
+                            ),
+                            if(engine.chats.isNotEmpty)divider.settings(
                                 title: engine.dict.value("your_chats"),
                                 context: context
                             ),
                             cards.cardGroup(
                               <Widget>[
-                                ...engine.chats.keys.toList().map((key){
+                                ...engine.chats.keys.toList().reversed.map((key){
                                   Map chat = engine.chats[key]??{
                                     "name": "Nonameyet",
+                                    "tokens":  "0",
                                     "history": {},
                                     "created": DateTime.now().millisecondsSinceEpoch.toString(),
                                     "updated": DateTime.now().millisecondsSinceEpoch.toString()
                                   };
-                                  return CardContents.longTap(
+                                  if(!(chat["pinned"]??false)){return CardContents.doubleTap(
                                       title: chat["name"]??"Loading...",
                                       subtitle: timeAgo(chat["updated"]) == "just now"
-                                        ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}"
-                                        : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}",
+                                          ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}"
+                                          : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}",
                                       action: () async {
-                                        engine.isLoading = false;
-                                        engine.context.clear();
-                                        engine.contextSize = 0;
+                                        if(!engine.isLoading){
+                                          engine.prompt.text = "";
+                                          engine.responseText = "";
+                                        }
+                                        engine.contextSize = int.parse(chat["tokens"]);
                                         engine.context = jsonDecode(chat["history"]);
                                         engine.currentChat = key;
                                         Navigator.push(
@@ -172,26 +250,27 @@ class ChatsPageState extends State<ChatsPage> {
                                           MaterialPageRoute(builder: (context) => ChatPage()),
                                         );
                                       },
-                                    longAction: (){
-                                      engine.isLoading = false;
-                                      engine.context.clear();
-                                      engine.contextSize = 0;
-                                      engine.context = jsonDecode(chat["history"]);
-                                      engine.currentChat = key;
-                                    showModalBottomSheet<void>(
-                                    context: context,
-                                    barrierLabel: chat["name"],
-                                    isScrollControlled: true,
-                                    enableDrag: true,
-                                    useSafeArea: true,
-                                    showDragHandle: true,
-                                    builder: (BuildContext topContext) {
-                                      return ChatSettingsPage();
-                                    }
-                                    );
-                                    }
-                                  );
-                                }).toList().cast<Widget>(),
+                                      icon: Icons.tune_rounded,
+                                      secondAction: (){
+                                        engine.isLoading = false;
+                                        engine.context.clear();
+                                        engine.contextSize = 0;
+                                        engine.context = jsonDecode(chat["history"]);
+                                        engine.currentChat = key;
+                                        showModalBottomSheet<void>(
+                                            context: context,
+                                            barrierLabel: chat["name"],
+                                            isScrollControlled: false,
+                                            enableDrag: true,
+                                            useSafeArea: true,
+                                            showDragHandle: true,
+                                            builder: (BuildContext topContext) {
+                                              return ChatSettingsPage();
+                                            }
+                                        );
+                                      }
+                                  );}
+                                }).toList().whereNot((crd) => crd == null).cast<Widget>(),
                                 if(engine.isLoading)
                                   CardContents.static(
                                       title: engine.dict.value("loading"),
@@ -200,7 +279,7 @@ class ChatsPageState extends State<ChatsPage> {
                               ]
                             ),
                             text.info(
-                                title: engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc"),
+                                title: engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
                                 subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
                                 action: engine.chats.isNotEmpty?(){}:(){
                                   engine.currentChat = "0";

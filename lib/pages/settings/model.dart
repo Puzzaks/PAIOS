@@ -174,13 +174,6 @@ class ModelSettingsState extends State<ModelSettings> {
                             ),
                             cards.cardGroup([
                               CardContents.tap(
-                                  title: engine.dict.value("reset_model_context"),
-                                  subtitle: engine.dict.value("context_desc").replaceAll("%c", engine.contextSize.toString()),
-                                  action: (){
-                                    engine.clearContext();
-                                  }
-                              ),
-                              CardContents.tap(
                                   title: engine.dict.value("reset_model_prompt"),
                                   subtitle: engine.instructions.text.isEmpty?engine.dict.value("reset_model_prompt_desc"):"",
                                   action: engine.instructions.text.isEmpty?(){}:(){

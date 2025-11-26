@@ -123,7 +123,6 @@ class Prompt{
 
     /// Rule "if we don't have context we don't need some instructions":
     if(chatlog.isEmpty){
-      print("Chatlog is empty");
       output = output.replaceAll("%chathistoryrules%", "");
       output = output.replaceAll("%chatlog%", "");
       if(ignoreInstructions){
@@ -132,12 +131,10 @@ class Prompt{
     }
     else{
 
-      print("Chatlog is NOT empty and ${chatlog}");
       String compileChatlog = "\n\n### [CHAT HISTORY]";
       for (var line in chatlog){
         compileChatlog = "$compileChatlog\n - ${line["user"]} (${DateFormat('dd/MM/yyyy, HH:mm').format(DateTime.fromMillisecondsSinceEpoch(int.parse(line["time"])))}): ${line["message"]}";
       }
-      print("Chatlog is $compileChatlog");
       output = output.replaceAll(
           "%chathistoryrules%",
           "- You MUST NOT quote the \"User:\" or \"Gemini:\" markers from the history. They are for your context only.\n"

@@ -15,6 +15,7 @@ class AIEngine with md.ChangeNotifier {
   final gemini = GeminiNano();
   final prompt = md.TextEditingController();
   final instructions = md.TextEditingController();
+  final chatName = md.TextEditingController();
 
   Dictionary dict = Dictionary(
       path: "assets/translations",
@@ -296,13 +297,19 @@ class AIEngine with md.ChangeNotifier {
             newTitle = title.split('\n').first;
             newTitle = newTitle.replaceAll(RegExp(r'[*#_`]'), '').trim();
             if (newTitle.length > 40) {
-              newTitle = newTitle.substring(0, 40) + "...";
+              newTitle = "${newTitle.substring(0, 40)}...";
             }
           });
         }
       }
     });
     return newTitle.trim().replaceAll(".", "");
+  }
+
+  saveChats() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString("chats", jsonEncode(chats));
+    notifyListeners();
   }
 
   saveChat(List conversation, {String chatID = "0"}) async {
@@ -320,6 +327,7 @@ class AIEngine with md.ChangeNotifier {
         }
         chats[chatID]!["history"] = jsonEncode(conversation).toString();
         chats[chatID]!["updated"] =  DateTime.now().millisecondsSinceEpoch.toString();
+        chats[chatID]!["tokens"] =  contextSize.toString();
       }else{
         isLoading = true;
         await Future.delayed(Duration(milliseconds: 500)); /// We have to wait some time because summarizing immediately will always result in overflowing the quota for some reason
@@ -331,6 +339,8 @@ class AIEngine with md.ChangeNotifier {
         isLoading = false;
         chats[chatID] = {
           "name": newTitle,
+          "tokens": contextSize.toString(),
+          "pinned": false,
           "history": jsonEncode(conversation).toString(),
           "created": DateTime.now().millisecondsSinceEpoch.toString(),
           "updated": DateTime.now().millisecondsSinceEpoch.toString()

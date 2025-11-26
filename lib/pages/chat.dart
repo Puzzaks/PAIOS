@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geminilocal/pages/settings.dart';
+import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../engine.dart';
@@ -49,36 +50,21 @@ class ChatPageState extends State<ChatPage> {
                   ),
                   title: Text(engine.chats[engine.currentChat]?["name"]??engine.dict.value("new_chat")),
                   actions: [
-                    // if(!(engine.responseText==""))IconButton(
-                    //   icon: Icon(Icons.share_rounded),
-                    //   tooltip: engine.dict.value("share"),
-                    //   onPressed: engine.isLoading?null:() {
-                    //     SharePlus.instance.share(
-                    //         ShareParams(
-                    //             title: engine.dict.value("share"),
-                    //             text: engine.responseText
-                    //         )
-                    //     );
-                    //   },
-                    // ),
-                    if(engine.context.isNotEmpty)IconButton(
-                      icon: Icon(Icons.delete_outline_rounded),
-                      tooltip: engine.dict.value("clear_context"),
-                      onPressed: engine.isLoading?null:() {
-                        Fluttertoast.showToast(
-                            msg: engine.dict.value("long_tap_clear"),
-                            toastLength: Toast.LENGTH_SHORT,
-                            fontSize: 16.0
+                    if(!(engine.currentChat=="0"))IconButton(
+                      icon: Icon(Icons.tune_rounded),
+                      tooltip: engine.dict.value("chat_settings"),
+                      onPressed: engine.currentChat == "0"?null:() {
+                        showModalBottomSheet<void>(
+                            context: context,
+                            barrierLabel: engine.chats[engine.currentChat]?["name"],
+                            isScrollControlled: false,
+                            enableDrag: true,
+                            useSafeArea: true,
+                            showDragHandle: true,
+                            builder: (BuildContext topContext) {
+                              return ChatSettingsPage();
+                            }
                         );
-                      },
-                      onLongPress: (){
-                        engine.clearContext();
-                        Fluttertoast.showToast(
-                            msg: engine.dict.value("long_tap_cleared"),
-                            toastLength: Toast.LENGTH_SHORT,
-                            fontSize: 16.0
-                        );
-                        Navigator.pop(context);
                       },
                     ),
                   ],

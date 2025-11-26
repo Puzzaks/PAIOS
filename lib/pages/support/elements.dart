@@ -201,17 +201,17 @@ class CardContents {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(height: subtitle == ""?10:0,),
+                Container(height: subtitle == ""?5:0,),
                 Container(
-                  width: width - 150,
+                  width: width - 190,
                   child: Text(
                     title,
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                   ),
                 ),
-                subtitle == ""?Container(height: 10,):
+                subtitle == ""?Container(height: 5,):
                 Container(
-                  width: width - 150,
+                  width: width - 190,
                   child: Text(
                       subtitle
                   ),
@@ -322,7 +322,7 @@ class CardContents {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(height: subtitle == ""?10:0,),
+          Container(height: subtitle == ""?0:0,),
           Text(
             title,
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
@@ -345,7 +345,7 @@ class CardContents {
           ),
           Padding(
             padding: EdgeInsetsGeometry.symmetric(
-              vertical: subtitle == ""?10:5
+              vertical: subtitle == ""?9:5
             ),
             child: LinearProgressIndicator(
               value: progress == 0
