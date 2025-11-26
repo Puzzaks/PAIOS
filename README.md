@@ -45,7 +45,7 @@ Unlike most AI apps, there are no hidden tricks. You can literally read the [Sys
 
 ### A (Strong) Personality
 
-Even though the model has it's own unchangeable pormpt, a lot of time was spent on fixing model behavior. This does not work 100% times, but if you compile the app without the prompt, you'll see that you are speaking with Bard, not Gemini.
+Even though the model has it's own unchangeable pormpt, a lot of time was spent on fixing model behavior. This does not work 100% times, but if you try to use the app without the prompt, you'll see that you are speaking with Bard, not Gemini.
 
 ### Excercise caution, this model is in Alpha
 
