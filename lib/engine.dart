@@ -5,6 +5,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as md;
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:geminilocal/pages/support/elements.dart';
 import 'package:geminilocal/parts/prompt.dart';
 import 'package:geminilocal/parts/translator.dart';
 import 'parts/gemini.dart';
@@ -22,7 +23,13 @@ class AIEngine with md.ChangeNotifier {
       url: "https://raw.githubusercontent.com/Puzzaks/geminilocal/main"
   );
   Prompt promptEngine = Prompt(ghUrl: "https://github.com/Puzzaks/geminilocal");
-  late AiResponse response;
+  AiResponse response = AiResponse(
+    text: "Loading...",
+    tokenCount: 1,
+    chunk: "Loading...",
+    generationTimeMs: 1,
+    finishReason: ""
+  );
   String responseText = "";
   bool isLoading = false;
   bool isAvailable = false;
@@ -57,7 +64,12 @@ class AIEngine with md.ChangeNotifier {
   /// Subscription to manage the active AI stream
   StreamSubscription<AiEvent>? _aiSubscription;
 
+  late Cards cards;
 
+  /// This junk is to update all pages in case we have a modal that is focused in which case setState will not update content underneath it
+  void genericRefresh (){
+    notifyListeners();
+  }
 
   Future<void> endFirstLaunch () async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -249,6 +261,8 @@ class AIEngine with md.ChangeNotifier {
       currentChat = DateTime.now().millisecondsSinceEpoch.toString();
     }
     await saveChat(context, chatID: currentChat);
+    lastPrompt = "";
+    responseText = "";
     notifyListeners();
   }
 
@@ -271,27 +285,29 @@ class AIEngine with md.ChangeNotifier {
           analyzeError("Initialization", initStatus);
         }else{
           await gemini.generateText(
-            prompt: "Task: Create a short, 3-5 word title for the user's message.\n"
+            prompt: "Task: Create a short, 3-5 word title for this conversation.\n"
                 "Rules:\n"
                 "1. DO NOT use full sentences.\n"
-                "2. DO NOT use phrases like \"The text is about\" or \"Summary of\".\n"
+                "2. DO NOT use phrases like \"The conversation is about\" or \"Summary of\".\n"
                 "3. Be extremely concise.\n"
-                "4. The title MUST be in the same language as the input.\n"
+                "4. The title MUST be in the same language as the conversation.\n"
+                "5. The title MUST be about whole conversation if there is more than one message.\n"
+                "6. The title MUST NOT contain ANY name of any conversation party like \"Gemini\", \"Gemini's\", \"User\" or \"User's\".\n"
                 "Examples:\n"
-                "Input: \"Hello, how are you?\"\n"
+                "Conversation: \"Hello, how are you?\"\n"
                 "Title: Greeting\n\n"
-                "Input: \"Привіт, як справи?\"\n"
+                "Conversation: \"Привіт, як справи?\"\n"
                 "Title: Привітання\n\n"
-                "Input: \"Write a python script to sort a list\"\n"
+                "Conversation: \"Write a python script to sort a list\"\n"
                 "Title: Python sorting script\n\n"
-                "Input: \"Why is the sky blue?\"\n"
+                "Conversation: \"Why is the sky blue?\"\n"
                 "Title: Sky color explanation\n\n"
-                "Input: \"I need help with my printer\"\n"
+                "Conversation: \"I need help with my printer\"\n"
                 "Title: Printer troubleshooting\n\n"
-                "Input: \"sdlkfjsdf\"\n"
+                "Conversation: \"sdlkfjsdf\"\n"
                 "Title: Random characters\n\n"
-                "Input: \"$input\"\n"
-                "Title:",
+                "Conversation: \n\"$input\"\n"
+                "Title: ",
             config: GenerationConfig(maxTokens: 20  , temperature: 0.7),
           ).then((title){
             newTitle = title.split('\n').first;
@@ -309,7 +325,7 @@ class AIEngine with md.ChangeNotifier {
   saveChats() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString("chats", jsonEncode(chats));
-    notifyListeners();
+    genericRefresh();
   }
 
   saveChat(List conversation, {String chatID = "0"}) async {
@@ -321,7 +337,7 @@ class AIEngine with md.ChangeNotifier {
       if(chats.containsKey(chatID)){
         if(!chats[chatID]!.containsKey("name")){
           await Future.delayed(Duration(milliseconds: 500)); /// We have to wait some time because summarizing immediately will always result in overflowing the quota for some reason
-           await generateTitle(conversation[0]["message"]).then((newTitle){
+          await generateTitle(conversation[0]["message"]).then((newTitle){
              chats[chatID]!["name"] =  newTitle;
            });
         }
@@ -332,7 +348,11 @@ class AIEngine with md.ChangeNotifier {
         isLoading = true;
         await Future.delayed(Duration(milliseconds: 500)); /// We have to wait some time because summarizing immediately will always result in overflowing the quota for some reason
         String newTitle = "Still loading";
-        await generateTitle(lastPrompt.trim()).then((result){
+        String composeConversation = "";
+        for (var line in conversation){
+          composeConversation = "$composeConversation\n - ${line["message"]}";
+        }
+        await generateTitle(composeConversation).then((result){
           newTitle = result;
         });
 
@@ -348,7 +368,7 @@ class AIEngine with md.ChangeNotifier {
       }
     }
     await prefs.setString("chats", jsonEncode(chats));
-    notifyListeners();
+    genericRefresh();
   }
 
   clearContext() async {
@@ -453,6 +473,7 @@ class AIEngine with md.ChangeNotifier {
     );
     lastPrompt = prompt.text.trim();
 
+
     _aiSubscription = stream.listen(
           (AiEvent event) async {
         switch (event.status) {
@@ -479,9 +500,16 @@ class AIEngine with md.ChangeNotifier {
               response = event.response!;
               responseText = event.response!.text;
             }
-            scrollChatlog(Duration(milliseconds: 250));
-            await Future.delayed(Duration(milliseconds: 500));
-            scrollChatlog(Duration(milliseconds: 250));
+            try{
+              scrollChatlog(Duration(milliseconds: 250));
+              await Future.delayed(Duration(milliseconds: 500));
+              scrollChatlog(Duration(milliseconds: 250));
+            }catch(e){
+              if (kDebugMode) {
+                print("Can't scroll: $e");
+              }
+              await Future.delayed(Duration(milliseconds: 500));
+            }
             break;
 
           case AiEventStatus.done:
@@ -509,7 +537,13 @@ class AIEngine with md.ChangeNotifier {
               status = "Done";
               addToContext();
               prompt.clear();
-              scrollChatlog(Duration(milliseconds: 250));
+              try{
+                scrollChatlog(Duration(milliseconds: 250));
+              }catch(e){
+                if (kDebugMode) {
+                  print("Can't scroll: $e");
+                }
+              }
             }
             break;
 
@@ -525,7 +559,7 @@ class AIEngine with md.ChangeNotifier {
             }
             break;
         }
-        notifyListeners();
+        genericRefresh();
       },
       onError: (e) async {
         if(errorRetry){
@@ -541,7 +575,7 @@ class AIEngine with md.ChangeNotifier {
         if (!isError) {
           status = "Stream complete";
         }
-        notifyListeners();
+        genericRefresh();
       },
     );
   }

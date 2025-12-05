@@ -1,9 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:fluttertoast/fluttertoast.dart';
-import 'package:geminilocal/pages/settings.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 import '../engine.dart';
 import 'support/elements.dart';
 
@@ -25,11 +22,6 @@ class ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: true,
-      onPopInvokedWithResult: (didpop, howpop){
-        if(didpop){
-          print("popped");
-        }
-      },
       child: LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             double scaffoldWidth = constraints.maxWidth;

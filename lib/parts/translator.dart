@@ -21,7 +21,7 @@ class Dictionary {
   decideLanguage() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     if(prefs.containsKey("language")){
-      locale = await prefs.getString("language")??"en";
+      locale = prefs.getString("language")??"en";
     }else{
       setSystemLanguage();
     }

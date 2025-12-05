@@ -120,7 +120,6 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
             "init" -> {
                 instructions = call.argument("instructions")
                 coroutineScope.launch {
-                    Log.d("FlutterLocalAi", "Received request to init the Nano")
                     try {
                         val available = initAiCore()
                         result.success(available)

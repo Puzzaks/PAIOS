@@ -153,7 +153,7 @@ class IntroPageState extends State<IntroPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          divider.settings(
+                          Category.settings(
                               title: engine.dict.value("settings_status"),
                               context: context
                           ),
@@ -214,7 +214,7 @@ class IntroPageState extends State<IntroPage> {
                                   action: () {},
                                   context: context
                               ),
-                          divider.settings(
+                          Category.settings(
                               title: engine.dict.value("language_settings"),
                               context: context
                           ),
@@ -264,7 +264,7 @@ class IntroPageState extends State<IntroPage> {
                                 }
                             ),
                           ]),
-                          divider.settings(
+                          Category.settings(
                               title: engine.dict.value("settings_resources"),
                               context: context
                           ),

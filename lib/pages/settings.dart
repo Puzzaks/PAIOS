@@ -25,8 +25,8 @@ class SettingsPageState extends State<SettingsPage> {
       canPop: true,
         child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
-              Cards cards = Cards(context: context);
               return Consumer<AIEngine>(builder: (context, engine, child) {
+                Cards cards = engine.cards;
                 return Scaffold(
                   body: CustomScrollView(
                     slivers: <Widget>[
@@ -48,7 +48,7 @@ class SettingsPageState extends State<SettingsPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("settings_app"),
                                 context: context
                             ),
@@ -123,7 +123,7 @@ class SettingsPageState extends State<SettingsPage> {
                                   }
                               ),
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("settings_ai"),
                                 context: context
                             ),
@@ -142,7 +142,7 @@ class SettingsPageState extends State<SettingsPage> {
                                   }
                               )
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("settings_resources"),
                                 context: context
                             ),

@@ -48,7 +48,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                             return Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                divider.settings(
+                                Category.settings(
                                     title: engine.dict.value(collection),
                                     context: context
                                 ),

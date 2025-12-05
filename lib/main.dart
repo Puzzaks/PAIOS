@@ -1,9 +1,9 @@
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/pages/chats.dart';
 import 'package:geminilocal/pages/intro.dart';
+import 'package:geminilocal/pages/support/elements.dart';
 import 'package:provider/provider.dart';
 import 'engine.dart';
 
@@ -29,73 +29,43 @@ class MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     Provider.of<AIEngine>(context, listen: false).start();
-    // WidgetsFlutterBinding.ensureInitialized();
-    // WidgetsBinding.instance.addPostFrameCallback((_) async {
-    // });
   }
   @override
   Widget build(BuildContext context) {
-    final defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
-    final defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
+    final defaultLightColorScheme = ColorScheme.fromSwatch(
+        primarySwatch: Colors.teal,
+    );
+    final defaultDarkColorScheme = defaultLightColorScheme.copyWith(
+        brightness: Brightness.dark
+    );
     ThemeData themeData (colorSheme){
       return ThemeData(
         colorScheme: colorSheme,
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
+          },
+        ),
         cardTheme: CardThemeData(
-            surfaceTintColor: Colors.transparent,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(20),
             ),
-            clipBehavior: Clip.hardEdge
+            clipBehavior: Clip.hardEdge,
         ),
         useMaterial3: true,
       );
     }
-    TextStyle blacker = const TextStyle(
-        color: Colors.black
-    );
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
       return MaterialApp(
-        theme: themeData(lightColorScheme ?? defaultLightColorScheme).copyWith(
-            pageTransitionsTheme: const PageTransitionsTheme(
-              builders: {
-                TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
-              },
-            ),
-            cardColor: Colors.grey,
-            iconTheme: const IconThemeData(
-                color: Colors.black
-            ),
-            textTheme: TextTheme(
-                displayLarge: blacker,
-                displayMedium: blacker,
-                displaySmall: blacker,
-                headlineLarge: blacker,
-                headlineMedium: blacker,
-                headlineSmall: blacker,
-                titleLarge: blacker,
-                titleMedium: blacker,
-                titleSmall: blacker,
-                bodyLarge: blacker,
-                bodyMedium: blacker,
-                bodySmall: blacker,
-                labelLarge: blacker,
-                labelMedium: blacker,
-                labelSmall: blacker
-            )
-        ),
-        darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme).copyWith(
-          pageTransitionsTheme: const PageTransitionsTheme(
-            builders: {
-              TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
-            },
-          ),
-        ),
+        theme: themeData(lightColorScheme ?? defaultLightColorScheme),
+        darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme),
         themeMode: ThemeMode.system,
         debugShowCheckedModeBanner: kDebugMode,
         home: LayoutBuilder(builder: (BuildContext context, BoxConstraints constraints) {
           double scaffoldHeight = constraints.maxHeight;
           double scaffoldWidth = constraints.maxWidth;
           return Consumer<AIEngine>(builder: (context, engine, child) {
+            engine.cards = Cards(context: context);
             return AnimatedCrossFade(
                 alignment: Alignment.center,
                 duration: const Duration(milliseconds: 500),

@@ -45,7 +45,7 @@ class ModelSettingsState extends State<ModelSettings> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("system_prompt"),
                                 context: context
                             ),
@@ -86,7 +86,7 @@ class ModelSettingsState extends State<ModelSettings> {
                                   }
                               )
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("settings_ai"),
                                 context: context
                             ),
@@ -128,7 +128,7 @@ class ModelSettingsState extends State<ModelSettings> {
                                   }
                               ),
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("shared_data"),
                                 context: context
                             ),
@@ -168,7 +168,7 @@ class ModelSettingsState extends State<ModelSettings> {
                                   value: engine.shareLocale
                               ),
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("reset_model_settings"),
                                 context: context
                             ),

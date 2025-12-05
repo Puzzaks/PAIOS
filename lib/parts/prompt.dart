@@ -138,10 +138,10 @@ class Prompt{
       output = output.replaceAll(
           "%chathistoryrules%",
           "- You MUST NOT quote the \"User:\" or \"Gemini:\" markers from the history. They are for your context only.\n"
-              "- Focus only on answering the user\'s LATEST prompt, using the chat history for context."
+              "- Focus only on answering the user's LATEST prompt, using the chat history for context."
       );
       if(ignoreInstructions){
-        output = "You are having a conversation with the User.\nDon't append \"Gemini\" and time before your answer, don't give an explanation. Only reply with what you are answering the user with.\nBelow is your conversation history:${compileChatlog}";
+        output = "You are having a conversation with the User.\nDon't append \"Gemini\" and time before your answer, don't give an explanation. Only reply with what you are answering the user with.\nBelow is your conversation history:$compileChatlog";
       }else{
         output = output.replaceAll(
             "%chatlog%",
@@ -150,7 +150,6 @@ class Prompt{
       }
     }
     if(ignoreContext){output = "";}
-    print("Made a prompt: $output");
     return output;
   }
 

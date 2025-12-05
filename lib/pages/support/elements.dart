@@ -11,9 +11,19 @@ class Cards {
   Map<String,double> cardMargins = {"h":15, "v":2};
   late BuildContext context;
 
+  double cardElevation = 3;
+
   Cards._internal(this.context);
   factory Cards({required BuildContext context}){
     return Cards._internal(context);
+  }
+
+  Color tintColor (context) {
+    return Theme.of(context).colorScheme.primary;
+  }
+
+  Color cardColor (context) {
+    return Theme.of(context).colorScheme.surfaceContainer;
   }
 
   Widget cardGroup(List<Widget> cards) {
@@ -25,7 +35,9 @@ class Cards {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.all(cardROuter),
         ),
-        color: Theme.of(context).colorScheme.onPrimaryFixed,
+        surfaceTintColor: tintColor(context),
+        color: cardColor(context),
+        elevation: cardElevation,
         margin: EdgeInsets.symmetric(
             horizontal: cardMarginH,
             vertical: cardMarginV
@@ -47,7 +59,9 @@ class Cards {
                   bottomLeft: cardRInner
               ),
             ),
-            color: Theme.of(context).colorScheme.onPrimaryFixed,
+            surfaceTintColor: tintColor(context),
+            color: cardColor(context),
+            elevation: cardElevation,
             margin: EdgeInsets.symmetric(
                 horizontal: cardMarginH,
                 vertical: cardMarginV
@@ -64,7 +78,9 @@ class Cards {
                   bottomLeft: cardROuter
               ),
             ),
-            color: Theme.of(context).colorScheme.onPrimaryFixed,
+            surfaceTintColor: tintColor(context),
+            color: cardColor(context),
+            elevation: cardElevation,
             margin: EdgeInsets.symmetric(
                 horizontal: cardMarginH,
                 vertical: cardMarginV
@@ -86,7 +102,9 @@ class Cards {
                     bottomLeft: cardRInner
                 ),
               ),
-              color: Theme.of(context).colorScheme.onPrimaryFixed,
+              surfaceTintColor: tintColor(context),
+              color: cardColor(context),
+              elevation: cardElevation,
               margin: EdgeInsets.symmetric(
                   horizontal: cardMarginH,
                   vertical: cardMarginV
@@ -106,7 +124,9 @@ class Cards {
                       bottomLeft: cardRInner
                   ),
                 ),
-                color: Theme.of(context).colorScheme.onPrimaryFixed,
+                surfaceTintColor: tintColor(context),
+                color: cardColor(context),
+                elevation: cardElevation,
                 margin: EdgeInsets.symmetric(
                     horizontal: cardMarginH,
                     vertical: cardMarginV
@@ -127,7 +147,9 @@ class Cards {
 
                 ),
               ),
-              color: Theme.of(context).colorScheme.onPrimaryFixed,
+              surfaceTintColor: tintColor(context),
+              color: cardColor(context),
+              elevation: cardElevation,
               margin: EdgeInsets.symmetric(
                   horizontal: cardMarginH,
                   vertical: cardMarginV
@@ -161,7 +183,7 @@ class CardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?10:0,),
-                Container(
+                SizedBox(
                   width: width - 70,
                   child: Text(
                     title,
@@ -169,7 +191,7 @@ class CardContents {
                   ),
                 ),
                 subtitle == ""?Container(height: 10,):
-                Container(
+                SizedBox(
                   width: width - 70,
                   child: Text(
                       subtitle
@@ -202,7 +224,7 @@ class CardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?5:0,),
-                Container(
+                SizedBox(
                   width: width - 190,
                   child: Text(
                     title,
@@ -210,7 +232,7 @@ class CardContents {
                   ),
                 ),
                 subtitle == ""?Container(height: 5,):
-                Container(
+                SizedBox(
                   width: width - 190,
                   child: Text(
                       subtitle
@@ -260,7 +282,7 @@ class CardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?10:0,),
-                Container(
+                SizedBox(
                   width: width - 120,
                   child: Text(
                     title,
@@ -268,7 +290,7 @@ class CardContents {
                   ),
                 ),
                 subtitle == ""?Container(height: 10,):
-                Container(
+                SizedBox(
                   width: width - 120,
                   child: Text(
                       subtitle
@@ -449,7 +471,7 @@ class CardContents {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Container(height: subtitle == ""?10:0,),
-                Container(
+                SizedBox(
                   width: width - 70,
                   child: Text(
                     title,
@@ -457,7 +479,7 @@ class CardContents {
                   ),
                 ),
                 subtitle == ""?Container(height: 10,):
-                Container(
+                SizedBox(
                   width: width - 70,
                   child: Text(
                     subtitle
@@ -555,7 +577,7 @@ class CardContents {
   }
 }
 
-class divider {
+class Category {
   static Widget settings({
     required String title,
     required BuildContext context
@@ -590,7 +612,7 @@ class text {
           right: 20,
           top: 10
       ),
-      child: Container(
+      child: SizedBox(
           width: width - 40,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -638,7 +660,7 @@ class text {
           right: 20,
           top: 10
       ),
-      child: Container(
+      child: SizedBox(
           width: width - 40,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -680,7 +702,7 @@ class text {
           right: 20,
           top: 10
       ),
-      child: Container(
+      child: SizedBox(
           width: width - 40,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

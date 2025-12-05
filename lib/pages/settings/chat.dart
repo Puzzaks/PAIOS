@@ -42,7 +42,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                           mainAxisAlignment: MainAxisAlignment.start,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("chat_name"),
                                 context: context
                             ),
@@ -53,7 +53,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                     subtitle: engine.dict.value("change_name"),
                                     action: (){
                                       List<Widget> cardlist = [];
-                                      if(recentTitles.length > 0) {
+                                      if(recentTitles.isNotEmpty) {
                                         for (int i = 0; i < recentTitles.length; i++) {
                                           cardlist.add(
                                               CardContents.halfTap(
@@ -139,7 +139,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                         ]
                                                     ),
                                                   ),
-                                                  if(cardlist.isNotEmpty)divider.settings(
+                                                  if(cardlist.isNotEmpty)Category.settings(
                                                       title: engine.dict.value("previous_names"),
                                                       context: context
                                                   ),
@@ -167,7 +167,15 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                       if(!recentTitles.contains(engine.chats[engine.currentChat]?["name"])){
                                         recentTitles.add(engine.chats[engine.currentChat]?["name"]);
                                       }
-                                      await engine.generateTitle(jsonDecode(engine.chats[engine.currentChat]?["history"])[0]["message"]).then((output){
+                                      String composeConversation = "";
+                                      if(jsonDecode(engine.chats[engine.currentChat]?["history"]).length > 2){
+                                        for (var line in jsonDecode(engine.chats[engine.currentChat]?["history"])){
+                                          composeConversation = "$composeConversation\n - ${line["message"]}";
+                                        }
+                                      }else{
+                                        composeConversation = jsonDecode(engine.chats[engine.currentChat]?["history"])[0]["message"];
+                                      }
+                                      await engine.generateTitle(composeConversation).then((output){
                                         newTitle = output;
                                       });
                                       setState(() {
@@ -184,7 +192,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                     progress: 0
                                 )
                             ]),
-                            divider.settings(
+                            Category.settings(
                                 title: engine.dict.value("chat_settings_other"),
                                 context: context
                             ),

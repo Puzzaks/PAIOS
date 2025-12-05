@@ -18,8 +18,8 @@
   "error_retry": "Retry on error",
   "error_retry_desc": "Retry generating if error happens",
   "generate": "Generate",
-  "generated_hint": "Responded in %seconds%s, using %tokens% tokens (%tokenspersec%) token/s).",
-  "generating_hint": "Generating, %seconds%s, using %tokens% tokens (%tokenspersec%) token/s).",
+  "generated_hint": "Responded in %seconds%s, using %tokens% tokens (%tokenspersec% token/s).",
+  "generating_hint": "Generating, %seconds%s, using %tokens% tokens (%tokenspersec% token/s).",
   "gh_repo": "GitHub Repository",
   "ignore_instructions": "Ignore all instructions",
   "ignore_instructions_desc": "The output may and will be weird",
@@ -111,5 +111,6 @@
   "loading": "Loading...",
   "messages": "mesages",
   "no_chats": "You haven't yet started a chat. Press a button below to begin.",
-  "chats_desc": "You have %chatnum% chats. Tap the \"New Chat\" button to start new chat."
+  "chats_desc": "You have %chatnum% chats. Tap the \"New Chat\" button to start new chat.",
+  "still_generating": "Gemini Nano is still generating. Please wait until this message is changed to interact with other chats."
 }
