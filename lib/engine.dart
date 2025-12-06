@@ -116,11 +116,11 @@ class AIEngine with md.ChangeNotifier {
   }
 
   Future<void> stopAnalytics () async {
-    await log("application", "info", "Disabling analytics");
     SharedPreferences prefs = await SharedPreferences.getInstance();
     prefs.setBool("analytics", false);
     await Firebase.app().setAutomaticDataCollectionEnabled(false);
     await Firebase.app().setAutomaticResourceManagementEnabled(false);
+    await log("application", "info", "Disabling analytics");
   }
 
   Future<void> log(String name, String type, String message) async {
@@ -169,6 +169,9 @@ class AIEngine with md.ChangeNotifier {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     if(prefs.containsKey("analytics")){
       analytics = prefs.getBool("analytics")??true;
+      if(analytics){
+        await startAnalytics();
+      }
     }else{
       await startAnalytics();
     }
