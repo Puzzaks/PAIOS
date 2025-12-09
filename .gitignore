@@ -34,3 +34,5 @@ android/app/google-services.json
 firebase.json
 .idea/deviceManager.xml
 android/.kotlin/sessions/kotlin-compiler-11069125661880765564.salive
+.idea/caches/deviceStreaming.xml
+.idea/deviceManager.xml
