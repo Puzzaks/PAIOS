@@ -2,7 +2,7 @@
 #### Personal AI Operating System
 ![Play Store Screenshots](.assets/bundle_android.jpg)
 ![Play Store Screenshots](.assets/bundle_tablet.jpg)
-A 100% offline, private, and powerful interface for Google's Gemini Nano.
+A 100% offline, private, and powerful interface for Google's Gemini Nano (and maybe something else!).
 
 [![PlayStore](.assets/PlayStoreButton.png)](https://play.google.com/store/apps/details?id=page.puzzak.geminilocal)[![GitHub](.assets/GHButton.png)](https://github.com/Puzzaks/gemininano/releases)
 
@@ -10,6 +10,9 @@ A 100% offline, private, and powerful interface for Google's Gemini Nano.
 
 ### Changelog
 You can find the full changelog [here](CHANGELOG.md).
+
+### Roadmap
+You can see what is planned for this project [here](ROADMAP.md).
 
 ### Features
  - 100% Offline & Private
