@@ -119,5 +119,6 @@
   "logs_with_analytics": "Logs and Analytics",
   "logs_no_analytics": "Logs",
   "logs_info_local": "These are app logs, saved only locally. The local logs are not saved between app restarts and are here to help you understand what is going on in the backend. You can enable analytics if you'd like to help me make the app better.",
-  "logs_info_analytics": "These are app logs, shared with the developer. The local logs are not saved between app restarts and are here to help you understand what is going on in the backend. The data is anonymous and is only used to gauge app metrics and crashes to make it better. No chat names, messages or any identifiable information is ever sent to analytics. Thank you for helping make the app better for everyone!"
+  "logs_info_analytics": "These are app logs, shared with the developer. The local logs are not saved between app restarts and are here to help you understand what is going on in the backend. The data is anonymous and is only used to gauge app metrics and crashes to make it better. No chat names, messages or any identifiable information is ever sent to analytics. Thank you for helping make the app better for everyone!",
+"advancedlinks": "For advanced users"
 }
