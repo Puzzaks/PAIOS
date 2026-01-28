@@ -3,9 +3,7 @@
 ![Play Store Screenshots](.assets/bundle_android.jpg)
 ![Play Store Screenshots](.assets/bundle_tablet.jpg)
 A 100% offline, private, and powerful interface for Google's Gemini Nano (and maybe something else!).
-`The latest version (1.1.2 hotfix) is not available on GitHub Releases now, due to blackouts, caused by russian terrorism.`
-`It is available on Play Store only, and further developmrent us impossible in the nearest week(s) due to the same reason.`
-`Sorry for the delay, I have big plans for this thing but unable to work on it right now.` 
+`Starting from the update 1.1.2, the app has different package name. Older versions are no longer working due to Play Store issue with previous package and it's listing. Sorry for the inconvenience!` 
 
 [![PlayStore](.assets/PlayStoreButton.png)](https://play.google.com/store/apps/details?id=page.puzzak.paios)[![GitHub](.assets/GHButton.png)](https://github.com/Puzzaks/gemininano/releases)
 
