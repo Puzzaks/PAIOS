@@ -54,7 +54,7 @@
   "settings_ai": "Model parameters",
   "settings_ai_desc": "Instructions, parameters, reset options",
   "settings_app": "App settings",
-  "settings_info": "App is still in development. Please report all errors, mistranslations and leave any feedback on GitHub\n\nDeveloped by Puzzak, %year% in Ukraine./n/nGlory to Ukraine!",
+  "settings_info": "App is still in development. Please report all errors, mistranslations and leave any feedback on GitHub\n\nDeveloped by Puzzak, %year% in Ukraine.\n\nGlory to Ukraine!",
   "settings_resources": "Additional resources",
   "settings_resources_desc": "Documentation, links, info",
   "settings_status": "Model status",
