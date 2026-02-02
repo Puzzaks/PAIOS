@@ -54,7 +54,7 @@
   "settings_ai": "模型參數",
   "settings_ai_desc": "指令、參數、重置選項",
   "settings_app": "應用程式設定",
-  "settings_info": "應用程式開發中。請回報所有錯誤、翻譯錯誤，並在 GitHub 上留下任何回饋。\n\n由 Puzzak 開發，%year%",
+  "settings_info": "應用程式目前仍處於開發階段。請協助回報所有程式錯誤、翻譯問題，並在 GitHub 上提供任何建議與回饋。\n\n由 Puzzak 於 %year% 年在烏克蘭開發。\n\n榮光歸於烏克蘭！",
   "settings_resources": "額外資源",
   "settings_resources_desc": "說明文件、連結、資訊",
   "settings_status": "模型狀態",
