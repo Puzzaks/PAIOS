@@ -4,7 +4,7 @@
     A 100% offline, private, and powerful interface for Google's Gemini Nano
     <br>
     (and maybe something else!)
-
+    <br>
   <!-- Badges -->
   <a href="https://github.com/Puzzaks/gemininano/releases">
     <img src="https://img.shields.io/github/v/release/Puzzaks/gemininano?style=flat-square" height="25" alt="Latest Release">
