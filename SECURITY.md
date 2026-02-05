@@ -2,10 +2,30 @@
 
 ## Supported Versions
 
-The main compatibility concern comes from when Google will put AICore in the grave. No information leaks are possible via this component though.
+Since PAIOS is a client for Google's on-device AI, security updates primarily concern the app's ability to interface safely with `AICore`.
 
-Bear in mind, the app uses SharedPreferences plugin, which stores persistent data in plain text in the `/sdcard/Android/data/page.puzzak.gemininano/` - with root or adb access it is possible to get your previous conversation with Gemini, but nothing more.
+| Version | Supported          |
+| ------- | ------------------ |
+| Latest  | :white_check_mark: |
+| < 1.1.2 | :x:                |
+
+> **Note**: Older versions (< 1.1.2) are deprecated due to the package name change and Play Store listing issues.
 
 ## Reporting a Vulnerability
 
-You can use Issues tab to report most issues, but if you feel like your issue is not publicly disclosable, you are more than welcome to send us your report to support@puzzak.page.
+I take security seriously. If you discover a vulnerability, please follow these steps:
+
+1.  **Do not** open a public issue on GitHub.
+2.  **Email** your report to `support@puzzak.page`.
+3.  Include:
+    *   Description of the vulnerability.
+    *   Steps to reproduce.
+    *   Potential impact.
+
+I will acknowledge your report and do my best to patch valid vulnerabilities as soon as possible.
+
+### Data Privacy Note
+The app uses `SharedPreferences` which stores data in plain text at `/sdcard/Android/data/page.puzzak.paios/`.
+*   **Risk**: Access requires **Root** or **ADB** access.
+*   **Impact**: malicious apps with root access could read conversation history.
+*   **Mitigation**: This is standard Android behavior for local data. Ensure your device is secure.

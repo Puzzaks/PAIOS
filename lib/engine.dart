@@ -155,13 +155,19 @@ class AIEngine with md.ChangeNotifier {
     }
     notifyListeners();
     if(analytics){
-      await FirebaseAnalytics.instance.logEvent(
-        name: name,
-        parameters: <String, Object>{
-          'type': type,
-          'message': message
-        },
-      );
+      try {
+        await FirebaseAnalytics.instance.logEvent(
+          name: name,
+          parameters: <String, Object>{
+            'type': type,
+            'message': message
+          },
+        );
+      }catch(e){
+        if (kDebugMode) {
+          print("Analytics failed. Not waiting anymore. Error: $e");
+        }
+      }
     }
   }
 

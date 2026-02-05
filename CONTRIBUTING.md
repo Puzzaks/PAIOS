@@ -1,76 +1,52 @@
-# Contributing Guide
-> Yes, this is a generic guide. Don't worry, if you understand this fact, you don't need it
+# Contributing to PAIOS
 
-Please take a moment to review this document in order to make the contribution
-process easier for everyone.
+Thank you for your interest in contributing! PAIOS is a Flutter application designed for local, private AI interaction. I welcome contributions that improve stability, add new features, or enhance the user experience.
 
-Using this guidline you will be able to make your contribution even more helpful, and developers will be able to help you or to implement your fixes faster this way.
+## Quick Start
 
-## Issues
+### Project Structure
+To help you navigate the codebase, here are the key components:
+- **Core Logic**: `lib/engine.dart` (`AIEngine`) is the central state management provider. It handles initialization, AI generation streams, and app-wide state.
+- **AI Interaction**: `lib/parts/gemini.dart` wraps the raw API calls to the local model.
+- **Prompt Engineering**: `lib/parts/prompt.dart` constructs the prompts sent to the model (system prompt + user history + context). The **Master Prompt** itself is located at `assets/system_prompt.txt`.
+- **UI**: All screens are located in `lib/pages/`. `chat.dart` manages the individual chat interface.
 
-The issues page is the preferred channel for [bug reports](https://github.com/Puzzaks/gemininano/issues?q=is%3Aissue+is%3Aopen+label%3ABug),
-[features requests](https://github.com/Puzzaks/gemininano/issues?q=is%3Aissue+is%3Aopen+label%3ARequest) and [trasnlations](https://github.com/Puzzaks/gemininano/issues?q=is%3Aissue+is%3Aopen+label%3ATranslation).
+### Running Locally
+1.  **Prerequisites**: [Flutter SDK](https://flutter.dev/docs/get-started/install) installed.
+2.  **Clone**: Clone the repository `git clone https://github.com/Puzzaks/gemininano.git`
+3.  **Dependencies**: Run `flutter pub get` to install packages.
+4.  **Run**: `flutter run` (Android is the only targeted platform).
 
-While creating the issue, please select all applicable labels (except administrative ones, like `Approved`, `Declined`, `Feature - not a bug`, any `Priority` or status labels).
+## Helping with Translations
+I need your help to make PAIOS available to everyone!
+1.  **Navigate** to `assets/translations/`.
+2.  **Create** a new file for your language code (e.g., `es.json` for Spanish), copying the structure from `en.json`.
+    -   **Important**: The app determines the system language by splitting the locale code by `_` and using only the first part (e.g., `en_US` becomes `en`). Therefore, file names and IDs **MUST** use only the two-letter language code (e.g., `es`, `zh`, `fr`). Regional codes like `zh_tw` or `en_gb` will **NOT** be matched automatically.
+    -   You are also technically "welcome" to submit a Russian translation (`ru`). Please do so if you want to give me the satisfaction of declining your PR immediately.
+3.  **Translate** the values (leave keys unchanged).
+4.  **Register** your new language in `assets/translations/languages.json`. Example:
+    ```json
+    {
+      "origin": "Español",
+      "name": "Spanish",
+      "id": "es"
+    }
+    ```
+5.  **Test** (optionally) by running the app and selecting the language in settings.
+      - By default the app will use ONLY the offline translation files when compiled in debug mode and use translations from GitHub in release mode.
+      - In release mode, if you don't have internet connection, the app will always use the offline translation files.
+6.  **Submit** a pull request.
+7.  **Availability**: Once PR is merged, your translation will be available to all users once GitHub's CDN propagates the changes (usually within an hour, but sometimes it can take up to 24 hours). The app downloads translations from GitHub on each restart.
 
+## Submitting Changes
 
-## Bug reports
+### Pull Requests
+- **Focus**: Keep PRs focused on a single issue or feature.
+- **Testing**: If you modify the engine, please ensure you test the "Happy Path" (sending a message, getting a response) on a supported device if possible.
+- **Changelog**: The `CHANGELOG.md` will be updated with update notes after the release, I will do my best to include all the changes from the maintainers with due attribution.
 
-A bug is a _demonstrable problem_ that is caused by the code in the repository.
-Good bug reports are extremely helpful - thank you!
+### Issues
+- **Bug Reports**: Please include your device model and Android version, as device support is the most critical factor for this app. Make sure that your device is in the [supported devices list](https://developers.google.com/ml-kit/genai#prompt-device) and is not rooted - this is a Google's AI Core requirement.
+- **Feature Requests**: I love new ideas! Please check the [Roadmap](ROADMAP.md) to see if it's already planned.
 
-Guidelines for bug reports:
-
-1. **Use the GitHub issue search** &mdash; check if the issue has already been
-   reported.
-
-2. **Check if the issue has been fixed** &mdash; try to reproduce it using the
-   latest `master` version of the app or by updating your fork to the latest commits.
-
-3. **Isolate the problem** &mdash; ideally create a reduced test case.
-
-A good bug report shouldn't leave others needing to chase you up for more
-information. Please try to be as detailed as possible in your report. What is
-your device? What is your Android version? What steps will reproduce the issue?
-What would you expect to be the outcome? All these details will help
-people to fix any potential bugs.
-
-Example:
-
-> Short and descriptive example bug report title
->
-> A summary of the issue and the device/OS on which it occurs. If
-> suitable, include the steps required to reproduce the bug.
->
-> 1. This is the first step
-> 2. This is the second step
-> 3. Further steps, etc.
->
-> `<url>` - a link to the reduced test case
->
-> Any other information you want to share that is relevant to the issue being
-> reported. This might include the lines of code that you have identified as
-> causing the bug, and potential solutions (and your opinions on their
-> merits).
-
-
-## Feature requests
-
-Feature requests are welcome. But take a moment to find out whether your idea
-fits with the scope and aims of the project. It's up to *you* to make a strong
-case to convince the project's developers of the merits of this feature. Please
-provide as much detail and context as possible.
-
-
-## Pull requests
-
-Good pull requests - patches, improvements, new features - are a fantastic
-help. They should remain focused in scope and avoid containing unrelated
-commits.
-
-**Please ask first** before embarking on any significant pull request (e.g.
-implementing features, refactoring code), otherwise you risk spending a lot of
-time working on something that the project's developers might not want to merge
-into the project.
-
-> This guide was copied from [here](https://github.com/hoodiehq/hoodie/blob/master/CONTRIBUTING.md), thanks for the inspiration
+Thank you for helping make local AI better!
