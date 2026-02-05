@@ -28,8 +28,6 @@
   
   <!-- Screenshots -->
   <img src=".assets/bundle_android.jpg" width="100%" alt="Phone Screenshot" />
-  <br>
-  <img src=".assets/bundle_tablet.jpg" width="100%" alt="Tablet Screenshot" />
 </div>
 
 <br>
