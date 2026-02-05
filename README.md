@@ -7,14 +7,11 @@
     <br>
   <!-- Badges -->
   <a href="https://github.com/Puzzaks/gemininano/releases">
-    <img src="https://img.shields.io/github/v/release/Puzzaks/gemininano?style=flat-square" height="25" alt="Latest Release">
-  </a>
+    <img src="https://img.shields.io/github/v/release/Puzzaks/gemininano?style=flat-square" height="25" alt="Latest Release"></a>
   <a href="https://github.com/Puzzaks/gemininano/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/Puzzaks/gemininano?style=flat-square" height="25" alt="License">
-  </a>
+    <img src="https://img.shields.io/github/license/Puzzaks/gemininano?style=flat-square" height="25" alt="License"></a>
   <a href="https://youtu.be/iY3FBMTA15A?si=yvlWUuvsfuw4Tg4e&t=831">
-    <img src="https://img.shields.io/badge/As_Featured_In-HowToMen-ff0000?style=for-the-badge&logo=youtube&logoColor=white" height="25" alt="Featured in HowToMen" />
-  </a>
+    <img src="https://img.shields.io/badge/As_Featured_In-HowToMen-ff0000?style=for-the-badge&logo=youtube&logoColor=white" height="25" alt="Featured in HowToMen"/></a>
 
   > **Important**: Starting from the update 1.1.2, the app has different package name. Older versions are no longer working due to Play Store issue with previous package and it's listing. Sorry for the inconvenience!
 
