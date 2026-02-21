@@ -109,7 +109,7 @@
   "pin_chat_desc": "Pin to the top of the list",
   "generating_title": "Generating new name...",
   "loading": "Loading...",
-  "messages": "mesages",
+  "messages": "messages",
   "no_chats": "You haven't yet started a chat. Press a button below to begin.",
   "chats_desc": "You have %chatnum% chats. Tap the \"New Chat\" button to start new chat.",
   "still_generating": "The AI is still generating. Please wait until this message is changed to interact with other chats.",
