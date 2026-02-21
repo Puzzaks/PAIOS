@@ -120,5 +120,5 @@
   "logs_info_local": "Dies sind App-Protokolle, nur lokal gespeichert. Lokale Protokolle bleiben zwischen App-Neustarts nicht erhalten und dienen zur Einsicht in Backend-Abläufe. Du kannst Analysen aktivieren, um bei der Verbesserung der App zu helfen.",
   "logs_info_analytics": "Dies sind App-Protokolle, die mit dem Entwickler geteilt werden. Lokale Protokolle bleiben zwischen App-Neustarts nicht erhalten und dienen zur Einsicht in Backend-Abläufe. Die Daten sind anonym und werden nur zur Messung von Metriken und Abstürzen genutzt, um bei der Verbesserung der App zu helfen. Es werden keine Chatnamen, Nachrichten oder identifizierbare Informationen an die Analysen gesendet. Danke, dass du hilfst, die App für alle zu verbessern!",
   "advancedlinks": "Für Fortgeschrittene",
-  "open_aicore_settings": "AICore-Einstellungen öffnen",
+  "open_aicore_settings": "AICore-Einstellungen öffnen"
 }
