@@ -18,5 +18,10 @@
     "origin": "Deutsch",
     "name": "German",
     "id": "de"
+  },
+  {
+    "origin": "Türkçe",
+    "name": "Turkish",
+    "id": "tr"
   }
 ]
