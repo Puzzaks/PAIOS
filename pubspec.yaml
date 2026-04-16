@@ -2,7 +2,7 @@ name: geminilocal
 description: "Local AI, on-device client"
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.1.4+7
+version: 1.1.5+8
 
 environment:
   sdk: ^3.9.2
@@ -45,5 +45,7 @@ flutter:
     - assets/translations/uk.json
     - assets/translations/en.json
     - assets/translations/zh.json
+    - assets/translations/de.json
+    - assets/translations/tr.json
     - assets/system_prompt.txt
     - assets/additional_resources.json
