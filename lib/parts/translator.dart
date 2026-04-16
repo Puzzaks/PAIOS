@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -54,20 +55,24 @@ class Dictionary {
       }
     });
     if(!kDebugMode){
-      final response = await http.get(
-        Uri.parse("$url/$path/languages.json"),
-      );
-      if(response.statusCode == 200) {
-        languages = jsonDecode(response.body);
-        await decideLanguage();
-        for (int i = 0; i < languages.length; i++) {
-          final languageGet = await http.get(
-            Uri.parse("$url/$path/${languages[i]["id"]}.json"),
-          );
-          if (response.statusCode == 200) {
-            dictionary[languages[i]["id"]] = jsonDecode(languageGet.body);
+      try {
+        final response = await http.get(
+          Uri.parse("$url/$path/languages.json"),
+        );
+        if(response.statusCode == 200) {
+          languages = jsonDecode(response.body);
+          await decideLanguage();
+          for (int i = 0; i < languages.length; i++) {
+            final languageGet = await http.get(
+              Uri.parse("$url/$path/${languages[i]["id"]}.json"),
+            );
+            if (response.statusCode == 200) {
+              dictionary[languages[i]["id"]] = jsonDecode(languageGet.body);
+            }
           }
         }
+      }catch(e){
+        print("Falling back to offline Languages! Error: $e");
       }
     }
   }

@@ -88,7 +88,8 @@ class ChatsPageState extends State<ChatsPage> {
                         engine.currentChat = key;
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => ChatPage()),
+                          MaterialPageRoute(builder: (context) => ChatPage(),
+                              settings: const RouteSettings(name: 'ChatPage')),
                         );
                       },
                       icon: Icons.tune_rounded,
@@ -126,7 +127,8 @@ class ChatsPageState extends State<ChatsPage> {
                       engine.contextSize = 0;
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (context) => ChatPage()),
+                        MaterialPageRoute(builder: (context) => ChatPage(),
+                            settings: const RouteSettings(name: 'ChatPage')),
                       );
                     },
                   ),
@@ -172,7 +174,8 @@ class ChatsPageState extends State<ChatsPage> {
                             onPressed: (){
                               Navigator.push(
                                 context,
-                                MaterialPageRoute(builder: (context) => SettingsPage()),
+                                MaterialPageRoute(builder: (context) => SettingsPage(),
+                                    settings: const RouteSettings(name: 'SettingsPage')),
                               );
                             },
                             tooltip: engine.dict.value("settings"),
@@ -193,7 +196,8 @@ class ChatsPageState extends State<ChatsPage> {
                               action: (){
                                 Navigator.push(
                                   context,
-                                  MaterialPageRoute(builder: (context) => ChatPage()),
+                                  MaterialPageRoute(builder: (context) => ChatPage(),
+                                      settings: const RouteSettings(name: 'ChatPage')),
                                 );
                               },
                                 title: engine.dict.value("loading"),
@@ -276,7 +280,10 @@ class ChatsPageState extends State<ChatsPage> {
                                   engine.contextSize = 0;
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(builder: (context) => ChatPage()),
+                                    MaterialPageRoute(
+                                        builder: (context) => ChatPage(),
+                                        settings: const RouteSettings(name: 'ChatPage')
+                                    ),
                                   );
                                   },
                                 context: context

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as md;
 import 'package:fluttertoast/fluttertoast.dart';
@@ -106,9 +107,8 @@ class AIEngine with md.ChangeNotifier {
   Future<void> startAnalytics() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     prefs.setBool("analytics", true);
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterError;
+    await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
     await FirebaseAnalytics.instance.setConsent();
     await Firebase.app().setAutomaticDataCollectionEnabled(true);
     await Firebase.app().setAutomaticResourceManagementEnabled(true);
@@ -119,6 +119,7 @@ class AIEngine with md.ChangeNotifier {
   Future<void> stopAnalytics() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     prefs.setBool("analytics", false);
+    await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(false);
     await Firebase.app().setAutomaticDataCollectionEnabled(false);
     await Firebase.app().setAutomaticResourceManagementEnabled(false);
     await log("application", "info", "Disabling analytics");
@@ -232,10 +233,14 @@ class AIEngine with md.ChangeNotifier {
     appStarted = true;
     log("init", "info", "App initiation complete");
     notifyListeners();
-    await Future.delayed(Duration(milliseconds: 250));
-    scrollChatlog(Duration(seconds: 3));
-    await Future.delayed(Duration(seconds: 3));
-    scrollChatlog(Duration(milliseconds: 250));
+    // await Future.delayed(Duration(milliseconds: 250));
+    // scrollChatlog(Duration(seconds: 3));
+    // await Future.delayed(Duration(seconds: 3));
+    // scrollChatlog(Duration(milliseconds: 250));
+    // log("init", "info", "Crashing now!");
+    // FirebaseCrashlytics.instance.crash();
+    // log("init", "info", "Crashed!");
+
   }
 
   void addDownloadLog(String log) {
@@ -276,7 +281,32 @@ class AIEngine with md.ChangeNotifier {
       await Future.delayed(Duration(seconds: 2));
     }
   }
-
+  String convertSize(int size, bool isSpeed) {
+    if (size < 1024) {
+      return '$size B${isSpeed?"/s":""}';
+    } else if (size < 10240) {
+      double sizeKb = size / 1024;
+      return '${sizeKb.toStringAsFixed(2)} KB${isSpeed?"/s":""}';
+    } else if (size < 1048576) {
+      double sizeKb = size / 1024;
+      return '${sizeKb.toStringAsFixed(1)} KB${isSpeed?"/s":""}';
+    } else if (size < 10485760) {
+      double sizeMb = size / 1048576;
+      return '${sizeMb.toStringAsFixed(2)} MB${isSpeed?"/s":""}';
+    } else if (size < 104857600) {
+      double sizeMb = size / 1048576;
+      return '${sizeMb.toStringAsFixed(1)} MB${isSpeed?"/s":""}';
+    } else if (size < 1073741824) {
+      double sizeGb = size / 1073741824;
+      return '${sizeGb.toStringAsFixed(2)} GB${isSpeed?"/s":""}';
+    } else if (size < 10737418240) {
+      double sizeGb = size / 1073741824;
+      return '${sizeGb.toStringAsFixed(1)} GB${isSpeed?"/s":""}';
+    } else {
+      double sizeGb = size / 1073741824;
+      return '${sizeGb.toInt()} GB${isSpeed?"/s":""}';
+    }
+  }
   lateProgressCheck() async {
     Map lastUpdate = {};
     while (firstLaunch) {
@@ -350,8 +380,8 @@ class AIEngine with md.ChangeNotifier {
                   .contains("error")) {
                 await log(
                   "model",
-                  "error",
-                  modelDownloadLog[modelDownloadLog.length - 1]["value"],
+                  "info",
+                  "Downloading, ${convertSize(int.parse(modelDownloadLog[modelDownloadLog.length - 1]["value"]), false)}",
                 );
                 if (int.parse(downloadStatus.split("=")[2]) >
                     int.parse(

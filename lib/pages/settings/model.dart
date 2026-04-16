@@ -73,7 +73,8 @@ class ModelSettingsState extends State<ModelSettings> {
                                   action: () async {
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => ModelSettingsContext()),
+                                      MaterialPageRoute(builder: (context) => ModelSettingsContext(),
+                                          settings: const RouteSettings(name: 'SettingsPage')),
                                     );
                                     engine.testPrompt = await engine.promptEngine.generate(
                                         "replaceme",

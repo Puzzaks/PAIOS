@@ -241,7 +241,8 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                 action: (){
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(builder: (context) => SettingsPage()),
+                                    MaterialPageRoute(builder: (context) => SettingsPage(),
+                                        settings: const RouteSettings(name: 'SettingsPage')),
                                   );
                                 },
                                 context: context

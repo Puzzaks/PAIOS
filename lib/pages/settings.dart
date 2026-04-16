@@ -138,7 +138,8 @@ class SettingsPageState extends State<SettingsPage> {
                                   action: (){
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => ModelSettings()),
+                                      MaterialPageRoute(builder: (context) => ModelSettings(),
+                                          settings: const RouteSettings(name: 'ModelSettings')),
                                     );
                                   }
                               )
@@ -167,7 +168,8 @@ class SettingsPageState extends State<SettingsPage> {
                                     }
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => SettingsResources()),
+                                      MaterialPageRoute(builder: (context) => SettingsResources(),
+                                          settings: const RouteSettings(name: 'SettingsResources')),
                                     );
                                   }
                               )
@@ -186,7 +188,8 @@ class SettingsPageState extends State<SettingsPage> {
                                   action: (){
                                     Navigator.push(
                                       context,
-                                      MaterialPageRoute(builder: (context) => LogsPage()),
+                                      MaterialPageRoute(builder: (context) => LogsPage(),
+                                          settings: const RouteSettings(name: 'LogsPage')),
                                     );
                                   }
                               )

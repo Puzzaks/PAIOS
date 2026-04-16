@@ -37,24 +37,32 @@ class Prompt{
     await rootBundle.loadString('assets/additional_resources.json').then((resourcelist) async {
       resources = jsonDecode(resourcelist);
     });
-    if(!kDebugMode){
+    if(!kDebugMode) {
+      try {
       final response1 = await http.get(
         Uri.parse("${ghUrl.replaceAll("github", "raw.githubusercontent")}/main/assets/system_prompt.json"),
       );
-      if(response1.statusCode == 200) {
+      if (response1.statusCode == 200) {
         usingOnlinePrompt = true;
-        if(!(basePrompt == response1.body)){
+        if (!(basePrompt == response1.body)) {
           basePrompt = response1.body;
         }
       }
-      final response2 = await http.get(
-        Uri.parse("${ghUrl.replaceAll("github", "raw.githubusercontent")}/main/assets/additional_resources.json"),
-      );
-      if(response2.statusCode == 200) {
-        usingOnlineResources = true;
-        if(!mapEquality.equals(resources, jsonDecode(response2.body))){
-          resources = jsonDecode(response2.body);
+    }catch(e){
+        print("Falling back to offline Master Prompt! Error: $e");
+      }
+      try {
+        final response2 = await http.get(
+          Uri.parse("${ghUrl.replaceAll("github", "raw.githubusercontent")}/main/assets/additional_resources.json"),
+        );
+        if (response2.statusCode == 200) {
+          usingOnlineResources = true;
+          if (!mapEquality.equals(resources, jsonDecode(response2.body))) {
+            resources = jsonDecode(response2.body);
+          }
         }
+      }catch(e){
+        print("Falling back to offline Resources! Error: $e");
       }
     }
   }

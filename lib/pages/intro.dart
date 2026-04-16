@@ -1,5 +1,6 @@
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
+import 'package:geminilocal/pages/settings/logs.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../engine.dart';
@@ -205,6 +206,17 @@ class IntroPageState extends State<IntroPage> {
                                   subsubtitle: "",
                                   progress: 0
                               ),
+                            CardContents.tap(
+                                title: engine.dict.value(engine.analytics?"logs_with_analytics":"logs_no_analytics"),
+                                subtitle: "",
+                                action: (){
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (context) => LogsPage(),
+                                        settings: const RouteSettings(name: 'LogsPage')),
+                                  );
+                                }
+                            )
                           ]),
                           if(engine.modelDownloadLog.isNotEmpty)
                             if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"] == "downloading_model")

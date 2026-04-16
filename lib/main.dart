@@ -1,4 +1,6 @@
 import 'package:dynamic_color/dynamic_color.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/chats.dart';
@@ -6,11 +8,16 @@ import 'package:geminilocal/pages/intro.dart';
 import 'package:geminilocal/pages/support/elements.dart';
 import 'package:provider/provider.dart';
 import 'engine.dart';
+import 'firebase_options.dart';
 
 
 
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   runApp(ChangeNotifierProvider(
     create: (context) => AIEngine(),
     child: const MyApp(),
@@ -28,11 +35,13 @@ class MyAppState extends State<MyApp> {
 @override
   void initState() {
     super.initState();
+    WidgetsFlutterBinding.ensureInitialized();
     Provider.of<AIEngine>(context, listen: false).start();
 
   }
   @override
   Widget build(BuildContext context) {
+    FirebaseAnalytics analytics = FirebaseAnalytics.instance;
     final defaultLightColorScheme = ColorScheme.fromSwatch(
         primarySwatch: Colors.teal,
     );
@@ -58,6 +67,9 @@ class MyAppState extends State<MyApp> {
     }
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
       return MaterialApp(
+        navigatorObservers: [
+          FirebaseAnalyticsObserver(analytics: analytics),
+        ],
         theme: themeData(lightColorScheme ?? defaultLightColorScheme),
         darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme),
         themeMode: ThemeMode.system,
