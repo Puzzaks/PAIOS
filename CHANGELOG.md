@@ -1,3 +1,15 @@
+## Update 1.1.5 `OBT`
+#### Fixes
+ - Fixed Google Analytics misreporting
+ - Added Google Crashalitics
+ - Fixed app getting stuck in offline mode
+ - Fixed downloading logs
+#### Changes
+ - Added logs to the intro screen for debugging (Sorry, Basim)
+#### Contributions
+ - [@mikropsoft](https://github.com/mikropsoft) added Turkish translation
+ - [@NewNiklas](https://github.com/NewNiklas) added German translation
+
 ## Update 1.1.3 `OBT`
 #### Fixes
  - Fixed analytics preventing app from starting in offline mode
