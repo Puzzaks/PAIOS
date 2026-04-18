@@ -1,3 +1,12 @@
+## Update 1.1.6 `OBT`
+#### Changes
+- Prompt manager
+- Prompt editor
+- Per-chat prompts
+- System and user prompts are replacing master and user prompts, now you are in control!
+- DB storage instead of shared preferences
+- Early implementation of remote configs from Firebase
+
 ## Update 1.1.5 `OBT`
 #### Fixes
  - Fixed Google Analytics misreporting
