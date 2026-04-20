@@ -1,4 +1,6 @@
 # Project Roadmap
+[ ] Planned/ indev change
+[x] Implemented change
 ---
 ## Phase 1 `AI Core - Basic`
  - [x] **Release** `1.0.0`
@@ -9,9 +11,9 @@
     - Multichat, chat pinning, basic per-chat settings
  - [x] **Hotfixes and monitoring** `~1.1.1`, `~1.1.2`, `1.1.5`
     - Optional analytics and crash reporting, logging, issue fixes in UI and backend
- - [ ] **Additional features** `~1.1.6`
+ - [x] **Additional features** `~1.1.6`, `1.1.7`
     - Per-chat personas, temperature and token limit settings, etc. 
- - [ ] **Generation extension**
+ - [ ] **Generation extension** `~1.1.7`
     - Workaround for 25s response generation time that ends answers prematurely
  - [ ] **AICore controls**
     - Ability to select test Nano versions and update track, maybe remove 25s limit entirely
@@ -24,7 +26,7 @@
     - It would look like Remote Config would not work for collaboration (prompts and translations) so only the *config* part will move there
  - [ ] **GitHub issue and update browser**
     - A neat dashboard of contributions and issue list from this repo, in-app
- - [ ] **Master Prompt selector and editor** `~1.1.6`
+ - [x] **Master Prompt selector and editor** `~1.1.6`, `1.1.7`
     - Collection of different Master Prompts and ability to create own ones
  - [ ] **Master Prompt fixes**
     - Finalizing the master prompt so it delivers more consistency
