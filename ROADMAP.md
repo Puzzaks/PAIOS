@@ -1,6 +1,6 @@
 # Project Roadmap
-[ ] Planned/ indev change
-[x] Implemented change
+  - [ ] Planned/ indev change
+  - [x] Implemented change
 ---
 ## Phase 1 `AI Core - Basic`
  - [x] **Release** `1.0.0`
