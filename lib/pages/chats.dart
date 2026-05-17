@@ -273,7 +273,7 @@ class ChatsPageState extends State<ChatsPage> {
                                 }).toList().whereNot((crd) => crd == null).cast<Widget>(),
                               ]
                             ),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
                                 subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
                                 action: engine.chats.isNotEmpty?(){}:engine.isLoading?(){}:(){

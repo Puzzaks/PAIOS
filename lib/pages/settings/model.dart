@@ -101,7 +101,7 @@ class ModelSettingsState extends State<ModelSettings> {
                                   value: engine.shareLocale
                               ),
                             ]),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.dict.value("welcome_available"),
                                 context: context,
                                 subtitle: "",

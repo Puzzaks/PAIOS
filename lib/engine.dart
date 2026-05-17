@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -636,7 +635,6 @@ class AIEngine with md.ChangeNotifier {
     status = "Sending prompt...";
     notifyListeners();
 
-    final int runTokens = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTokens") ? chatData.chats[currentChat]["chatTokens"] : tokens;
     double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
     final stream = gemini.generateTextEvents(

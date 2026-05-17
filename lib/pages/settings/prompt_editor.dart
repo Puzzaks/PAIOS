@@ -279,7 +279,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
                                     },
                                 )
                             ),
-                            text.infoShort(
+                            TextBlocks.infoShort(
                               title: engine.dict.value("prompt_md_desc"),
                               subtitle: engine.dict.value("prompt_md_docs_link"),
                               action: () async {

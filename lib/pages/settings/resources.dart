@@ -58,7 +58,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                                     cards.cardGroup(
                                         engine.resourceData.grouped[collection]!.map((resource) {
                                           return CardContents.tap(
-                                              title: resource["name"] ?? "",
+                                              title: engine.resourceData.getResourceDisplayName(resource, engine.dict.locale),
                                               subtitle: (resource["value"] ?? "").toString().replaceFirst(RegExp(r'^https?://'), '').split('/')[0],
                                               action: () async {
                                                 await launchUrl(
@@ -73,7 +73,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                                 );
                               }).toList(),
                             ),
-                            text.info(
+                            TextBlocks.info(
                               title: engine.dict.value("settings_info").replaceAll("%year%", DateFormat('yyyy').format(DateTime.now())),
                               context: context,
                               subtitle: engine.dict.value("gh_repo"),

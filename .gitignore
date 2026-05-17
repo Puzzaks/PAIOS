@@ -4,6 +4,9 @@
 .dart_tool/
 .packages
 build/
+release/
+*.apk
+*.aab
 # If you're building an application, you may want to check-in your pubspec.lock
 pubspec.lock
 
@@ -28,12 +31,8 @@ doc/api/
 lib/firebase_options.dart
 *.exe
 android/app/google-services.json
-.idea/caches/deviceStreaming.xml
-.idea/caches/deviceStreaming.xml
-.idea/deviceManager.xml
+.idea/caches/
 firebase.json
 .idea/deviceManager.xml
-android/.kotlin/sessions/kotlin-compiler-11069125661880765564.salive
-.idea/caches/deviceStreaming.xml
-.idea/deviceManager.xml
+android/.kotlin/
 /.tmp.driveupload

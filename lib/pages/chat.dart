@@ -12,8 +12,8 @@ class ChatPage extends StatefulWidget {
 }
 
 class ChatPageState extends State<ChatPage> {
-  text tWid = text();
-  @override
+  final TextBlocks textBlocks = TextBlocks();
+
   @override
   void initState() {
     super.initState();
@@ -104,7 +104,7 @@ class ChatPageState extends State<ChatPage> {
                                                 crossAxisAlignment: CrossAxisAlignment.start,
                                                 children: [
                                                    Column(
-                                                    children: tWid.chatlog(
+                                                    children: textBlocks.chatlog(
                                                         conversation: [
                                                           {
                                                             "user": "User",
@@ -136,7 +136,7 @@ class ChatPageState extends State<ChatPage> {
                                                         lastUser: ""
                                                     ),
                                                   ),
-                                                  text.infoShort(
+                                                  TextBlocks.infoShort(
                                                       title: engine.dict.value("welcome"),
                                                       context: context,
                                                       subtitle: "",
@@ -146,7 +146,7 @@ class ChatPageState extends State<ChatPage> {
                                               )
                                                   : Column(
                                                 children: [
-                                                  ...tWid.chatlog(
+                                                  ...textBlocks.chatlog(
                                                       conversation: engine.context,
                                                       context: context,
                                                       aiChunk: engine.responseText,
