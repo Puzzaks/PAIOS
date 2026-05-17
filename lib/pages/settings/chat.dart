@@ -234,7 +234,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                             cards.cardGroup([
                               CardContents.tap(
                                   title: engine.dict.value("chat_prompt"),
-                                  subtitle: engine.promptData.getPromptName(engine.chats[engine.currentChat]?["promptId"] ?? engine.config.defaultPromptId),
+                                  subtitle: engine.promptData.getPromptDisplayName(engine.chats[engine.currentChat]?["promptId"] ?? engine.config.defaultPromptId, engine.dict.locale),
                                   action: () {
                                     showDialog(
                                         context: context,
@@ -246,8 +246,8 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                     child: cards.cardGroup([
                                                       ...engine.promptData.defaultPrompts.keys.map((key) {
                                                         return CardContents.halfTap(
-                                                            title: engine.promptData.defaultPrompts[key]["name"] ?? "Default",
-                                                            subtitle: "System",
+                                                            title: engine.promptData.getPromptDisplayName(key, engine.dict.locale),
+                                                            subtitle: engine.dict.value("system_prompt"),
                                                             action: () {
                                                               setState(() {
                                                                 engine.chats[engine.currentChat]!["promptId"] = key;
@@ -260,7 +260,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                       ...engine.promptData.userPrompts.keys.map((key) {
                                                         return CardContents.halfTap(
                                                             title: engine.promptData.userPrompts[key]["name"] ?? "Custom",
-                                                            subtitle: "User",
+                                                            subtitle: engine.dict.value("user_prompts_title"),
                                                             action: () {
                                                               setState(() {
                                                                 engine.chats[engine.currentChat]!["promptId"] = key;
@@ -332,7 +332,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                   value: engine.chats[engine.currentChat]?["shareLocale"] ?? engine.shareLocale
                               ),
                             ]),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.dict.value("chat_settings_desc"),
                                 subtitle: engine.dict.value("chat_settings_subtitle"),
                                 action: (){

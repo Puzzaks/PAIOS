@@ -92,7 +92,7 @@ class ModelSettingsContextState extends State<ModelSettingsContext> {
                                 data: engine.testPrompt.split("replaceme")[1],
                               ),
                             ),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.dict.value("instructions_desc"),
                                 context: context,
                                 subtitle: engine.dict.value("recommend_changes_gh"),

@@ -1,10 +1,6 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
 import '../../engine.dart';
-import '../settings.dart';
 import '../support/elements.dart';
 
 
@@ -105,7 +101,7 @@ class LogsPageState extends State<LogsPage> {
                                 );
                               }).toList().reversed.toList(),
                             ),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.dict.value(engine.analytics?"logs_info_analytics":"logs_info_local"),
                                 subtitle: "",
                                 action: (){},

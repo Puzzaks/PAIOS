@@ -4,10 +4,8 @@ import 'package:geminilocal/pages/settings/prompts.dart';
 import 'package:geminilocal/pages/settings/resources.dart';
 import 'package:geminilocal/storage/file_access_service.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../engine.dart';
 import 'support/elements.dart';
-import 'package:intl/intl.dart';
 import 'package:geminilocal/pages/settings/model.dart';
 
 
@@ -91,9 +89,11 @@ class SettingsPageState extends State<SettingsPage> {
                                                           title: language["origin"],
                                                           subtitle: language["name"] == language["origin"] ? "" : language["name"],
                                                           action: () async {
+                                                            final navigator = Navigator.of(dialogContext);
                                                             await engine.dict.saveLanguage(language["id"]);
+                                                            if (!mounted) return;
                                                             setState(() {});
-                                                            Navigator.of(dialogContext).pop();
+                                                            navigator.pop();
                                                           }
                                                       );
                                                     }).toList().cast<Widget>()
@@ -186,7 +186,7 @@ class SettingsPageState extends State<SettingsPage> {
                               ),
                               CardContents.tapIcon(
                                   title: engine.dict.value("prompt_manager_title"),
-                                  subtitle: engine.promptData.getPromptName(engine.config.defaultPromptId),
+                                  subtitle: engine.promptData.getPromptDisplayName(engine.config.defaultPromptId, engine.dict.locale),
                                   icon: Icons.edit_note_rounded,
                                   colorBG: Theme.of(context).colorScheme.primaryFixedDim,
                                   color: Theme.of(context).colorScheme.onPrimaryFixed,
@@ -212,7 +212,7 @@ class SettingsPageState extends State<SettingsPage> {
                                   }
                               ),
                             ]),
-                            text.info(
+                            TextBlocks.info(
                                 title: engine.dict.value("prompt_dir_desc"),
                                 context: context,
                                 subtitle: "",

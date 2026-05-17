@@ -603,7 +603,7 @@ class Category {
 
 
 
-class text {
+class TextBlocks {
   static Widget info({
     required String title,
     required String subtitle,
@@ -781,8 +781,8 @@ class text {
         }
       }
       if(line["user"] == "Gemini"){
-        String AIMessage = line["message"];
-        if(!(AIMessage == aiChunk) && !(AIMessage == "")) {
+        String aiMessage = line["message"];
+        if(!(aiMessage == aiChunk) && !(aiMessage == "")) {
           splits.add(
               Row(
                 mainAxisAlignment: MainAxisAlignment.start,
@@ -813,7 +813,7 @@ class text {
                               );
                             },
                             selectable: true,
-                            data: AIMessage,
+                            data: aiMessage,
                           ),
                         ),
                       ),

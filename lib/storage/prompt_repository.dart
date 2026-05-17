@@ -12,6 +12,23 @@ class PromptRepository {
   
   Map<String, dynamic> defaultPrompts = {};
   Map<String, dynamic> userPrompts = {};
+
+  static const Map<String, Map<String, Map<String, String>>> _localizedDefaultPrompts = {
+    "zh-Hans": {
+      "system_default": {
+        "name": "默认提示词",
+        "description": "简单的 PAIOS 提示词。",
+      },
+      "pirate": {
+        "name": "海盗人格",
+        "description": "始终以海盗口吻回答。",
+      },
+      "system_old": {
+        "name": "旧版提示词",
+        "description": "1.2.0 之前的提示词，适用于 nano-v2，效果有限。",
+      },
+    },
+  };
   
   PromptRepository({required this.notifyEngine, this.logEvent});
 
@@ -164,6 +181,19 @@ class PromptRepository {
     if (userPrompts.containsKey(id)) return userPrompts[id]["name"] ?? "Custom Prompt";
     if (defaultPrompts.containsKey(id)) return defaultPrompts[id]["name"] ?? "System Default";
     return "Unknown Prompt";
+  }
+
+  String getPromptDisplayName(String id, String locale) {
+    if (userPrompts.containsKey(id)) return getPromptName(id);
+    return _localizedDefaultPrompts[locale]?[id]?["name"] ?? getPromptName(id);
+  }
+
+  String? getPromptDisplayDescription(String id, String locale) {
+    if (userPrompts.containsKey(id)) return null;
+    final localizedDescription = _localizedDefaultPrompts[locale]?[id]?["description"];
+    if (localizedDescription != null) return localizedDescription;
+    final description = defaultPrompts[id]?["description"];
+    return description is String ? description : null;
   }
 
   // ── Mutations ─────────────────────────────────────────────────────────────

@@ -220,7 +220,7 @@ class IntroPageState extends State<IntroPage> {
                           ]),
                           if(engine.modelDownloadLog.isNotEmpty)
                             if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["info"] == "downloading_model")
-                              text.infoShort(
+                              TextBlocks.infoShort(
                                   title: engine.dict.value("welcome_gtfo"),
                                   subtitle: "",
                                   action: () {},
@@ -257,9 +257,11 @@ class IntroPageState extends State<IntroPage> {
                                                         title: language["origin"],
                                                         subtitle: language["name"] == language["origin"] ? "" : language["name"],
                                                         action: () async {
+                                                          final navigator = Navigator.of(dialogContext);
                                                           await engine.dict.saveLanguage(language["id"]);
+                                                          if (!mounted) return;
                                                           setState(() {});
-                                                          Navigator.of(dialogContext).pop();
+                                                          navigator.pop();
                                                         }
                                                     );
                                                   }).toList().cast<Widget>()
@@ -303,7 +305,7 @@ class IntroPageState extends State<IntroPage> {
                           SizedBox(height: 20,),
                           if(engine.modelDownloadLog.isNotEmpty)
                             if(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download")
-                              text.info(
+                              TextBlocks.info(
                                   title: engine.dict.value("welcome_download").replaceAll("%size%", convertSize(engine.usualModelSize, false)),
                                   subtitle: "",
                                   action: () {},
@@ -312,7 +314,7 @@ class IntroPageState extends State<IntroPage> {
 
                           if(engine.modelDownloadLog.isNotEmpty)
                             if(!(engine.modelDownloadLog[engine.modelDownloadLog.length-1]["status"] == "Download"))
-                              text.info(
+                              TextBlocks.info(
                                   title: engine.modelInfo["version"] == null
                                       ? engine.dict.value("welcome_unavailable")
                                       : engine.modelInfo["version"] == "Unknown"
