@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
 import 'support/elements.dart';
 
@@ -87,92 +88,94 @@ class ChatPageState extends State<ChatPage> {
                                   width: scaffoldWidth - 30,
                                   child: Stack(
                                     children: [
-                                      SingleChildScrollView(
-                                        controller: engine.scroller,
-                                        scrollDirection: Axis.vertical,
-                                        child: Padding(
-                                          padding: EdgeInsets.symmetric(
-                                              vertical: 5,
-                                              horizontal: 5
-                                          ),
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.end,
-                                            children: [
-                                              (engine.context.isEmpty && !engine.isLoading)
-                                                  ? Column(
-                                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
-                                                   Column(
-                                                    children: tWid.chatlog(
-                                                        conversation: [
-                                                          {
-                                                            "user": "User",
-                                                            "message": engine.dict.value("mock_user_1")
-                                                          },
-                                                          {
-                                                            "user": "Gemini",
-                                                            "message": engine.dict.value("mock_gemini_1")
-                                                          },
-                                                          {
-                                                            "user": "User",
-                                                            "message": engine.dict.value("mock_user_2")
-                                                          },
-                                                          {
-                                                            "user": "Gemini",
-                                                            "message": engine.dict.value("mock_gemini_2")
-                                                          },
-                                                          {
-                                                            "user": "User",
-                                                            "message": engine.dict.value("mock_user_3")
-                                                          },
-                                                          {
-                                                            "user": "Gemini",
-                                                            "message": engine.dict.value("mock_gemini_3")
-                                                          }
-                                                        ],
-                                                        context: context,
-                                                        aiChunk: "",
-                                                        lastUser: ""
+                                      MotionBlurContainer(
+                                        child: SingleChildScrollView(
+                                          controller: engine.scroller,
+                                          scrollDirection: Axis.vertical,
+                                          child: Padding(
+                                            padding: EdgeInsets.symmetric(
+                                                vertical: 5,
+                                                horizontal: 5
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                              children: [
+                                                (engine.context.isEmpty && !engine.isLoading)
+                                                    ? Column(
+                                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                     Column(
+                                                      children: tWid.chatlog(
+                                                          conversation: [
+                                                            {
+                                                              "user": "User",
+                                                              "message": engine.dict.value("mock_user_1")
+                                                            },
+                                                            {
+                                                              "user": "Gemini",
+                                                              "message": engine.dict.value("mock_gemini_1")
+                                                            },
+                                                            {
+                                                              "user": "User",
+                                                              "message": engine.dict.value("mock_user_2")
+                                                            },
+                                                            {
+                                                              "user": "Gemini",
+                                                              "message": engine.dict.value("mock_gemini_2")
+                                                            },
+                                                            {
+                                                              "user": "User",
+                                                              "message": engine.dict.value("mock_user_3")
+                                                            },
+                                                            {
+                                                              "user": "Gemini",
+                                                              "message": engine.dict.value("mock_gemini_3")
+                                                            }
+                                                          ],
+                                                          context: context,
+                                                          aiChunk: "",
+                                                          lastUser: ""
+                                                      ),
                                                     ),
-                                                  ),
-                                                  text.infoShort(
-                                                      title: engine.dict.value("welcome"),
-                                                      context: context,
-                                                      subtitle: "",
-                                                      action: (){}
-                                                  )
-                                                ],
-                                              )
-                                                  : Column(
-                                                children: [
-                                                  ...tWid.chatlog(
-                                                      conversation: engine.context,
-                                                      context: context,
-                                                      aiChunk: engine.responseText,
-                                                      lastUser: engine.lastPrompt
-                                                  ),
-                                                  // Chip shown ONLY between continuation rounds (waiting, not streaming new content)
-                                                  if (engine.isContinuing && engine.responseText == engine.combinedResponse)
-                                                    Align(
-                                                      alignment: Alignment.centerLeft,
-                                                      child: Padding(
-                                                        padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
-                                                        child: Chip(
-                                                          avatar: SizedBox(
-                                                            width: 14,
-                                                            height: 14,
-                                                            child: CircularProgressIndicator(strokeWidth: 2),
-                                                          ),
-                                                          label: Text(engine.dict.value("model_continuing")),
-                                                          visualDensity: VisualDensity.compact,
-                                                          padding: EdgeInsets.zero,
+                                                    text.infoShort(
+                                                        title: engine.dict.value("welcome"),
+                                                        context: context,
+                                                        subtitle: "",
+                                                        action: (){}
+                                                    )
+                                                  ],
+                                                )
+                                                    : Column(
+                                                  children: [
+                                                    ...tWid.chatlog(
+                                                        conversation: engine.context,
+                                                        context: context,
+                                                        aiChunk: engine.responseText,
+                                                        lastUser: engine.lastPrompt
+                                                    ),
+                                                    // Chip shown ONLY between continuation rounds (waiting, not streaming new content)
+                                                    if (engine.isContinuing && engine.responseText == engine.combinedResponse)
+                                                      Align(
+                                                        alignment: Alignment.centerLeft,
+                                                        child: Padding(
+                                                          padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
+                                                          child: Chip(
+                                                            avatar: SizedBox(
+                                                              width: 14,
+                                                              height: 14,
+                                                              child: CircularProgressIndicator(strokeWidth: 2),
+                                                            ),
+                                                            label: Text(engine.dict.value("model_continuing")),
+                                                            visualDensity: VisualDensity.compact,
+                                                            padding: EdgeInsets.zero,
                                                         ),
                                                       ),
                                                     ),
-                                                ],
-                                              ),
-                                            ],
+                                                  ],
+                                                ),
+                                              ],
+                                            ),
                                           ),
                                         ),
                                       ),

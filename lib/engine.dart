@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -98,6 +97,10 @@ class AIEngine with md.ChangeNotifier {
   set errorRetry(bool value) => config.errorRetry = value;
   bool get ignoreInstructions => config.ignoreInstructions;
   set ignoreInstructions(bool value) => config.ignoreInstructions = value;
+
+  bool get isAICoreBeta => (modelInfo["isBeta"] == "true");
+  String get aicorePackageVersion => modelInfo["aicoreVersion"] ?? "Unknown";
+  bool get isAICoreInstalled => (modelInfo["aicoreInstalled"] == "true");
 
   Map get chats => chatData.chats;
   String get currentChat => chatData.currentChat;
@@ -636,7 +639,6 @@ class AIEngine with md.ChangeNotifier {
     status = "Sending prompt...";
     notifyListeners();
 
-    final int runTokens = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTokens") ? chatData.chats[currentChat]["chatTokens"] : tokens;
     double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
     final stream = gemini.generateTextEvents(
@@ -773,8 +775,6 @@ class AIEngine with md.ChangeNotifier {
                 _combinedResponse = responseText;
                 await log("model", "info", "Response timed out, triggering continuation #$_continuationCount");
                 if (kDebugMode) print("[AUTO-CONTINUE #$_continuationCount] timeout");
-                // Only inject partial AI text — no user turn (continuation uses system-level [CONTINUATION] prompt)
-                context.add({"user": "Gemini", "time": DateTime.now().millisecondsSinceEpoch.toString(), "message": _combinedResponse});
                 await _triggerContinuation();
               } else {
                 // Natural stop or cap reached — commit
@@ -879,7 +879,6 @@ class AIEngine with md.ChangeNotifier {
   }
 
   /// Continues a generation that was cut off (finishReason 0=MAX_TOKENS or 1=OTHER/timeout).
-  /// One temporary context entry (partial Gemini turn) must already be in [context] when called.
   /// The model will see its own partial answer and continue — no user "please continue" turn,
   /// so it won't respond to a conversational prompt.
   Future<void> _triggerContinuation() async {
@@ -950,10 +949,6 @@ class AIEngine with md.ChangeNotifier {
             // Note: stats are only added to cumulative when RECURSING (see cutAgain branch).
             // On the commit path we leave them in response.x so the UI formula
             // cumulative + response.x is always correct without double-counting.
-            // Remove the temp partial AI context entry (1 entry only, no user turn)
-            if (context.isNotEmpty) {
-              context.removeLast();
-            }
             if (kDebugMode) print("[AUTO-CONTINUE DONE] reason=$contDoneReason");
             await log("model", "info", "Continuation done. finishReason=$contDoneReason");
 
@@ -964,7 +959,6 @@ class AIEngine with md.ChangeNotifier {
               cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
               cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
               _continuationCount++;
-              context.add({"user": "Gemini", "time": DateTime.now().millisecondsSinceEpoch.toString(), "message": _combinedResponse});
               await _triggerContinuation();
             } else {
               // Commit — cumulative stays as-is; UI shows cumulative + response.x = total

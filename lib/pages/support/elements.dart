@@ -734,20 +734,32 @@ class text {
     required String aiChunk,
     required String lastUser,
     required List conversation,
-    required BuildContext context
+    required BuildContext context,
   }) {
     double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     List<Widget> splits = [];
-    for(var line in conversation){
-      if(line["user"] == "User"){
-        String userMessage = line["message"];
-        if(!(lastUser == userMessage) && !(userMessage == "")) {
+    final int lastUserIdx = conversation.lastIndexWhere((m) => m["user"] == "User");
+    final int lastGeminiIdx = conversation.lastIndexWhere((m) => m["user"] == "Gemini");
+    for (int i = 0; i < conversation.length; i++) {
+      var line = conversation[i];
+
+      if (line["user"] == "User") {
+        String userMessage = line["message"]?.toString() ?? "";
+        // Only skip trailing duplicate matching the pending user prompt
+        if (i == lastUserIdx && lastUser.isNotEmpty && userMessage == lastUser) {
+          // If the AI has already replied to this user message and no AI chunk is streaming,
+          // this is an earlier historical turn, not a pending turn duplicate (Bug #4).
+          if (!(aiChunk.isEmpty && lastGeminiIdx > lastUserIdx)) {
+            continue;
+          }
+        }
+        if (userMessage.isNotEmpty) {
           splits.add(
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   Padding(
-                    padding: EdgeInsetsGeometry.only(
+                    padding: const EdgeInsets.only(
                         bottom: 0,
                         top: 0
                     ),
@@ -756,7 +768,7 @@ class text {
                       color: Theme.of(context).colorScheme.onSecondaryContainer,
                       clipBehavior: Clip.hardEdge,
                       child: Padding(
-                        padding: EdgeInsetsGeometry.symmetric(
+                        padding: const EdgeInsets.symmetric(
                             vertical: 10,
                             horizontal: 15
                         ),
@@ -780,15 +792,19 @@ class text {
           );
         }
       }
-      if(line["user"] == "Gemini"){
-        String AIMessage = line["message"];
-        if(!(AIMessage == aiChunk) && !(AIMessage == "")) {
+      if (line["user"] == "Gemini") {
+        String aiMessage = line["message"]?.toString() ?? "";
+        // Only skip trailing duplicate matching the streaming AI chunk
+        if (i == lastGeminiIdx && aiChunk.isNotEmpty && (aiMessage == aiChunk || aiChunk.startsWith(aiMessage))) {
+          continue;
+        }
+        if (aiMessage.isNotEmpty) {
           splits.add(
               Row(
                 mainAxisAlignment: MainAxisAlignment.start,
                 children: [
                   Padding(
-                    padding: EdgeInsetsGeometry.only(
+                    padding: const EdgeInsets.only(
                         bottom: 0,
                         top: 0
                     ),
@@ -796,7 +812,7 @@ class text {
                       elevation: 0,
                       clipBehavior: Clip.hardEdge,
                       child: Padding(
-                        padding: EdgeInsetsGeometry.symmetric(
+                        padding: const EdgeInsets.symmetric(
                             vertical: 10,
                             horizontal: 15
                         ),
@@ -807,13 +823,19 @@ class text {
                           ),
                           child: MarkdownBody(
                             onTapLink: (String text, String? href, String title) async {
-                              await launchUrl(
-                                  Uri.parse(href!),
-                                  mode: LaunchMode.externalApplication
-                              );
+                              if (href == null || href.isEmpty) return;
+                              final uri = Uri.tryParse(href);
+                              if (uri != null) {
+                                try {
+                                  await launchUrl(
+                                      uri,
+                                      mode: LaunchMode.externalApplication
+                                  );
+                                } catch (_) {}
+                              }
                             },
                             selectable: true,
-                            data: AIMessage,
+                            data: aiMessage,
                           ),
                         ),
                       ),
@@ -825,13 +847,13 @@ class text {
         }
       }
     }
-    if(!(lastUser == "")) {
+    if (!(lastUser == "")) {
       splits.add(
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
             Padding(
-              padding: EdgeInsetsGeometry.only(
+              padding: const EdgeInsets.only(
                   bottom: 0,
                   top: 0
               ),
@@ -840,7 +862,7 @@ class text {
                 color: Theme.of(context).colorScheme.onSecondaryContainer,
                 clipBehavior: Clip.hardEdge,
                 child: Padding(
-                  padding: EdgeInsetsGeometry.symmetric(
+                  padding: const EdgeInsets.symmetric(
                       vertical: 10,
                       horizontal: 15
                   ),
@@ -863,13 +885,13 @@ class text {
         )
     );
     }
-    if(!(aiChunk == "")) {
+    if (!(aiChunk == "")) {
       splits.add(
         Row(
           mainAxisAlignment: MainAxisAlignment.start,
           children: [
             Padding(
-              padding: EdgeInsetsGeometry.only(
+              padding: const EdgeInsets.only(
                   bottom: 0,
                   top: 0
               ),
@@ -877,7 +899,7 @@ class text {
                 elevation: 0,
                 clipBehavior: Clip.hardEdge,
                 child: Padding(
-                  padding: EdgeInsetsGeometry.symmetric(
+                  padding: const EdgeInsets.symmetric(
                       vertical: 10,
                       horizontal: 15
                   ),
@@ -888,10 +910,16 @@ class text {
                     ),
                     child: MarkdownBody(
                       onTapLink: (String text, String? href, String title) async {
-                        await launchUrl(
-                          Uri.parse(href!),
-                          mode: LaunchMode.externalApplication
-                        );
+                        if (href == null || href.isEmpty) return;
+                        final uri = Uri.tryParse(href);
+                        if (uri != null) {
+                          try {
+                            await launchUrl(
+                              uri,
+                              mode: LaunchMode.externalApplication
+                            );
+                          } catch (_) {}
+                        }
                       },
                       selectable: true,
                       data: aiChunk,
@@ -907,3 +935,5 @@ class text {
     return splits;
   }
 }
+
+typedef TextPart = text;

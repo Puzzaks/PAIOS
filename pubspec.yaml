@@ -2,7 +2,7 @@ name: geminilocal
 description: "Local AI, on-device client"
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.1.8+11
+version: 1.2.0+26110503
 
 environment:
   sdk: ^3.9.2
@@ -10,10 +10,18 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  puzzak_ui:
+    path: ../demo/packages/puzzak_ui
+  puzzak_dict:
+    path: ../demo/packages/puzzak_dict
+  puzzak_core:
+    path: ../demo/packages/puzzak_core
+  puzzak_ui_chat:
+    path: ../demo/packages/puzzak_ui_chat
   provider: ^6.0.5
   dynamic_color: ^1.6.9
   shared_preferences: ^2.5.3
-  http: ^0.13.3
+  http: ^1.2.0
   flutter_markdown: 0.7.7+1
   plugin_platform_interface: ^2.1.8
   url_launcher: ^6.3.2

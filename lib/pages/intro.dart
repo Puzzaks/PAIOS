@@ -1,7 +1,8 @@
-import 'package:dynamic_color/dynamic_color.dart';
+
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/settings/logs.dart';
 import 'package:provider/provider.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import 'package:url_launcher/url_launcher.dart';
 import '../engine.dart';
 import 'support/elements.dart';
@@ -22,24 +23,7 @@ class IntroPageState extends State<IntroPage> {
   int latestSpeed = 0;
   @override
   Widget build(BuildContext context) {
-    final defaultLightColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal);
-    final defaultDarkColorScheme = ColorScheme.fromSwatch(primarySwatch: Colors.teal, brightness: Brightness.dark);
-    ThemeData themeData (colorSheme){
-      return ThemeData(
-        colorScheme: colorSheme,
-        cardTheme: CardThemeData(
-          surfaceTintColor: Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          clipBehavior: Clip.hardEdge
-        ),
-        useMaterial3: true,
-      );
-    }
-    TextStyle blacker = const TextStyle(
-        color: Colors.black
-    );
+    
     String convertSize(int size, bool isSpeed) {
       if (size < 1024) {
         return '$size B${isSpeed?"/s":""}';
@@ -105,35 +89,7 @@ class IntroPageState extends State<IntroPage> {
         return convertSize(latestSpeed, true);
       }
     }
-    return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
-      return MaterialApp(
-        theme: themeData(lightColorScheme ?? defaultLightColorScheme).copyWith(
-          cardColor: Colors.grey,
-          iconTheme: const IconThemeData(
-              color: Colors.black
-          ),
-          textTheme: TextTheme(
-              displayLarge: blacker,
-              displayMedium: blacker,
-              displaySmall: blacker,
-              headlineLarge: blacker,
-              headlineMedium: blacker,
-              headlineSmall: blacker,
-              titleLarge: blacker,
-              titleMedium: blacker,
-              titleSmall: blacker,
-              bodyLarge: blacker,
-              bodyMedium: blacker,
-              bodySmall: blacker,
-              labelLarge: blacker,
-              labelMedium: blacker,
-              labelSmall: blacker
-          )
-        ),
-        darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme),
-        themeMode: ThemeMode.system,
-        debugShowCheckedModeBanner: false,
-        home: LayoutBuilder(
+    return LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             Cards cards = Cards(context: context);
             return Consumer<AIEngine>(builder: (context, engine, child) {
@@ -151,7 +107,8 @@ class IntroPageState extends State<IntroPage> {
                       pinned: true,
                     ),
                     SliverToBoxAdapter(
-                      child: Column(
+                      child: MotionBlurContainer(
+                        child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Category.settings(
@@ -259,6 +216,7 @@ class IntroPageState extends State<IntroPage> {
                                                         action: () async {
                                                           await engine.dict.saveLanguage(language["id"]);
                                                           setState(() {});
+                                                          if (!dialogContext.mounted) return;
                                                           Navigator.of(dialogContext).pop();
                                                         }
                                                     );
@@ -333,14 +291,13 @@ class IntroPageState extends State<IntroPage> {
                         ],
                       ),
                     ),
-                  ],
+                  ),
+                ],
 
                 ),
               );
             });
-          }
-        )
-      );
-    });
+          },
+        );
   }
 }

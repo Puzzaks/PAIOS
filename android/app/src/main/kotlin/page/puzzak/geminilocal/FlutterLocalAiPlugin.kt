@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
 
 class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.StreamHandler {
     private lateinit var methodChannel: MethodChannel
@@ -136,6 +138,22 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
                     result.error("PLAY_STORE_ERROR", "Could not open Play Store: ${e.message}", null)
                 }
             }
+            "openAICoreBetaProgram" -> {
+                try {
+                    openAICoreBetaProgram()
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("BETA_PROGRAM_ERROR", "Could not open AICore beta program: ${e.message}", null)
+                }
+            }
+            "openAICoreDevSettings" -> {
+                try {
+                    openAICoreDevSettings()
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("DEV_SETTINGS_ERROR", "Could not open AICore dev settings: ${e.message}", null)
+                }
+            }
             "dispose" -> {
                 dispose()
                 result.success(null)
@@ -170,15 +188,52 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
                 }
             }
 
+            var aicoreInstalled = false
+            var aicoreVersion = "Unknown"
+            var isBeta = false
+            try {
+                if (::context.isInitialized) {
+                    val packageInfo = context.packageManager.getPackageInfo("com.google.android.aicore", 0)
+                    aicoreInstalled = true
+                    aicoreVersion = packageInfo.versionName ?: "Unknown"
+                    val lowerVersion = aicoreVersion.lowercase()
+                    val lowerModelVersion = modelVersion.lowercase()
+                    val hasSettingsActivity = Intent("com.google.android.aicore.action.SETTINGS").resolveActivity(context.packageManager) != null
+                    isBeta = isBeta ||
+                            lowerVersion.contains("rc") ||
+                            lowerVersion.contains("preview") ||
+                            lowerVersion.contains("beta") ||
+                            lowerVersion.contains("dev") ||
+                            lowerVersion.contains("canary") ||
+                            lowerVersion.contains("test") ||
+                            lowerVersion.contains("exp") ||
+                            lowerModelVersion.contains("v4") ||
+                            lowerModelVersion.contains("preview") ||
+                            hasSettingsActivity
+                }
+            } catch (e: PackageManager.NameNotFoundException) {
+                aicoreInstalled = false
+                aicoreVersion = "Not Installed"
+                isBeta = false
+            } catch (e: Exception) {
+                Log.w("FlutterLocalAi", "Error inspecting AICore package: ${e.message}")
+            }
+
             mapOf(
                 "status" to statusString,
-                "version" to modelVersion
+                "version" to modelVersion,
+                "aicoreInstalled" to aicoreInstalled.toString(),
+                "aicoreVersion" to aicoreVersion,
+                "isBeta" to isBeta.toString()
             )
         } catch (e: Exception) {
             android.util.Log.e("FlutterLocalAi", "getModelInfo error: ${e.javaClass.simpleName} - ${e.message}", e)
             mapOf(
                 "status" to "Error",
-                "version" to (e.message ?: "Unknown error")
+                "version" to (e.message ?: "Unknown error"),
+                "aicoreInstalled" to "false",
+                "aicoreVersion" to "Unknown",
+                "isBeta" to "false"
             )
         }
     }
@@ -419,6 +474,62 @@ class FlutterLocalAiPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stre
             context.startActivity(intent)
         } else {
             throw Exception("No app found to handle Play Store URL")
+        }
+    }
+
+    private fun openAICoreBetaProgram() {
+        if (!::context.isInitialized) {
+            throw Exception("Context not initialized")
+        }
+
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/apps/testing/com.google.android.aicore")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+        if (intent.resolveActivity(context.packageManager) != null) {
+            context.startActivity(intent)
+        } else {
+            try {
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                throw Exception("Could not open AICore beta program: ${e.message}")
+            }
+        }
+    }
+
+    private fun openAICoreDevSettings() {
+        if (!::context.isInitialized) {
+            throw Exception("Context not initialized")
+        }
+
+        try {
+            val aiCoreSettingsIntent = Intent("com.google.android.aicore.action.SETTINGS").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(aiCoreSettingsIntent)
+            return
+        } catch (e: Exception) {
+            Log.w("FlutterLocalAi", "Could not start AICore settings activity directly: ${e.message}")
+        }
+
+        try {
+            val devSettingsIntent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(devSettingsIntent)
+            return
+        } catch (e: Exception) {
+            Log.w("FlutterLocalAi", "Could not start Developer Options: ${e.message}")
+        }
+
+        try {
+            val appDetailsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", "com.google.android.aicore", null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(appDetailsIntent)
+        } catch (e: Exception) {
+            throw Exception("Could not open AICore settings or fallback settings: ${e.message}")
         }
     }
 

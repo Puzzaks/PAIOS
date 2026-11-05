@@ -177,6 +177,14 @@ class GeminiNano {
     await _methodChannel.invokeMethod('openAICorePlayStore');
   }
 
+  Future<void> openAICoreBetaProgram() async {
+    await _methodChannel.invokeMethod('openAICoreBetaProgram');
+  }
+
+  Future<void> openAICoreDevSettings() async {
+    await _methodChannel.invokeMethod('openAICoreDevSettings');
+  }
+
   Future<void> dispose() async {
     await _methodChannel.invokeMethod('dispose');
   }

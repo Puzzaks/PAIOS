@@ -4,10 +4,10 @@ import 'package:geminilocal/pages/settings/prompts.dart';
 import 'package:geminilocal/pages/settings/resources.dart';
 import 'package:geminilocal/storage/file_access_service.dart';
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
+import 'github_explorer_page.dart';
 import 'support/elements.dart';
-import 'package:intl/intl.dart';
 import 'package:geminilocal/pages/settings/model.dart';
 
 
@@ -56,7 +56,8 @@ class SettingsPageState extends State<SettingsPage> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
+                        child: MotionBlurContainer(
+                          child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Category.settings(
@@ -92,7 +93,9 @@ class SettingsPageState extends State<SettingsPage> {
                                                           subtitle: language["name"] == language["origin"] ? "" : language["name"],
                                                           action: () async {
                                                             await engine.dict.saveLanguage(language["id"]);
+                                                            if (!mounted) return;
                                                             setState(() {});
+                                                            if (!dialogContext.mounted) return;
                                                             Navigator.of(dialogContext).pop();
                                                           }
                                                       );
@@ -104,6 +107,7 @@ class SettingsPageState extends State<SettingsPage> {
                                   },
                                   secondAction: () async {
                                     await engine.dict.setSystemLanguage();
+                                    if (!mounted) return;
                                     setState(() {});
                                   }
                               ),
@@ -123,16 +127,6 @@ class SettingsPageState extends State<SettingsPage> {
                                     engine.saveSettings();
                                   },
                                   value: engine.errorRetry
-                              ),
-                              CardContents.tapIcon(
-                                  title: engine.dict.value("open_aicore_settings"),
-                                  subtitle: engine.dict.value("in_play_store"),
-                                  icon: Icons.android_rounded,
-                                  colorBG: Theme.of(context).colorScheme.primaryFixedDim,
-                                  color: Theme.of(context).colorScheme.onPrimaryFixed,
-                                  action: () async {
-                                    engine.gemini.openAICorePlayStore();
-                                  }
                               ),
                               CardContents.tapIcon(
                                   title: engine.dict.value(engine.analytics?"logs_with_analytics":"logs_no_analytics"),
@@ -163,6 +157,22 @@ class SettingsPageState extends State<SettingsPage> {
                                       ),
                                     );
                                   }
+                              ),
+                              CardContents.tapIcon(
+                                  title: engine.dict.value("gh_repo"),
+                                  subtitle: engine.dict.value("gh_repo_desc"),
+                                  icon: Icons.explore_rounded,
+                                  colorBG: Theme.of(context).colorScheme.primaryFixedDim,
+                                  color: Theme.of(context).colorScheme.onPrimaryFixed,
+                                  action: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => const GitHubExplorerPage(),
+                                        settings: const RouteSettings(name: 'GitHubExplorerPage'),
+                                      ),
+                                    );
+                                  }
                               )
                             ]),
                             Category.settings(
@@ -172,7 +182,9 @@ class SettingsPageState extends State<SettingsPage> {
                             cards.cardGroup([
                               CardContents.tapIcon(
                                   title: engine.dict.value("settings_ai"),
-                                  subtitle: engine.dict.value("settings_ai_desc"),
+                                  subtitle: engine.isAICoreBeta
+                                      ? "${engine.dict.value("settings_ai_desc")} (${engine.dict.value("aicore_beta_badge")})"
+                                      : engine.dict.value("settings_ai_desc"),
                                   icon: Icons.auto_awesome_rounded,
                                   colorBG: Theme.of(context).colorScheme.primaryFixedDim,
                                   color: Theme.of(context).colorScheme.onPrimaryFixed,
@@ -221,6 +233,7 @@ class SettingsPageState extends State<SettingsPage> {
                           ],
                         ),
                       ),
+                    ),
                     ],
 
                   ),

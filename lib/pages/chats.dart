@@ -1,11 +1,12 @@
 import 'dart:convert';
 
-import 'package:collection/collection.dart';
+
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/pages/settings.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
 import 'support/elements.dart';
 
@@ -113,6 +114,20 @@ class ChatsPageState extends State<ChatsPage> {
                       }
                   );
                 }
+                final regularChatKeys = engine.chats.keys
+                    .where((k) => k != "testing" && k != "0")
+                    .toList()
+                    .reversed
+                    .toList();
+                final pinnedChatKeys = regularChatKeys.where((key) {
+                  final chat = engine.chats[key];
+                  return (chat is Map && (chat["pinned"] ?? false) == true);
+                }).toList();
+                final otherChatKeys = regularChatKeys.where((key) {
+                  final chat = engine.chats[key];
+                  return !(chat is Map && (chat["pinned"] ?? false) == true);
+                }).toList();
+
                 return Scaffold(
                   floatingActionButton: FloatingActionButton.extended(
                     icon: Icon(Icons.add_rounded),
@@ -187,111 +202,82 @@ class ChatsPageState extends State<ChatsPage> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if(engine.isLoading && engine.currentChat == "0")Category.settings(
-                                  title: engine.dict.value("new_chat"),
-                                  context: context
-                              ),
-                            if(engine.isLoading && engine.currentChat == "0")cards.cardGroup([CardContents.tap(
-                              action: (){
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(builder: (context) => ChatPage(),
-                                      settings: const RouteSettings(name: 'ChatPage')),
-                                );
-                              },
-                                title: engine.dict.value("loading"),
-                                subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
-                            )]),
-
-                            if(engine.chats.keys.toList().map((key){
-                              Map chat = engine.chats[key]??{
-                                "name": "Nonameyet",
-                                "tokens":  "0",
-                                "history": {},
-                                "created": DateTime.now().millisecondsSinceEpoch.toString(),
-                                "updated": DateTime.now().millisecondsSinceEpoch.toString()
-                              };
-                              if(chat["pinned"]??false){return Container();}
-                            }).toList().whereNot((crd) => crd == null).isNotEmpty)Category.settings(
-                                title: engine.dict.value("pinned_chats"),
-                                context: context
-                            ),
-                            cards.cardGroup(
-                                <Widget>[
-                                  ...engine.chats.keys.toList().where((k) => k != "testing" && k != "0").toList().reversed.map((key){
-                                    Map chat = engine.chats[key]??{
-                                      "name": "Nonameyet",
-                                      "tokens":  "0",
-                                      "history": {},
-                                      "created": DateTime.now().millisecondsSinceEpoch.toString(),
-                                      "updated": DateTime.now().millisecondsSinceEpoch.toString()
-                                    };
-                                    if(chat["pinned"]??false){return chatCard(chat,key);}
-                                  }).toList().whereNot((crd) => crd == null).cast<Widget>(),
-                                ]
-                            ),
-                            if(engine.chats.keys.toList().map((key){
-                              Map chat = engine.chats[key]??{
-                                "name": "Nonameyet",
-                                "tokens":  "0",
-                                "history": {},
-                                "created": DateTime.now().millisecondsSinceEpoch.toString(),
-                                "updated": DateTime.now().millisecondsSinceEpoch.toString()
-                              };
-                              if(chat["pinned"]??false){return Container();}
-                            }).toList().whereNot((crd) => crd == null).isNotEmpty)Category.settings(
-                                title: engine.dict.value("other_chats"),
-                                context: context
-                            ),
-                            if(engine.chats.keys.toList().map((key){
-                              Map chat = engine.chats[key]??{
-                                "name": "Nonameyet",
-                                "tokens":  "0",
-                                "history": {},
-                                "created": DateTime.now().millisecondsSinceEpoch.toString(),
-                                "updated": DateTime.now().millisecondsSinceEpoch.toString()
-                              };
-                              if(chat["pinned"]??false){return Container();}
-                            }).toList().whereNot((crd) => crd == null).isEmpty)Category.settings(
-                                title: engine.dict.value("your_chats"),
-                                context: context
-                            ),
-                            cards.cardGroup(
-                              <Widget>[
-                                ...engine.chats.keys.toList().where((k) => k != "testing" && k != "0").toList().reversed.map((key){
-                                  Map chat = engine.chats[key]??{
-                                    "name": "Nonameyet",
-                                    "tokens":  "0",
-                                    "history": {},
-                                    "created": DateTime.now().millisecondsSinceEpoch.toString(),
-                                    "updated": DateTime.now().millisecondsSinceEpoch.toString()
-                                  };
-                                  if(!(chat["pinned"]??false)){return chatCard(chat,key);}
-                                }).toList().whereNot((crd) => crd == null).cast<Widget>(),
-                              ]
-                            ),
-                            text.info(
-                                title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
-                                subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
-                                action: engine.chats.isNotEmpty?(){}:engine.isLoading?(){}:(){
-                                  engine.currentChat = "0";
-                                  engine.context.clear();
-                                  engine.contextSize = 0;
+                        child: MotionBlurContainer(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if(engine.isLoading && engine.currentChat == "0")Category.settings(
+                                    title: engine.dict.value("new_chat"),
+                                    context: context
+                                ),
+                              if(engine.isLoading && engine.currentChat == "0")cards.cardGroup([CardContents.tap(
+                                action: (){
                                   Navigator.push(
                                     context,
-                                    MaterialPageRoute(
-                                        builder: (context) => ChatPage(),
-                                        settings: const RouteSettings(name: 'ChatPage')
-                                    ),
+                                    MaterialPageRoute(builder: (context) => ChatPage(),
+                                        settings: const RouteSettings(name: 'ChatPage')),
                                   );
-                                  },
-                                context: context
-                            ),
-                            SizedBox(height: 75,)
-                          ],
+                                },
+                                  title: engine.dict.value("loading"),
+                                  subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
+                              )]),
+
+                              if (pinnedChatKeys.isNotEmpty) ...[
+                                Category.settings(
+                                  title: engine.dict.value("pinned_chats"),
+                                  context: context,
+                                ),
+                                cards.cardGroup(
+                                  pinnedChatKeys.map((key) {
+                                    Map chat = engine.chats[key] ?? {
+                                      "name": "Nonameyet",
+                                      "tokens": "0",
+                                      "history": {},
+                                      "created": DateTime.now().millisecondsSinceEpoch.toString(),
+                                      "updated": DateTime.now().millisecondsSinceEpoch.toString(),
+                                    };
+                                    return chatCard(chat, key);
+                                  }).toList(),
+                                ),
+                              ],
+                              if (otherChatKeys.isNotEmpty) ...[
+                                Category.settings(
+                                  title: engine.dict.value(pinnedChatKeys.isNotEmpty ? "other_chats" : "your_chats"),
+                                  context: context,
+                                ),
+                                cards.cardGroup(
+                                  otherChatKeys.map((key) {
+                                    Map chat = engine.chats[key] ?? {
+                                      "name": "Nonameyet",
+                                      "tokens": "0",
+                                      "history": {},
+                                      "created": DateTime.now().millisecondsSinceEpoch.toString(),
+                                      "updated": DateTime.now().millisecondsSinceEpoch.toString(),
+                                    };
+                                    return chatCard(chat, key);
+                                  }).toList(),
+                                ),
+                              ],
+                              text.info(
+                                  title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
+                                  subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
+                                  action: engine.chats.isNotEmpty?(){}:engine.isLoading?(){}:(){
+                                    engine.currentChat = "0";
+                                    engine.context.clear();
+                                    engine.contextSize = 0;
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                          builder: (context) => ChatPage(),
+                                          settings: const RouteSettings(name: 'ChatPage')
+                                      ),
+                                    );
+                                    },
+                                  context: context
+                              ),
+                              SizedBox(height: 75,)
+                            ],
+                          ),
                         ),
                       ),
                     ],

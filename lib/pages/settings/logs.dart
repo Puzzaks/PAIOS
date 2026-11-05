@@ -1,10 +1,7 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import '../../engine.dart';
-import '../settings.dart';
 import '../support/elements.dart';
 
 
@@ -44,8 +41,9 @@ class LogsPageState extends State<LogsPage> {
                 ),
                 body: Builder(
                     builder: (context) {
-                      return SingleChildScrollView(
-                        child: Column(
+                      return MotionBlurContainer(
+                        child: SingleChildScrollView(
+                          child: Column(
                           mainAxisAlignment: MainAxisAlignment.start,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -113,7 +111,8 @@ class LogsPageState extends State<LogsPage> {
                             )
                           ],
                         ),
-                      );
+                      ),
+                    );
                     }
                 ),
               );

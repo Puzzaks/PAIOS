@@ -1,3 +1,27 @@
+## Update 1.2.0 `OBT`
+#### Changes
+- Migrated core UI ecosystem to `puzzak_ui`, `puzzak_ui_chat`, `puzzak_dict`, and `puzzak_core`
+- Added in-app GitHub Explorer (`GitHubService` & `GitHubExplorerPage`) with 4 interactive tabs:
+  - Repository Documentation browser (README, ROADMAP, CHANGELOG, etc.) with Markdown rendering & image support
+  - Live GitHub Issues explorer with search, labels, and issue comments thread bottom sheet
+  - Releases explorer with release notes and asset download links
+  - Project Security & Open-Source License overview
+- Added native AICore Beta Track detection (`isAICoreBeta`, package version inspection via `PackageManager`):
+  - Beta badge & update track indicator in AI Model Settings
+  - Direct deep link to AICore System & Developer Settings (for Persistent Mode and cache management)
+  - One-tap "Join AICore Beta" button directing to Google Play Beta enrollment
+- Applied velocity-based directional scroll motion blur (`MotionBlurContainer`) across all pages (`chats`, `chat`, `settings`, `intro`, `model`, `prompts`, `prompt_editor`, `prompt_viewer`, `resources`, `logs`, `context`)
+- Replaced legacy template unit tests with comprehensive regression and widget test suite
+- Fully localized new AICore Beta and Developer Settings keys across all 5 supported languages (en, uk, de, tr, zh)
+#### Fixes
+- Fixed real-time deduplication during active generation and auto-continuation (eliminated duplicate bubbles while streaming)
+- Fixed "Other chats" / "Pinned chats" header filter logic in `chats.dart`
+- Removed nested `MaterialApp` and legacy grey theme styling in `IntroPage`, restoring full Material 3 dynamic color support
+- Fixed historical duplicate message suppression in `elements.dart` `text.chatlog`
+- Fixed null-unsafe link launching in Markdown conversation bubbles
+- Fixed system language fallback to `"en"` when device locale is not bundled in `languages.json`
+- Resolved all analyzer warnings across `engine.dart`, `intro.dart`, `settings.dart`, and `logs.dart`
+
 ## Update 1.1.8 `OBT`
 #### Changes
 - Reworked and optimized settings and other parts

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
 import 'package:url_launcher/url_launcher.dart';
 import '../../engine.dart';
 import '../support/elements.dart';
@@ -42,9 +43,10 @@ class ModelSettingsContextState extends State<ModelSettingsContext> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
+                        child: MotionBlurContainer(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 20
@@ -102,10 +104,11 @@ class ModelSettingsContextState extends State<ModelSettingsContext> {
                                       mode: LaunchMode.externalApplication
                                   );
                                 }
-                            )
+                            ),
                           ],
                         ),
                       ),
+                    ),
                     ],
 
                   ),
