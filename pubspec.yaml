@@ -2,7 +2,7 @@ name: geminilocal
 description: "Local AI, on-device client"
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.2.0+26110503
+version: 1.5.10+26111303
 
 environment:
   sdk: ^3.9.2
@@ -10,14 +10,18 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  puzzak_ui:
-    path: ../demo/packages/puzzak_ui
-  puzzak_dict:
-    path: ../demo/packages/puzzak_dict
-  puzzak_core:
-    path: ../demo/packages/puzzak_core
-  puzzak_ui_chat:
-    path: ../demo/packages/puzzak_ui_chat
+  m3x:
+    path: ../demo/packages/m3x
+  m3x_ui:
+    path: ../demo/packages/m3x_ui
+  m3x_dict:
+    path: ../demo/packages/m3x_dict
+  m3x_core:
+    path: ../demo/packages/m3x_core
+  m3x_chat:
+    path: ../demo/packages/m3x_chat
+  m3x_mesh:
+    path: ../demo/packages/m3x_mesh
   provider: ^6.0.5
   dynamic_color: ^1.6.9
   shared_preferences: ^2.5.3
@@ -38,6 +42,8 @@ dependencies:
   firebase_remote_config: ^6.4.0
   hive: ^2.2.3
   hive_flutter: ^1.1.0
+  in_app_review: ^2.0.9
+  path_provider: ^2.1.5
 
 
 
@@ -52,6 +58,8 @@ flutter:
   uses-material-design: true
 
   assets:
+    - pubspec.yaml
+    - CHANGELOG.md
     - assets/translations/languages.json
     - assets/translations/uk.json
     - assets/translations/en.json
@@ -61,3 +69,7 @@ flutter:
     - assets/system_prompt.txt
     - assets/additional_resources.json
     - assets/prompts/
+    - assets/images/
+    - assets/data/
+    - assets/docs/
+    - assets/docs/docs_manifest.json

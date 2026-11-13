@@ -1,9 +1,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Note on hardware gating: Do NOT use <uses-feature android:name="android.hardware.npu" android:required="true" />.
+         Google Play Console's Device Catalog currently only maps `android.hardware.npu` to Android 17 (API 37) devices
+         (excluding Pixel 8/9, Galaxy S24, and all Android 14/15/16 AICore hardware).
+         AICore availability is enforced at runtime via ML Kit Prompt API `checkStatus()`, while Play Store distribution
+         is gated by `minSdk = 34` and Play Console Exclusion Rules (RAM >= 8GB / SoC). -->
+
     <application
         android:label="PAIOS"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        <uses-library android:name="com.google.android.aicore" android:required="false" />
+        <!-- Note: Google AICore is a system application service (declared under <queries> below),
+             NOT an OS shared library (<uses-library>). Forcing <uses-library android:name="com.google.android.aicore" />
+             causes Android PackageManager to fail package installation with INSTALL_FAILED_MISSING_SHARED_LIBRARY.
+             AICore availability is enforced at runtime via ML Kit Prompt API checkStatus(). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -27,6 +37,53 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MeshOverlayActivity"
+            android:theme="@style/MeshOverlayTheme"
+            android:exported="true"
+            android:taskAffinity="page.puzzak.paios.overlay"
+            android:excludeFromRecents="true"
+            android:autoRemoveFromRecents="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.VOICE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.puzzak.m3x.mesh.ACTION_MESH_OVERLAY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".PaiosVoiceInteractionService"
+            android:label="PAIOS Assistant"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/interaction_service" />
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".PaiosVoiceInteractionSessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
+
+        <service
+            android:name=".PaiosRecognitionService"
+            android:label="PAIOS Speech Recognition"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

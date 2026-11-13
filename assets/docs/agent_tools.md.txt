@@ -1,0 +1,295 @@
+Tools give your on-device agent the ability to access in-app data, communicate
+with backend services, and perform actions on behalf of the user.
+
+## How tools work
+
+When a user submits a prompt, the `AgentRunner` class executes an
+[agentic loop](https://developers.google.com/machine-learning/glossary#agentic-loop) across four stages:
+
+1. **Observe** : Gemini Nano analyzes the user's prompt and current conversation context against the registered tool declarations (the agent's [action space](https://developers.google.com/machine-learning/glossary#action-space)).
+2. **Reason**: The model determines whether an in-app tool is required. If a tool is needed, Gemini Nano emits a structured tool invocation containing the function name and typed arguments.
+3. **Act** : The `AgentRunner` instance automatically intercepts this invocation and executes the corresponding Kotlin function in your app.
+4. **Evaluate feedback** : The tool's output is fed back into Gemini Nano. The model evaluates the feedback and either answers the user or calls another tool until a [termination condition](https://developers.google.com/machine-learning/glossary#termination_condition) is met (completing the goal or reaching the `maxTurns` limit).
+
+## Declarative tools with Android AppFunctions
+
+The recommended way to define tools is declaratively using Android
+AppFunctions (`androidx.appfunctions`). AppFunctions provide a standardized
+platform model for declaring typed in-app capabilities with automatic schema
+generation.
+
+### 1. Add Gradle dependencies
+
+Add the AppFunctions artifacts alongside `genai-agent` in your module's
+`build.gradle.kts` file:
+
+    dependencies {
+        implementation("com.google.mlkit:genai-agent:1.0.0-alpha1")
+        implementation("androidx.appfunctions:appfunctions:1.0.0-alpha13")
+        ksp("androidx.appfunctions:appfunctions-compiler:1.0.0-alpha13")
+    }
+
+### 2. Annotate tool methods with the `@AppFunctionDeclaration` annotation
+
+Annotate public tool methods with the
+`@AppFunctionDeclaration(isDescribedByKDoc = true)` annotation. Parameter
+descriptions are documented in standard KDoc `@param` tags.
+
+AppFunctions require return values to be either primitive types (such as
+`String`, `Int`, or `Boolean`) or structured data classes annotated with the
+`@AppFunctionSerializable` annotation.
+
+    package com.example.ai.agent.tools
+
+    import androidx.appfunctions.AppFunctionDeclaration
+    import androidx.appfunctions.AppFunctionSerializable
+    import androidx.appfunctions.AppFunctionService
+    import androidx.appfunctions.AppFunctionServiceEntryPoint
+    import kotlinx.coroutines.Dispatchers
+    import kotlinx.coroutines.withContext
+
+    /**
+     * Structured details for an order.
+     */
+    @AppFunctionSerializable
+    data class OrderDetails(
+        val orderId: String,
+        val status: String,
+        val estimatedDelivery: String?,
+        val itemCount: Int,
+    )
+
+    /**
+     * Result returned when cancelling an order.
+     */
+    @AppFunctionSerializable
+    data class CancelOrderResult(
+        val orderId: String,
+        val cancelled: Boolean,
+        val message: String,
+    )
+
+    @AppFunctionServiceEntryPoint(
+        serviceName = "OrderAppFunctionService",
+        appFunctionXmlFileName = "order_app_functions",
+    )
+    abstract class OrderTools : AppFunctionService() {
+
+        private val orderRepository = OrderRepository()
+
+        /**
+         * Fetches details and delivery status for a customer order by ID.
+         *
+         * @param orderId The alphanumeric order identifier (for example, ORD-8492)
+         */
+        @AppFunctionDeclaration(isDescribedByKDoc = true)
+        suspend fun fetch_order_details(
+            orderId: String
+        ): OrderDetails = withContext(Dispatchers.IO) {
+            val order = orderRepository.findOrder(orderId)
+            if (order != null) {
+                OrderDetails(
+                    orderId = order.id,
+                    status = order.status,
+                    estimatedDelivery = order.deliveryEstimate,
+                    itemCount = order.items.size,
+                )
+            } else {
+                OrderDetails(
+                    orderId = orderId,
+                    status = "NOT_FOUND",
+                    estimatedDelivery = null,
+                    itemCount = 0,
+                )
+            }
+        }
+
+        /**
+         * Requests a cancellation or return for an active order.
+         *
+         * @param orderId The order identifier to cancel
+         * @param reason The reason provided by the user for cancellation
+         */
+        @AppFunctionDeclaration(isDescribedByKDoc = true)
+        suspend fun cancel_order(
+            orderId: String,
+            reason: String? = null
+        ): CancelOrderResult = withContext(Dispatchers.IO) {
+            val success = orderRepository.cancelOrder(orderId, reason)
+            CancelOrderResult(
+                orderId = orderId,
+                cancelled = success,
+                message = if (success) {
+                    "Order cancellation processed."
+                } else {
+                    "Order cannot be cancelled at this stage."
+                }
+            )
+        }
+    }
+
+Register the generated service in your app's `AndroidManifest.xml` file:
+
+    <service
+        android:name=".OrderAppFunctionService"
+        android:permission="android.permission.BIND_APP_FUNCTION_SERVICE"
+        android:exported="true">
+        <property
+            android:name="android.app.appfunctions.schema"
+            android:value="app_functions_schema.xsd" />
+        <property
+            android:name="android.app.appfunctions.v2"
+            android:value="order_app_functions.xml" />
+        <intent-filter>
+            <action android:name="android.app.appfunctions.AppFunctionService" />
+        </intent-filter>
+    </service>
+
+> [!NOTE]
+> **Direct parameter mapping:** Tool methods take domain parameters directly (such as `orderId`). You don't need to pass a special framework context parameter.
+
+### 3. Restrict caller access with the `ACCESS_LEVEL_SELF` constant
+
+AppFunctions don't have to be public to the system or to external assistants.
+In Android, access control is managed through caller access levels rather than
+manual caller identity checks.
+
+By default (using the `ACCESS_LEVEL_ANDROID_TRUSTED` constant), an AppFunction
+can be discovered and executed by platform-certified on-device assistants
+holding the `EXECUTE_APP_FUNCTIONS` system permission. However, when you're
+building capabilities intended strictly for your app's internal agent (such as
+inspecting user shopping carts, accessing local tokens, or performing in-app
+actions), you can restrict access exclusively to your own application using the
+`ACCESS_LEVEL_SELF` constant:
+
+    import androidx.appfunctions.AppFunctionAccessLevel
+    import androidx.appfunctions.AppFunctionDeclaration
+    import androidx.appfunctions.AppFunctionService
+    import androidx.appfunctions.AppFunctionServiceEntryPoint
+    import androidx.appfunctions.ExperimentalAppFunctionsApi
+    import androidx.appfunctions.metadata.AppFunctionMetadata
+
+    @AppFunctionServiceEntryPoint(
+        serviceName = "OrderAppFunctionService",
+        appFunctionXmlFileName = "order_app_functions",
+    )
+    abstract class OrderTools : AppFunctionService() {
+
+        private val orderRepository = OrderRepository()
+
+        /**
+         * Cancels an order. Restricted exclusively to this app's internal agent.
+         */
+        @OptIn(ExperimentalAppFunctionsApi::class)
+        @AppFunctionDeclaration(isDescribedByKDoc = true)
+        @AppFunctionAccessLevel(
+            level = AppFunctionMetadata.ACCESS_LEVEL_SELF,
+            isCompatEnforcementEnabled = true,
+        )
+        suspend fun cancel_order(orderId: String): CancelOrderResult {
+            // Only your app's internal agent can invoke this function
+            val success = orderRepository.cancelOrder(orderId)
+            return CancelOrderResult(
+                orderId = orderId,
+                cancelled = success,
+                message = if (success) "Cancelled." else "Failed."
+            )
+        }
+    }
+
+The platform supports three caller access levels:
+
+- **`ACCESS_LEVEL_SELF`** (`100`): Strictly restricted to the host application itself. External assistants, system surfaces, and other apps can't discover or invoke the function over IPC. Use this level for sensitive operations or tools that should only serve your app's internal agent.
+- **`ACCESS_LEVEL_SYSTEM`** (`200`): Restricted to privileged system callers holding the `android.Manifest.permission#EXECUTE_APP_FUNCTIONS_SYSTEM` permission (such as the system Launcher or Recents) and the host app itself.
+- **`ACCESS_LEVEL_ANDROID_TRUSTED`** (`300`, default): Open to platform-certified on-device agents holding the `EXECUTE_APP_FUNCTIONS` permission, system surfaces, and the host app.
+
+### 4. Register tools with the agent
+
+You can register AppFunctions with the agent either automatically using the
+`enableAppFunctions()` method, or programmatically using the
+`AppFunctionAgentTools.discover()` method:
+
+#### Automatic discovery with the `enableAppFunctions()` method
+
+For straightforward apps where AppFunctions execute automatically when the
+model calls them:
+
+    import com.google.mlkit.genai.agent.Agent
+    import com.google.mlkit.genai.agent.AgentRunner
+
+    val agent = Agent.builder()
+        .setName("OrderAssistant")
+        .setInstructions("Assist users with order tracking.")
+        .enableAppFunctions(true) // Automatically discovers all AppFunctions in your app package
+        .setMaxTurns(10)
+        .build()
+
+    val runner = AgentRunner(agent)
+
+Optionally, call the `addAppFunctionIds("fetch_order_details", "cancel_order")`
+method to scope discovery strictly to specific AppFunction IDs instead of
+exposing all in-app functions.
+
+#### Programmatic discovery with the `AppFunctionAgentTools.discover()` method
+
+When your app needs to inspect discovered AppFunctions, filter them, or
+decorate them before registering with the agent:
+
+    import com.google.mlkit.genai.agent.Agent
+    import com.google.mlkit.genai.agent.AgentRunner
+    import com.google.mlkit.genai.agent.AppFunctionAgentTools
+
+    val discoveredTools = AppFunctionAgentTools.discover(
+        enabledAppFunctionIds = listOf("fetch_order_details", "cancel_order") // Optional ID filter
+    )
+
+    val agent = Agent.builder()
+        .setName("OrderAssistant")
+        .setInstructions("Assist users with order tracking.")
+        .addTools(discoveredTools)
+        .build()
+
+    val runner = AgentRunner(agent)
+
+> [!NOTE]
+> **Mutual exclusivity:** Either call the `enableAppFunctions(true)` method on the `Agent.Builder` class or pass discovered tools to the `addTools()` method from the `AppFunctionAgentTools.discover()` method, but not both. Registering both emits a runtime warning and may expose duplicate tool schemas.
+
+## Decorator pattern and human in the loop
+
+Sensitive operations, such as order cancellations, payments, or deleting user
+data, should keep a [human in the loop (HITL)](https://developers.google.com/machine-learning/glossary#human-in-the-loop) by requiring user
+confirmation. All tools added to the `Agent` class originate from Android AppFunctions,
+and the `AgentTool` class provides a delegating constructor `AgentTool(delegate)` so you
+can wrap discovered AppFunction tools using the Decorator pattern:
+
+    import com.google.mlkit.genai.agent.AgentTool
+
+    class HitlConfirmationTool(
+        delegate: AgentTool,
+        private val onConfirm: suspend (toolName: String, args: Map<String, Any>) -> Boolean
+    ) : AgentTool(delegate) {
+
+        override suspend fun execute(args: Map<String, Any>): Map<String, Any?> {
+            val confirmed = onConfirm(name, args)
+            if (!confirmed) {
+                return mapOf(
+                    "status" to "CANCELLED_BY_USER",
+                    "message" to "Action was declined by the user."
+                )
+            }
+            return checkNotNull(delegate).execute(args)
+        }
+    }
+
+## Best practices for tool design
+
+- **Scope the action space** : Keep the agent's [action space](https://developers.google.com/machine-learning/glossary#action-space) (the set of tools and permissions exposed to the agent) just large enough for its task using the `addAppFunctionIds()` method and the `ACCESS_LEVEL_SELF` constant. An overly large action space makes an on-device model more error-prone and consumes [context window](https://developers.google.com/machine-learning/glossary#context_window) tokens.
+- **Be explicit in descriptions**: Gemini Nano relies on tool and parameter descriptions to decide when to call a tool. Be clear about the tool's purpose and mention expected argument formats (such as dates or IDs).
+- **Return structured error maps** : Return descriptive error maps like `mapOf("error" to "Order not found")` when an expected failure occurs. This allows Gemini Nano to explain the issue gracefully to the user. If an unexpected exception is thrown by a tool, the runtime automatically catches it and reflects the error message back to the model for [self-correction](https://developers.google.com/machine-learning/glossary#self-correction).
+- **Keep return payloads focused** : On-device models have smaller [context windows](https://developers.google.com/machine-learning/glossary#context_window) than server models. Return only the fields relevant to answering the user's query instead of dumping entire database rows or raw network responses.
+- **Run I/O on the `Dispatchers.IO` dispatcher** : Always ensure network requests and Room database queries within tools execute on the `Dispatchers.IO` dispatcher to prevent blocking the coroutine caller.
+
+## Next steps
+
+- Learn how to maintain conversation context across app rotations and clean up sessions in [Manage sessions and lifecycle](https://developers.google.com/ml-kit/genai/agent/android/manage-sessions).
+- Handle streaming text tokens and tool execution states in [Stream events and UI integration](https://developers.google.com/ml-kit/genai/agent/android/streaming-events).

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../../engine.dart';
 import '../support/elements.dart';
 
@@ -66,7 +66,7 @@ class ModelSettingsState extends State<ModelSettings> {
                                             ),
                                             const SizedBox(height: 2),
                                             Text(
-                                              "${engine.dict.value("version")}: ${engine.modelInfo["version"] ?? engine.modelInfo["aicoreVersion"] ?? "Loading..."}",
+                                              "${engine.dict.value("version")}: ${engine.modelInfo["version"] ?? engine.modelInfo["aicoreVersion"] ?? engine.dict.value("loading")}",
                                               style: TextStyle(
                                                 color: Theme.of(context).colorScheme.onSurfaceVariant,
                                                 fontSize: 14,
@@ -85,12 +85,8 @@ class ModelSettingsState extends State<ModelSettings> {
                                             : null,
                                         label: Text(
                                           engine.isAICoreBeta
-                                              ? (engine.dict.value("aicore_beta_badge") == "aicore_beta_badge"
-                                                  ? "Beta"
-                                                  : engine.dict.value("aicore_beta_badge"))
-                                              : (engine.dict.value("aicore_stable_badge") == "aicore_stable_badge"
-                                                  ? "Stable"
-                                                  : engine.dict.value("aicore_stable_badge")),
+                                              ? engine.dict.value("aicore_beta_badge")
+                                              : engine.dict.value("aicore_stable_badge"),
                                           style: TextStyle(
                                             fontWeight: FontWeight.bold,
                                             color: engine.isAICoreBeta
@@ -204,6 +200,40 @@ class ModelSettingsState extends State<ModelSettings> {
                                       engine.saveSettings();
                                     },
                                     value: engine.shareLocale
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("downsample_images"),
+                                    subtitle: engine.dict.value("downsample_images_desc"),
+                                    action: (){
+                                      setState(() {
+                                        engine.downsampleImages = !engine.downsampleImages;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    switcher: (value){
+                                      setState(() {
+                                        engine.downsampleImages = value;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    value: engine.downsampleImages
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("enable_mesh"),
+                                    subtitle: engine.dict.value("enable_mesh_desc"),
+                                    action: (){
+                                      setState(() {
+                                        engine.enableMesh = !engine.enableMesh;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    switcher: (value){
+                                      setState(() {
+                                        engine.enableMesh = value;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    value: engine.enableMesh
                                 ),
                               ]),
                               text.info(

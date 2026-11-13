@@ -5,7 +5,7 @@ import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/storage/file_access_service.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import 'package:share_plus/share_plus.dart';
 import '../../engine.dart';
 import '../support/elements.dart';

@@ -1,0 +1,67 @@
+This API is offered in preview, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility. To use this feature, the Google account on the device must be part of the [AICore Developer Preview
+program](https://developers.google.com/ml-kit/genai/aicore-dev-preview).
+
+> [!CAUTION]
+> **Caution:** Agentic workflows and tool calling rely on generative AI model predictions, which might not always suggest the correct tool or arguments. You are responsible for the safety and quality of any outputs generated or actions taken based on model tool predictions.
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-agentic-workflows.png)
+
+ML Kit's [agentic workflows](https://developers.google.com/machine-learning/glossary.md.txt#agentic-workflow) (`com.google.mlkit:genai-agent`)
+let you build autonomous, multi-turn on-device conversational experiences
+powered by [Gemini Nano](https://developer.android.com/ai/gemini-nano) and the Android AICore system service.
+
+Built on top of the `GenerativeModel` class ([direct model access](https://developers.google.com/ml-kit/genai/prompt/android.md.txt)),
+the `AgentRunner` class automates complete, goal-driven [agentic loops](https://developers.google.com/machine-learning/glossary.md.txt#agentic-loop)
+directly within your app: observing context, reasoning over user inputs, acting
+through typed Kotlin tools, and evaluating feedback until a
+[termination condition](https://developers.google.com/machine-learning/glossary.md.txt#termination_condition) is met.
+
+## Common agentic patterns
+
+On-device agentic workflows are optimized for focused, deterministic reasoning
+loops where user intent is translated into structured app actions. Common
+patterns include:
+
+|---|---|
+| **Pattern** | **Example** |
+| In-app action execution and shortcuts | Translating natural language requests into specific app commands, such as applying photo adjustments on an editing canvas, modifying playback settings, or toggling app preferences. |
+| Structured lookup and local calculation | Fetching a specific record by ID (such as an order status or account balance) and performing multi-step mathematical calculations (such as loan amortizations or fitness metrics). |
+| Conversational filtering and curation | Interactively querying and refining local app items, such as searching through a local task list, filtering a playlist, or sorting catalog items based on user criteria. |
+| Guided multi-step input | Guiding users through structured data entry step-by-step, validating intermediate inputs with local tools before final submission. |
+
+> [!NOTE]
+> **Note:** Gemini Nano is an on-device model optimized for fast, private, and deterministic execution. For best results, design tools with distinct responsibilities, clear types, and concise parameter descriptions. For semantic retrieval across local files or app content, tools can query local search indexes or on-device embeddings. For massive, internet-scale knowledge bases or complex multi-agent swarms, consider a hybrid architecture with cloud models.
+
+## On-device performance and privacy
+
+Agentic workflows run on Android AICore to deliver private, responsive
+execution directly on the user's device:
+
+- **Local reasoning and prompt privacy**: The model reasoning and planning loop executes entirely on-device with zero network latency. User prompt data remains private to the device. However, individual tools implemented in your app can still make network calls or query cloud APIs if your use case requires external data.
+- **Managed multi-turn sessions** : The `AgentSession` interface maintains in-memory conversation history across turns so you don't have to manage transcripts manually. You can reclaim memory at any time using the `session.close()`, `deleteSession(sessionId)`, or `clearAllSessions()` methods.
+- **Execution guardrails** : Agent configurations enforce a maximum turn limit (the `maxTurns` limit, defaulting to 10) as a resource [termination condition](https://developers.google.com/machine-learning/glossary.md.txt#termination_condition) to prevent runaway execution loops, conserve battery, and protect device responsiveness.
+
+## Choose between custom generation, agents, and task-specific APIs
+
+ML Kit organizes on-device GenAI capabilities by how much customization and
+orchestration your feature needs:
+
+- **Custom generation and agents** : Work directly with the Gemini Nano [foundation model](https://developers.google.com/machine-learning/glossary.md.txt#foundation-model) when your feature requires custom instructions or domain-specific logic. Choose **[agentic workflows](https://developers.google.com/machine-learning/glossary.md.txt#agentic-workflow)** (using the `AgentRunner` class, built on top of the `GenerativeModel` class) when you want managed multi-turn sessions and automated tool-calling loops, or choose [**direct model access**](https://developers.google.com/ml-kit/genai/prompt/android.md.txt) (using the `GenerativeModel` class) for custom prompting, typed structured output, or client-managed multi-turn history.
+- **Speech and audio** : Use dedicated speech and GenAI models (such as [Speech recognition](https://developers.google.com/ml-kit/genai/speech-recognition/android.md.txt)) to transcribe spoken audio to text.
+- **Text and image tasks** : Use pre-configured, task-specific feature types and fine-tuned [LoRA](https://developers.google.com/machine-learning/glossary.md.txt#LoRA) adapters on top of the shared [base model](https://developers.google.com/machine-learning/glossary.md.txt#base-model) (such as [Image description](https://developers.google.com/ml-kit/genai/image-description/android.md.txt), [Summarization](https://developers.google.com/ml-kit/genai/summarization/android.md.txt), [Proofreading](https://developers.google.com/ml-kit/genai/proofreading/android.md.txt), and [Rewriting](https://developers.google.com/ml-kit/genai/rewriting/android.md.txt)) for turnkey vision and writing use cases without prompt engineering.
+
+The following table outlines how these approaches compare:
+
+|---|---|---|---|
+| **Consideration** | **Agentic workflows (`AgentRunner`)** | **Direct model access (`GenerativeModel`)** | **Text and image task APIs** |
+| Architecture | High-level orchestration layer built on top of `GenerativeModel`. | Direct interface to the Gemini Nano foundation model for custom prompts. | Task-specific feature types backed by fine-tuned LoRA adapters on top of the shared base model. |
+| Multi-turn context | **Managed multi-turn sessions (`AgentSession`).** Maintains in-memory conversation history automatically across turns so you don't have to manage transcripts manually (also supports ephemeral single-turn execution). | **Client-managed multi-turn context.** `GenerateContentRequest` supports multi-turn `List<Content>` (`USER` and `MODEL` roles) and `sessionId` for developers who want to manage their own chat history directly. | Stateless, single-input task calls. |
+| Tool calling and actions | **Automated tool-calling loop.** Discovers registered Android AppFunctions, executes model-selected calls, and feeds results back into the model automatically. | **Client-managed tool declarations.** `GenerateContentRequest` accepts tool schemas and emits function call requests for your app to execute and return manually. | Not applicable (fixed task pipeline). |
+| When to use | Use when you want **automated orchestration** for multi-step tool execution and managed in-memory multi-turn sessions. | Use for **custom prompting** , multimodal image understanding, typed structured output (`@Generable`), or when you want to **manage your own chat history or tool dispatch** directly. | Use when your feature matches a standard writing or vision task and you want out-of-the-box quality from fine-tuned LoRAs with minimal setup. |
+
+## Next steps
+
+- To set up your project and build your first agent, see [Get started with agentic workflows](https://developers.google.com/ml-kit/genai/agent/android/get-started.md.txt).
+- To learn how to expose in-app functions to the agent, see [Define tools](https://developers.google.com/ml-kit/genai/agent/android/define-tools.md.txt).
+- To manage multi-turn sessions and memory across Android lifecycles, see [Manage sessions and lifecycle](https://developers.google.com/ml-kit/genai/agent/android/manage-sessions.md.txt).
+- To collect streaming responses and update your UI, see [Stream events and UI integration](https://developers.google.com/ml-kit/genai/agent/android/streaming-events.md.txt).

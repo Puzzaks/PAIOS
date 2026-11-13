@@ -1,0 +1,126 @@
+On-device agentic workflows (using the `AgentRunner` class) provide managed
+multi-turn sessions that record in-memory conversation history automatically across
+turns, so you don't have to manage transcripts manually. (If you prefer to manage
+your own [chat](https://developers.google.com/machine-learning/glossary#chat) history directly, you can pass a multi-turn `List<Content>`
+object with `USER` and `MODEL` roles and a `sessionId` value to a
+`GenerateContentRequest` object using [direct model access](https://developers.google.com/ml-kit/genai/prompt/android).)
+
+This page covers managing `AgentSession` instances across Android component
+lifecycles, configuration changes, and memory reclamation.
+
+## Multi-turn sessions
+
+Manage multi-turn conversations using scoped `AgentSession` instances obtained
+using the `runner.getOrCreateSession(sessionId)` method. Dialogue turns (user
+messages, tool invocations, and model responses) are recorded in memory
+automatically within the session. Subsequent calls to the
+`session.runAsync(content)` method preserve prior turns as context.
+
+Session identifiers must be non-blank, at most 128 characters, and contain only
+alphanumeric characters, underscores, hyphens, or periods
+(`^[a-zA-Z0-9_.-]+$`, excluding `.` and `..`). UUID strings generated using the
+`UUID.randomUUID().toString()` method conform to these constraints.
+
+To start a multi-turn conversation, create a session identifier and obtain an
+`AgentSession` instance from your `AgentRunner` instance:
+
+    val sessionId = "user_chat_${System.currentTimeMillis()}"
+    val session = runner.getOrCreateSession(sessionId)
+
+Each call to the `session.runAsync(content)` method sends a new prompt turn within that
+session. The model maintains context from prior turns in the conversation.
+
+## Preserve sessions across configuration changes
+
+The `AgentSession` interface holds dialogue history in memory and doesn't
+implement the `Parcelable` interface. In Android apps, Activities and Fragments
+are destroyed and recreated during configuration changes (such as screen
+rotation). If you store the session directly in an Activity, the conversation
+history is lost upon rotation.
+
+To preserve conversation history across configuration changes, retain your
+`AgentSession` instance inside an AndroidX `ViewModel` class:
+
+    package com.example.ai.agent.ui
+
+    import androidx.lifecycle.ViewModel
+    import androidx.lifecycle.viewModelScope
+    import com.google.mlkit.genai.agent.AgentRunner
+    import com.google.mlkit.genai.agent.AgentSession
+    import com.google.mlkit.genai.agent.textTokens
+    import com.google.mlkit.genai.prompt.Content
+    import kotlinx.coroutines.flow.MutableStateFlow
+    import kotlinx.coroutines.flow.StateFlow
+    import kotlinx.coroutines.flow.asStateFlow
+    import kotlinx.coroutines.flow.update
+    import kotlinx.coroutines.launch
+
+    class ChatViewModel(
+        private val runner: AgentRunner,
+        private val sessionId: String = "default_chat_session"
+    ) : ViewModel() {
+
+        // Retain the session inside the ViewModel to survive screen rotations
+        private val session: AgentSession = runner.getOrCreateSession(sessionId)
+
+        private val _responseText = MutableStateFlow("")
+        val responseText: StateFlow<String> = _responseText.asStateFlow()
+
+        fun sendMessage(userPrompt: String) {
+            viewModelScope.launch {
+                val content = Content.builder().text(userPrompt).build()
+                session.runAsync(content)
+                    .textTokens()
+                    .collect { token ->
+                        _responseText.update { it + token }
+                    }
+            }
+        }
+
+        override fun onCleared() {
+            super.onCleared()
+            // Release session memory and cancel active coroutines when ViewModel is destroyed
+            session.close()
+        }
+    }
+
+> [!NOTE]
+> **Process death:** In-memory sessions survive configuration changes (like device rotation), but are cleared if the app process is killed in the background. If your use case requires long-term persistence across app restarts, persist completed messages in a local database (such as Room).
+
+## Memory management and session cleanup
+
+Keep in-memory conversation state bounded to maintain app performance:
+
+- **Explicit session deletion** : When a user leaves a conversation thread or taps "New Chat", call the `session.delete()` or `runner.deleteSession(sessionId)` method to synchronously free memory allocated for past turns and tool outputs. Alternatively, calling the `session.close()` method dispatches background eviction.
+- **Sign-out cleanup** : Call the `runner.clearAllSessions()` method when the user signs out or clears app data.
+- **Session cleanup on lifecycle end** : Call the `session.close()` method when your `ViewModel` class or parent component is permanently destroyed (in the `onCleared()` method). This cancels pending in-flight coroutines and dispatches background eviction for that conversation session.
+
+## Single-turn ephemeral execution
+
+For one-off agent tasks (such as generating a quick summary, validating an
+input, or answering a standalone question) where past context isn't needed,
+call the `runner.runSingleTurnAsync(content)` method directly:
+
+    import com.google.mlkit.genai.agent.AgentEvent
+    import com.google.mlkit.genai.prompt.Content
+
+    val content = Content.builder()
+        .text("Summarize order history for customer #1042: ...")
+        .build()
+
+    runner.runSingleTurnAsync(content)
+        .collect { event ->
+            if (event is AgentEvent.TextMessage && !event.isPartial) {
+                displaySummary(event.text)
+            }
+        }
+
+When invoking the `runner.runSingleTurnAsync(content)` method directly, the `AgentRunner` class
+allocates a temporary session internally and automatically purges all
+conversation state from memory once the response stream completes or cancels,
+avoiding memory leaks.
+
+## Next steps
+
+- Connect the agent's reactive stream to Compose in [Stream events and UI integration](https://developers.google.com/ml-kit/genai/agent/android/streaming-events).
+- Learn about configuring tools in [Define tools](https://developers.google.com/ml-kit/genai/agent/android/define-tools).

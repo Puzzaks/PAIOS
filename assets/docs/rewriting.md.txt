@@ -1,0 +1,254 @@
+This API is offered in beta, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility.
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-rewrite.svg)
+
+With ML Kit's GenAI Rewriting API, you can automatically help users rewrite chat
+messages or short pieces of content with a different style or tone.
+
+Users may find it helpful to be provided with suggestions on how to rewrite a
+piece of content in the following cases:
+
+- Restructuring a message to be more professional when communicating with stakeholders
+- Shortening a message to be more suitable for posting on social media platforms
+- Rephrasing a message for non-native speakers looking for alternative ways to communicate the message
+
+## Key capabilities
+
+The ML Kit's GenAI Rewriting API can rewrite short pieces of content in one of
+the following styles:
+
+- **Elaborate**: Expands the input text with more details and descriptive language.
+- **Emojify**: Adds relevant emoji to the input text, making it more expressive and fun.
+- **Shorten**: Condenses the input text to a shorter version, keeping the core message intact.
+- **Friendly**: Rewrites the input text to be more casual and approachable, using a conversational tone.
+- **Professional**: Rewrites the input text to be more formal and business-like, using a respectful tone.
+- **Rephrase**: Rewrites the input text using different words and sentence structures, while maintaining the original meaning.
+
+Requests will return at least one suggestion. If multiple suggestions are
+returned, results will be sorted by descending confidence.
+
+## Example results
+
+|---|---|---|
+| **Input** | **Rewrite Style** | **Output** |
+| Do you want to meet to talk more? | Professional | Would you be interested in meeting again to discuss this further? |
+| I would like to request the pleasure of your company at a casual get-together at my residence this coming Saturday evening | Shorten | Would you like to join me for a casual get-together at my place this Saturday evening? |
+| The event was successful | Elaborate | The event was a resounding success, exceeding all of our expectations and proving to be a resounding triumph. |
+| Let's grab coffee sometime soon | Emojify | Let's grab coffee ☕ sometime soon 👋. |
+| Provide the report by end of day | Friendly | Could you please share the report by the end of the day? |
+| Hey, need that thing ASAP | Professional | Could you please provide the requested document at your earliest convenience? |
+| The project is behind schedule | Rephrase | The project timeline requires adjustment to meet the original deadline |
+
+## Getting Started
+
+> [!NOTE]
+> **Note:** This API requires Android API level 26 or higher.
+
+To get started with the GenAI Rewriting API, add this dependency to your
+project's build file.
+
+```kotlin
+implementation("com.google.mlkit:genai-rewriting:1.0.0-beta1")
+```
+
+Then, instantiate the \[`Rewriter`\]\[1\] client with the required options, check if
+the required on-device model features are available (and download them if
+necessary), prepare your input text as a request, run the rewriting process to
+get suggestions, and release the resources.
+
+### Kotlin
+
+```kotlin
+val textToRewrite = "The event was successful"
+
+// Define task with selected input and output format
+val rewriterOptions = RewriterOptions.builder(context)
+    // OutputType can be one of the following: ELABORATE, EMOJIFY, SHORTEN,
+    // FRIENDLY, PROFESSIONAL, REPHRASE
+    .setOutputType(RewriterOptions.OutputType.ELABORATE)
+    // Refer to RewriterOptions.Language for available languages
+    .setLanguage(RewriterOptions.Language.ENGLISH)
+    .build()
+val rewriter = Rewriting.getClient(rewriterOptions)
+
+suspend fun prepareAndStartRewrite() {
+    // Check feature availability, status will be one of the following:
+    // UNAVAILABLE, DOWNLOADABLE, DOWNLOADING, AVAILABLE
+    val featureStatus = rewriter.checkFeatureStatus().await()
+
+    if (featureStatus == FeatureStatus.DOWNLOADABLE) {
+        // Download feature if necessary.
+        // If downloadFeature is not called, the first inference request will
+        // also trigger the feature to be downloaded if it's not already
+        // downloaded.
+        rewriter.downloadFeature(object : DownloadCallback {
+            override fun onDownloadStarted(bytesToDownload: Long) { }
+
+            override fun onDownloadFailed(e: GenAiException) { }
+
+            override fun onDownloadProgress(totalBytesDownloaded: Long) {}
+
+            override fun onDownloadCompleted() {
+                startRewritingRequest(textToRewrite, rewriter)
+            }
+        })
+    } else if (featureStatus == FeatureStatus.DOWNLOADING) {
+        // Inference request will automatically run once feature is
+        // downloaded.
+        // If Gemini Nano is already downloaded on the device, the
+        // feature-specific LoRA adapter model will be downloaded
+        // quickly. However, if Gemini Nano is not already downloaded,
+        // the download process may take longer.
+        startRewritingRequest(textToRewrite, rewriter)
+    } else if (featureStatus == FeatureStatus.AVAILABLE) {
+        startRewritingRequest(textToRewrite, rewriter)
+    }
+}
+
+suspend fun startRewritingRequest(text: String, rewriter: Rewriter) {
+    // Create task request
+    val rewritingRequest = RewritingRequest.builder(text).build()
+
+    // Start rewriting request with non-streaming response
+    // More than 1 result may be returned. If multiple suggestions are
+    // returned, results will be sorted by descending confidence.
+    val rewriteResults =
+        rewriter.runInference(rewritingRequest).await().results
+
+    // You can also start a streaming request
+    // rewriter.runInference(rewritingRequest) { newText ->
+    //    // Show new text in UI
+    // }
+}
+
+// Be sure to release the resource when no longer needed
+// For example, on viewModel.onCleared() or activity.onDestroy()
+rewriter.close()
+```
+
+### Java
+
+```java
+String textToRewrite = "The event was successful";
+
+// Define task with required input and output format
+RewriterOptions rewriterOptions =
+    RewriterOptions.builder(context)
+        // OutputType can be one of the following: ELABORATE,
+        // EMOJIFY, SHORTEN, FRIENDLY, PROFESSIONAL, REPHRASE
+        .setOutputType(RewriterOptions.OutputType.ELABORATE)
+        // Refer to RewriterOptions.Language for available
+        // languages
+        .setLanguage(RewriterOptions.Language.ENGLISH)
+        .build();
+Rewriter rewriter = Rewriting.getClient(rewriterOptions);
+
+void prepareAndStartRewrite()
+    throws ExecutionException, InterruptedException {
+    // Check feature availability, status will be one of the
+    // following: UNAVAILABLE, DOWNLOADABLE, DOWNLOADING, AVAILABLE
+    try {
+        int featureStatus = rewriter.checkFeatureStatus().get();
+        if (featureStatus == FeatureStatus.DOWNLOADABLE) {
+            // Download feature if necessary.
+            // If downloadFeature is not called, the first inference
+            // request will also trigger the feature to be downloaded
+            // if it's not already downloaded.
+            rewriter.downloadFeature(
+                new DownloadCallback() {
+                    @Override
+                    public void onDownloadCompleted() {
+                        startRewritingRequest(textToRewrite, rewriter);
+                    }
+
+                    @Override
+                    public void onDownloadFailed(GenAIException e) {}
+
+                    @Override
+                    public void onDownloadProgress(
+                        long totalBytesDownloaded) {}
+
+                    @Override
+                    public void onDownloadStarted(long bytesDownloaded) {}
+                });
+        } else if (featureStatus == FeatureStatus.DOWNLOADING) {
+            // Inference request will automatically run once feature is
+            // downloaded.
+            // If Gemini Nano is already downloaded on the device, the
+            // feature-specific LoRA adapter model will be downloaded
+            // quickly. However, if Gemini Nano is not already downloaded,
+            // the download process may take longer.
+            startRewritingRequest(textToRewrite, rewriter);
+        } else if (featureStatus == FeatureStatus.AVAILABLE) {
+            startRewritingRequest(textToRewrite, rewriter);
+        }
+    } catch (ExecutionException | InterruptedException e) {
+        e.printStackTrace();
+    }
+}
+
+void startRewritingRequest(String text, Rewriter rewriter) {
+    // Create task request
+    RewritingRequest rewritingRequest =
+        RewritingRequest.builder(text).build();
+
+    try {
+        // Start rewriting request with non-streaming response
+        // More than 1 result may be returned. If multiple
+        // suggestions are returned, results will be sorted by
+        // descending confidence.
+        rewriter.runInference(rewritingRequest).get().getResults();
+
+        // You can also start a streaming request
+        // rewriter.runInference(rewritingRequest, newText -> {
+        //     // Show new text in UI
+        // });
+    } catch (ExecutionException | InterruptedException e) {
+        e.printStackTrace();
+    }
+}
+
+// Be sure to release the resource when no longer needed
+// For example, on viewModel.onCleared() or activity.onDestroy()
+rewriter.close();
+```
+
+## Supported features and limitations
+
+The GenAI Rewriting API supports the following languages: English, Japanese,
+French, German, Italian, Spanish, and Korean, and they are defined in
+\[`RewriterOptions.Language`\]\[2\]. Input should be less than 256 tokens.
+
+Availability of the specific feature configuration (specified by
+`RewriterOptions`) may vary depending on the particular device's configuration
+and the models that have been downloaded to the device.
+
+The most reliable way for developers to ensure that the intended API feature is
+supported on a device with the requested `RewriterOptions` is to call the
+\[`checkFeatureStatus()`\]\[3\] method. This method provides the definitive status
+of feature availability on the device at runtime.
+
+> [!NOTE]
+> **Note:** Variations in hardware across different device types may lead to differences in Gemini Nano base model versions and, consequently, in ML Kit GenAI API outputs. LoRA adapters are applied to mitigate the differences.
+
+## Common setup issues
+
+> [!NOTE]
+> **Note:** This API is not supported on devices with an [unlocked bootloader](https://source.android.com/docs/core/architecture/bootloader/locking_unlocking).
+
+ML Kit GenAI APIs rely on the Android AICore app to access Gemini Nano. When a device is just setup (including reset), or the AICore app is just reset (e.g. clear data, uninstalled then reinstalled), the AICore app may not have enough time to finish initialization (including downloading latest configurations from server). As a result, the ML Kit GenAI APIs may not function as expected. Here are the common setup error messages you may see and how to handle them:
+
+|---|---|
+| **Example error message** | **How to handle** |
+| AICore failed with error type 4-CONNECTION_ERROR and error code 601-BINDING_FAILURE: AICore service failed to bind. | This could happen when you install the app using ML Kit GenAI APIs immediately after device setup or when AICore is uninstalled after your app is installed. Updating AICore app then reinstalling your app should fix it. |
+| AICore failed with error type 3-PREPARATION_ERROR and error code 606-FEATURE_NOT_FOUND: Feature ... is not available. | This could happen when AICore hasn't finished downloading the latest configurations. When the device is connected to the internet, it usually takes a few minutes to a few hours to update. Restarting the device can speed up the update. <br /> Note that if the device's bootloader is unlocked, you'll also see this error---this API does not support devices with unlocked bootloaders. |
+| AICore failed with error type 1-DOWNLOAD_ERROR and error code 0-UNKNOWN: Feature ... failed with failure status 0 and error esz: UNAVAILABLE: Unable to resolve host ... | Keep network connection, wait for a few minutes and retry. |
+
+> [!NOTE]
+> **Note:** While various resetting is common to developers, it is much less frequent to users. Also, all these setup failure cases can be caught by the `checkFeatureStatus()` or `checkStatus()` APIs. Make sure to call `checkFeatureStatus()` or `checkStatus()` first before showing any related UI, so your app users won't see these errors in any cases.
+
+<br />
+
+## Sample code
+
+- [ML Kit GenAI Samples](https://github.com/googlesamples/mlkit/tree/master/android/genai)

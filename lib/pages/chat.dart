@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
 import 'support/elements.dart';
 
@@ -14,7 +15,6 @@ class ChatPage extends StatefulWidget {
 
 class ChatPageState extends State<ChatPage> {
   text tWid = text();
-  @override
   @override
   void initState() {
     super.initState();
@@ -93,9 +93,9 @@ class ChatPageState extends State<ChatPage> {
                                           controller: engine.scroller,
                                           scrollDirection: Axis.vertical,
                                           child: Padding(
-                                            padding: EdgeInsets.symmetric(
+                                            padding: const EdgeInsets.symmetric(
                                                 vertical: 5,
-                                                horizontal: 5
+                                                horizontal: 12.0
                                             ),
                                             child: Column(
                                               crossAxisAlignment: CrossAxisAlignment.end,
@@ -135,7 +135,8 @@ class ChatPageState extends State<ChatPage> {
                                                           ],
                                                           context: context,
                                                           aiChunk: "",
-                                                          lastUser: ""
+                                                          lastUser: "",
+                                                          dict: engine.dict,
                                                       ),
                                                     ),
                                                     text.infoShort(
@@ -152,7 +153,9 @@ class ChatPageState extends State<ChatPage> {
                                                         conversation: engine.context,
                                                         context: context,
                                                         aiChunk: engine.responseText,
-                                                        lastUser: engine.lastPrompt
+                                                        lastUser: engine.lastPrompt,
+                                                        pendingUserImagePath: engine.chatData.lastImagePath,
+                                                         dict: engine.dict,
                                                     ),
                                                     // Chip shown ONLY between continuation rounds (waiting, not streaming new content)
                                                     if (engine.isContinuing && engine.responseText == engine.combinedResponse)
@@ -184,6 +187,80 @@ class ChatPageState extends State<ChatPage> {
                                 ),
                               ),
                             ),
+                            if (engine.pendingImageBytes != null)
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                                child: Card(
+                                  elevation: 0,
+                                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                    child: Row(
+                                      children: [
+                                        ClipRRect(
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Image.memory(
+                                            engine.pendingImageBytes!,
+                                            width: 48,
+                                            height: 48,
+                                            fit: BoxFit.cover,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                engine.pendingImageName ?? 'image.jpg',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 8,
+                                                  vertical: 2,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: Theme.of(context).colorScheme.primaryContainer,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                ),
+                                                child: Text(
+                                                  engine.downsampleImages
+                                                      ? engine.dict.value("vision_fast_badge")
+                                                      : engine.dict.value("vision_full_badge"),
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.close_rounded, size: 20),
+                                          tooltip: engine.dict.value("remove_image"),
+                                          onPressed: () {
+                                            HapticFeedback.lightImpact();
+                                            engine.clearImageAttachment();
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   vertical: 10,
@@ -201,16 +278,32 @@ class ChatPageState extends State<ChatPage> {
                                 readOnly: engine.isLoading || engine.isContinuing,
                                 decoration: InputDecoration(
                                   isDense: true,
+                                  prefixIcon: IconButton(
+                                    icon: const Icon(Icons.add_photo_alternate_outlined, size: 24),
+                                    tooltip: engine.dict.value("attach_image"),
+                                    onPressed: (engine.isLoading || engine.isContinuing)
+                                        ? null
+                                        : () {
+                                            HapticFeedback.lightImpact();
+                                            engine.pickImageAttachment();
+                                          },
+                                  ),
                                   suffixIcon: (engine.isLoading || engine.isContinuing)
                                       ? IconButton(
                                     icon: Icon(Icons.stop_rounded, size: 25,),
                                     tooltip: engine.dict.value("cancel_generate"),
-                                    onPressed: (){engine.cancelGeneration();},
+                                    onPressed: () {
+                                      HapticFeedback.lightImpact();
+                                      engine.cancelGeneration();
+                                    },
                                   )
                                       : IconButton(
                                     icon: Icon(Icons.send_rounded, size: 25,),
                                     tooltip: engine.dict.value("generate"),
-                                    onPressed: (){engine.generateStream();},
+                                    onPressed: () {
+                                      HapticFeedback.lightImpact();
+                                      engine.generateStream();
+                                    },
                                   ),
                                   border: OutlineInputBorder(
                                       borderRadius: BorderRadius.all(Radius.circular(20))

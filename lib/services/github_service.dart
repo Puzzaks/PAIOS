@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:m3x/m3x.dart' show M3x;
 
 /// Data model representing a documentation file in the repository root.
 class GitHubRepoDoc {
@@ -199,7 +200,7 @@ class GitHubService extends ChangeNotifier {
   GitHubService._();
 
   String _owner = 'Puzzaks';
-  String _repo = 'geminilocal';
+  String _repo = 'PAIOS';
   String? _authToken;
   String? _authUsername;
   String? _authAvatarUrl;
@@ -239,8 +240,8 @@ class GitHubService extends ChangeNotifier {
   GitHubRepoDoc? get selectedDoc => _selectedDoc;
 
   static const List<({String owner, String repo, String title})> presetRepos = [
-    (owner: 'Puzzaks', repo: 'geminilocal', title: 'geminilocal (Local AI Client)'),
     (owner: 'Puzzaks', repo: 'PAIOS', title: 'PAIOS (AI Operating System)'),
+    (owner: 'Puzzaks', repo: 'geminilocal', title: 'geminilocal (Legacy Local AI Client)'),
     (owner: 'Puzzaks', repo: 'PTK', title: 'PTK (Puzzak ToolKit)'),
     (owner: 'Puzzaks', repo: 'demo', title: 'demo (Single Source of Truth)'),
     (owner: 'Puzzaks', repo: 'MCPlayer', title: 'MCPlayer (Monstercat Player)'),
@@ -248,10 +249,15 @@ class GitHubService extends ChangeNotifier {
     (owner: 'Puzzaks', repo: '.github', title: 'Puzzaks Organization Meta'),
   ];
 
+  String get _userAgent {
+    final ver = M3x.appVersion.isNotEmpty ? M3x.appVersion : '1.5.9';
+    return 'PAIOS/$ver (Puzzak Ecosystem)';
+  }
+
   Map<String, String> get _headers {
     final headers = <String, String>{
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'geminilocal/1.2.0 (Puzzak Ecosystem)',
+      'User-Agent': _userAgent,
     };
     if (_authToken != null && _authToken!.trim().isNotEmpty) {
       headers['Authorization'] = 'Bearer ${_authToken!.trim()}';
@@ -295,7 +301,7 @@ class GitHubService extends ChangeNotifier {
         Uri.parse('https://api.github.com/user'),
         headers: {
           'Accept': 'application/vnd.github.v3+json',
-          'User-Agent': 'geminilocal/1.2.0 (Puzzak Ecosystem)',
+          'User-Agent': _userAgent,
           'Authorization': 'Bearer ${token.trim()}',
         },
       ).timeout(const Duration(seconds: 10));

@@ -1,0 +1,309 @@
+This API is offered in preview, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility. To use this feature, the Google account on the device must be part of the [AICore Developer Preview
+program](https://developers.google.com/ml-kit/genai/aicore-dev-preview).
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-embeddings.png)
+
+This guide walks you through how to implement on-device *semantic search*, a
+search technique that finds relevant content based on query meaning, rather
+than purely by keywords. Semantic search removes the need to manually build and
+maintain custom synonym tables or tagging taxonomies. To implement semantic
+search on-device, use the following libraries:
+
+- ML Kit SDK, specifically the Embeddings API, to generate vector [embeddings](https://docs.cloud.google.com/docs/generative-ai/glossary#embedding)
+- [AndroidX AppSearch](https://developer.android.com/jetpack/androidx/releases/appsearch) to store the vector embeddings, and search structured data using cosine distance metrics to find content by their semantics
+
+For a working example, see the
+[ML Kit GenAI sample app](https://github.com/googlesamples/mlkit/tree/master/android/genai)
+on GitHub.
+
+## Prerequisites
+
+To use on-device semantic search, you must meet the following device and account
+requirements:
+
+- Your device [supports Android AICore](https://support.google.com/android/answer/17065362). Most AICore-supported devices use NPU-accelerated models, while the remaining supported devices fall back to a CPU model (with [XNNPACK](https://github.com/google/xnnpack) acceleration).
+- The Google account on your device is part of the [AICore Developer Preview program](https://developers.google.com/ml-kit/genai/aicore-dev-preview.md.txt).
+- Your device has the latest version of the AICore Developer Preview APK: On your device, open the [Android AICore Play Store page](https://play.google.com/store/apps/details?id=com.google.android.aicore) and tap **Update** to install the latest version of the APK. Alternatively go to your device **Settings** , search for **System services** or **Google
+  services** , tap **Android AICore (Beta)** , and tap **Update** if an update is available.
+- Your device has the latest version of the Private Compute Services app: On your device, open the [Private Compute Services Play Store page](https://play.google.com/store/apps/details?id=com.google.android.as.oss) and tap **Update** to install the latest version of the app. Alternatively go to **Play Store \> Manage apps \& device \> Manage \> Private Compute
+  Services** and tap **Update** if an update is available.
+
+## Supported models and configuration
+
+The ML Kit Embeddings API uses Google's EmbeddingGemma model family, managed by
+Android AICore. Specifically, the Embeddings API uses the
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)
+(`embedding_gemma_v2`) for generating embeddings for text and image inputs.
+
+Here are the input specifications and limits:
+
+| Input property | EmbeddingGemma 2 | Usage notes |
+|---|---|---|
+| Supported modalities | Text and image (`Modality.TEXT`, `Modality.IMAGE`) | To confirm that image input is supported, check at runtime that `model.getMetadata()?.supportedModalities.contains(Modality.IMAGE)` returns `true`. |
+| Token limit | 256 tokens | Inspect using the `model.getTokenLimit()` method. Each image is encoded into 140 soft-tokens, leaving 116 tokens for accompanying text. |
+| Image resolution | Up to 768 px on the shorter side | The constructor for the `ImagePart` class accepts `Bitmap`, `Uri`, or `ByteArray` argument types. Images with a shorter dimension greater than 768 px are automatically downscaled by the SDK while preserving aspect ratio. For optimal performance and memory usage, avoid extreme aspect ratios. |
+
+The output vector dimension is 768 (a `FloatArray` object of 32-bit floats). You
+can inspect the output vector dimension at runtime using the
+`model.getMetadata()?.dimension` method.
+
+## Get started
+
+To configure your project to use semantic search, add the following dependencies
+to your module-level `build.gradle.kts` (or `build.gradle`) file.
+
+### Kotlin
+
+```kotlin
+dependencies {
+    // ...
+    implementation("com.google.mlkit:genai-embedding:1.0.0-alpha1")
+    implementation("androidx.appsearch:appsearch:1.2.0-alpha01")
+    implementation("androidx.appsearch:appsearch-local-storage:1.2.0-alpha01")
+    implementation("androidx.concurrent:concurrent-futures-ktx:1.3.0")
+    // ...
+}
+```
+
+### Groovy
+
+```groovy
+dependencies {
+    // ...
+    implementation 'com.google.mlkit:genai-embedding:1.0.0-alpha1'
+    implementation 'androidx.appsearch:appsearch:1.2.0-alpha01'
+    implementation 'androidx.appsearch:appsearch-local-storage:1.2.0-alpha01'
+    implementation 'androidx.concurrent:concurrent-futures-ktx:1.3.0'
+    // ...
+}
+```
+
+## Get an embedding model
+
+Use
+[`EmbeddingGeneration.getEmbeddingModels()`](https://developers.google.com/android/reference/com/google/mlkit/genai/embedding/EmbeddingGeneration.md.txt)
+to list the embedding models available on the device, and select one by its
+model signature. Close any models you don't use.
+
+```kotlin
+// Prefer EmbeddingGemma 2 (text and image), then EmbeddingGemma 1 (text only).
+val preferredSignatures = listOf("embedding_gemma_v2", "embedding_gemma_v1")
+
+suspend fun selectEmbeddingModel(): EmbeddingModel? {
+    val models = EmbeddingGeneration.getEmbeddingModels()
+    val selected = preferredSignatures.firstNotNullOfOrNull { signature ->
+        models.firstOrNull { signature in it.getModelSignature() }
+    } ?: models.firstOrNull()
+
+    models.filter { it !== selected }.forEach { it.close() }
+    return selected
+}
+```
+
+To get a specific model, pass its signature:
+`EmbeddingGeneration.getEmbeddingModels("embedding_gemma_v2")`.
+
+Before generating embeddings, download the model if needed and warm it up:
+
+```kotlin
+suspend fun prepareModel(model: EmbeddingModel): Boolean {
+    when (model.checkStatus()) {
+        FeatureStatus.UNAVAILABLE -> return false
+        FeatureStatus.DOWNLOADABLE, FeatureStatus.DOWNLOADING -> model.download().collect()
+    }
+    model.warmup()
+    return true
+}
+```
+
+Call `model.close()` when you no longer need the model.
+
+## Define an AppSearch schema
+
+To enable semantic similarity searching, you must define an AppSearch schema
+where the vector property is explicitly configured for similarity indexing.
+
+```kotlin
+val documentSchema = AppSearchSchema.Builder("my_schema_type")
+    .addProperty(
+        AppSearchSchema.StringPropertyConfig.Builder("text")
+            .setIndexingType(AppSearchSchema.StringPropertyConfig.INDEXING_TYPE_PREFIXES)
+            .setTokenizerType(AppSearchSchema.StringPropertyConfig.TOKENIZER_TYPE_PLAIN)
+            .build()
+    )
+    .addProperty(AppSearchSchema.StringPropertyConfig.Builder("imageUri").build())
+    .addProperty(
+        AppSearchSchema.EmbeddingPropertyConfig.Builder("embedding")
+            .setIndexingType(AppSearchSchema.EmbeddingPropertyConfig.INDEXING_TYPE_SIMILARITY)
+            .setQuantizationType(AppSearchSchema.EmbeddingPropertyConfig.QUANTIZATION_TYPE_8_BIT)
+            .build()
+    )
+    .build()
+```
+
+## Index document content
+
+To index document content, you must generate a vector embedding for each
+`Content` object, wrap it in a `GenericDocument` instance, and save it to your
+AppSearch database.
+
+When constructing an `EmbeddingVector` object, you must also pass the active
+`modelSignature` value. AppSearch uses this `modelSignature` string to prevent
+incompatible search queries.
+
+```kotlin
+suspend fun syncDatabase(
+    model: EmbeddingModel,
+    session: AppSearchSession,
+    documents: List<Pair<String, Uri?>>,
+) {
+    val modelSignature = model.getModelSignature()
+    val isImageSupported =
+        model.getMetadata()?.supportedModalities?.contains(Modality.IMAGE) == true
+    val docsWithEmbedding = mutableListOf<GenericDocument>()
+
+    for ((index, document) in documents.withIndex()) {
+        val (text, imageUri) = document
+
+        // Generate the embedding from the text and/or image.
+        val imagePart = if (imageUri != null && isImageSupported) ImagePart(imageUri) else null
+        val vector = try {
+            val parts = listOfNotNull(if (text.isNotBlank()) TextPart(text) else null, imagePart)
+            if (parts.isEmpty()) continue
+            model.generateEmbedding(EmbeddingRequest(Content(parts))).embedding.vector
+        } finally {
+            imagePart?.close()
+        }
+
+        // Associate the vector with the signature of the model that generated it.
+        val docBuilder = GenericDocument.Builder<GenericDocument.Builder<*>>(
+            "my_namespace",
+            "doc_$index",
+            "my_schema_type"
+        )
+            .setPropertyString("text", text)
+            .setPropertyEmbedding("embedding", EmbeddingVector(vector, modelSignature))
+        if (imageUri != null) {
+            docBuilder.setPropertyString("imageUri", imageUri.toString())
+        }
+        docsWithEmbedding.add(docBuilder.build())
+    }
+
+    // Clear the old database by force-overriding the schema, then set the schema again.
+    session.setSchemaAsync(SetSchemaRequest.Builder().setForceOverride(true).build()).await()
+    session.setSchemaAsync(SetSchemaRequest.Builder().addSchemas(documentSchema).build()).await()
+
+    val putRequest = PutDocumentsRequest.Builder().addGenericDocuments(docsWithEmbedding).build()
+    session.putAsync(putRequest).await()
+}
+```
+
+## Execute semantic search
+
+To perform a semantic query, convert the search query (text and/or image) into
+an embedding vector, configure the vector-search parameters, and query your
+AppSearch database.
+
+#### Recommendations:
+
+- AppSearch uses the cosine metric (`SearchSpec.EMBEDDING_SEARCH_METRIC_TYPE_COSINE`) by default, so you don't need to set it.
+- Rank results by the `"sum(this.matchedSemanticScores(getEmbeddingParameter(0)))"` formula.
+- Use the logical `"semanticSearch(getEmbeddingParameter(0), $threshold)"` string to filter results where the similarity meets your threshold value (typically 0.5 or higher).
+
+```kotlin
+data class Match(val text: String, val imageUri: Uri?, val score: Double)
+
+suspend fun search(
+    model: EmbeddingModel,
+    session: AppSearchSession,
+    queryText: String,
+    imageUri: Uri? = null,
+    threshold: Double = 0.5,
+): List<Match> {
+    val modelSignature = model.getModelSignature()
+    val isImageSupported =
+        model.getMetadata()?.supportedModalities?.contains(Modality.IMAGE) == true
+
+    // Generate the query embedding from the text and/or image.
+    val imagePart = if (imageUri != null && isImageSupported) ImagePart(imageUri) else null
+    val queryVector = try {
+        val parts = listOfNotNull(if (queryText.isNotBlank()) TextPart(queryText) else null, imagePart)
+        if (parts.isEmpty()) return emptyList()
+        model.generateEmbedding(EmbeddingRequest(Content(parts))).embedding.vector
+    } finally {
+        imagePart?.close()
+    }
+
+    val searchSpec = SearchSpec.Builder()
+        .addFilterSchemas("my_schema_type")
+        .setRankingStrategy("sum(this.matchedSemanticScores(getEmbeddingParameter(0)))")
+        .setListFilterQueryLanguageEnabled(true)
+        .setResultCountPerPage(5)
+        // Add the query vector as parameter 0.
+        .addEmbeddingParameters(EmbeddingVector(queryVector, modelSignature))
+        .build()
+
+    val queryExpression = "semanticSearch(getEmbeddingParameter(0), $threshold)"
+    val results = session.search(queryExpression, searchSpec)
+    return try {
+        results.nextPageAsync.await().map {
+            Match(
+                text = it.genericDocument.getPropertyString("text") ?: "",
+                imageUri = it.genericDocument.getPropertyString("imageUri")?.let(Uri::parse),
+                // rankingSignal contains the computed similarity score.
+                score = it.rankingSignal,
+            )
+        }
+    } finally {
+        results.close()
+    }
+}
+```
+
+## Use a hybrid search index
+
+For the best user experience, we recommend using a hybrid strategy involving
+both semantic and keyword search. When the user is actively typing in a search
+bar, use keyword search to show instant type-ahead suggestions; when they enter
+the completed query, or even at word breaks, use semantic search to read,
+understand, and fetch the best conceptual matches.
+
+## Reindex your vector database
+
+Embeddings generated by different model versions reside in incompatible vector
+spaces and can't be compared directly. You must reindex your AppSearch database
+whenever you update the embedding model.
+
+We recommend to start reindexing the embeddings as soon as the model you're
+using enters its deprecation period. You can use the Embeddings API to check a
+model's deprecation schedule. Call the `model.getMetadata()` method to retrieve
+the `EmbeddingMetadata` object and check these lifecycle date properties
+(returned as `LocalDate` objects in UTC):
+
+- The `deprecationDate` value marks the beginning of the model deprecation period. You should start reindexing while the model continues to work and finish reindexing before its official shutdown.
+- The `shutdownDate` value is when the model will be decommissioned and no longer served. After this date, the model is inaccessible for inference and existing embeddings of this model are forced to reindex with the latest available model.
+
+We also communicate upcoming model deprecations, migration timelines, and target
+shutdown dates through the [ML Kit release notes](https://developers.google.com/ml-kit/release-notes.md.txt) and
+developer documentation updates.
+
+## Best practices
+
+For a good user experience, follow these practices when integrating vector
+embeddings into your Android app:
+
+- **Schedule indexing workloads:** Always schedule background indexing workloads using the [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started) library. Configure your background tasks to run only when the device is charging and idle. ML Kit imposes quota limits for model usage, similar to LLM APIs, with more liberal limits when the device is charging. In Developer Preview mode, you can [bypass quota limitations](https://developers.google.com/ml-kit/genai/aicore-dev-preview.md.txt#bypass-quota) for testing purposes.
+- **Storage and query optimization** : Optimize your database footprint and query latency by using quantization and dimensionality truncation:
+  - Configure your `AppSearchSchema` schema to use the `QUANTIZATION_TYPE_8_BIT` constant, as shown at [Define an AppSearch schema](https://developers.google.com/ml-kit/genai/embedding/android.md.txt#define-an-appsearch-schema). This reduces memory usage with minimal impact on quality by shrinking the precision of each coordinate to an 8-bit integer.
+  - Use Matryoshka Representation Learning (MRL), supported by the EmbeddingGemma 2 model, to truncate the embedding vector. To learn more, see [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) on HuggingFace.
+- **Signature consistency**: Don't query a vector space using a mismatched signature. If you upgrade the embedding model version, you must wipe the AppSearch database and regenerate embeddings for all documents using the new model signature.
+- **Safety and content moderation** : You are responsible for implementing content moderation and safety filtering in your app. Unlike generative text or image APIs, the ML Kit Embeddings API doesn't include built-in safety filters. Because the model outputs numerical vector representations (`FloatArray` coordinates) of caller-provided input rather than generating new text or media, numerical vectors don't inherently present generative content safety risks. Omitting on-device safety filtering also preserves low-latency indexing and search performance by avoiding CPU contention during high-throughput document indexing and real-time queries. To improve safety, follow these guidelines:
+  - **Moderate untrusted inputs and indexed content**: If your app indexes or searches untrusted user-generated content or external data, apply content moderation and policy filters to the source text or images before indexing them or displaying search results.
+  - **Safeguard downstream generative AI pipelines**: If retrieved documents or passages are passed as context to a downstream generative AI model, verify that safety filters and content policies are enabled on that downstream model and its user-facing output.
+
+## Additional resources
+
+- [AndroidX AppSearch API reference docs](https://developer.android.com/reference/androidx/appsearch/app/package-summary)
+- [ML Kit GenAI SDK reference docs](https://developers.google.com/android/reference/com/google/mlkit/genai/common/package-summary.md.txt)
+- [`EmbeddingGeneration` API reference](https://developers.google.com/android/reference/com/google/mlkit/genai/embedding/EmbeddingGeneration.md.txt)
+- [ML Kit GenAI sample app](https://github.com/googlesamples/mlkit/tree/master/android/genai)

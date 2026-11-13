@@ -1,0 +1,60 @@
+# Supported Hardware & Device Eligibility Matrix
+
+Google ML Kit GenAI and Android AICore require dedicated hardware neural processing units to execute foundation model weights locally on device.
+
+---
+
+## Qualified Device Families & Hardware Accelerators
+
+The table below lists officially verified devices and their underlying neural processing units:
+
+| Device Family | Models | Hardware Accelerator | Minimum OS | AICore Support Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Google Pixel 9** | Pixel 9, Pixel 9 Pro, Pixel 9 Pro XL, Pixel 9 Pro Fold | Google Tensor G4 (TPU) | Android 14 (API 34) | Full Production (Gemini Nano with Multimodality) |
+| **Google Pixel 8** | Pixel 8 Pro | Google Tensor G3 (TPU) | Android 14 (API 34) | Full Production (Preloaded / On-Demand Download) |
+| **Google Pixel 8** | Pixel 8, Pixel 8a | Google Tensor G3 (TPU) | Android 14 (API 34) | Supported via AICore Developer Options |
+| **Samsung Galaxy S24** | Galaxy S24 Ultra, S24+, S24 | Snapdragon 8 Gen 3 for Galaxy / Exynos 2400 | Android 14 (One UI 6.1) | Production Rollout |
+| **Samsung Galaxy Z6** | Galaxy Z Fold6, Galaxy Z Flip6 | Snapdragon 8 Gen 3 for Galaxy | Android 14 (One UI 6.1.1)| Production Rollout |
+| **Samsung Galaxy S25** | Galaxy S25 Ultra, S25+, S25 | Snapdragon 8 Elite / Exynos 2500 | Android 15 (One UI 7.0) | Full Production |
+| **OEM Android 15+** | Qualified Flagship Devices | Snapdragon 8 Gen 3/4 / Dimensity 9300+ | Android 15 (API 35) | Early Access Program |
+
+---
+
+## System Prerequisites & Eligibility Checklist
+
+Before Gemini Nano can run, verify all 4 prerequisite tiers:
+
+1. **System Memory (RAM)**: Minimum 8 GB RAM (12 GB+ recommended for seamless multimodal inference without background process eviction).
+2. **Operating System**: Android 14 (API Level 34) with Google Play System Update (Project Mainline) dated December 2023 or newer. Android 15+ recommended.
+3. **Google Play Services & AICore**: Up-to-date Google Play Services and `Android AICore` (`com.google.android.aicore`) system service installed and active.
+4. **Internal Storage**: At least 2.5 GB to 3.5 GB of free, unreserved flash storage for model weights and tokenizer vocabulary.
+
+---
+
+## Developer Options & AICore Activation
+
+On certain devices (such as Pixel 8, Pixel 8a, and custom development builds), Gemini Nano must be enabled via Developer Options:
+
+1. Open Android **Settings** -> **About phone**.
+2. Tap **Build number** 7 times until you see the confirmation toast.
+3. Return to **Settings** -> **System** -> **Developer options**.
+4. Scroll to **AICore Settings** (or **AiCore Persistent Mode**).
+5. Toggle **Enable on-device Gemini Nano** to ON.
+6. Toggle **Enable Aicore Persistent Mode** to ON.
+   - *Note*: Persistent Mode keeps neural weights in RAM, eliminating cold-start initialization latency (500ms–2000ms).
+7. Tap **Force Model Download** over unmetered Wi-Fi while connected to a charger if model status reports unavailable.
+
+---
+
+## Error Taxonomy & Troubleshooting Codes
+
+Standard error status codes returned by AICore and ML Kit GenAI:
+
+| Error Code | Constant | Meaning & Diagnostic Root Cause | Recommended Recovery Action |
+| :--- | :--- | :--- | :--- |
+| **`-101`** | `MODEL_BUSY` | Hardware accelerator is executing another high-priority inference request. | Retry with exponential backoff (150ms–500ms jitter). |
+| **`-100`** | `CONTEXT_OVERFLOW` | Combined prompt tokens and max output tokens exceed the 4,096 hardware context window limit. | Prune conversation history or reduce generation length. |
+| **`-102`** | `BACKGROUND_USE_BLOCKED` | Application attempted generation while in background without foreground service permissions. | Move inference to active foreground UI or use foreground service. |
+| **`-103`** | `SAFETY_VIOLATION` | Prompt or output triggered on-device safety filters for restricted harm categories. | Inform user that request could not be completed safely. |
+| **`-104`** | `DEVICE_NOT_SUPPORTED` | Missing required NPU hardware or unverified OS build. | Direct user to cloud fallback or device eligibility matrix. |
+| **`-105`** | `MODEL_UNAVAILABLE` | Weights are missing or download has not finished. | Query `checkStatus()` and prompt user to download over Wi-Fi. |

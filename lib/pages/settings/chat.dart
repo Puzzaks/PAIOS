@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../../engine.dart';
 import '../settings.dart';
 import '../support/elements.dart';
@@ -195,19 +195,69 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                   title: engine.dict.value("pin_chat"),
                                   subtitle: engine.dict.value("pin_chat_desc"),
                                   action: (){
+                                    final currentPinned = engine.chats[engine.currentChat]?["pinned"] ?? false;
+                                    final newPinned = !currentPinned;
+                                    if (newPinned && (engine.chats[engine.currentChat]?["isArchived"] ?? false)) {
+                                      engine.chats[engine.currentChat]?["isArchived"] = false;
+                                    }
                                     setState(() {
-                                      engine.chats[engine.currentChat]?["pinned"] = !(engine.chats[engine.currentChat]?["pinned"]??false);
+                                      engine.chats[engine.currentChat]?["pinned"] = newPinned;
                                     });
                                     engine.saveChats();
                                   },
                                   switcher: (value){
+                                    if (value && (engine.chats[engine.currentChat]?["isArchived"] ?? false)) {
+                                      engine.chats[engine.currentChat]?["isArchived"] = false;
+                                    }
                                     setState(() {
-                                      engine.chats[engine.currentChat]?["pinned"] = !(engine.chats[engine.currentChat]?["pinned"]??false);
+                                      engine.chats[engine.currentChat]?["pinned"] = value;
                                     });
                                     engine.saveChats();
                                   },
                                   value: engine.chats[engine.currentChat]?["pinned"]??false
                               ),
+                              if (engine.currentChat != "0") ...[
+                                if (engine.chats[engine.currentChat]?["isArchived"] ?? false)
+                                  CardContents.tap(
+                                    title: engine.dict.value("unarchive_chat"),
+                                    subtitle: engine.dict.value("unarchive_chat_desc"),
+                                    action: () async {
+                                      await engine.chatData.unarchiveChat(engine.currentChat);
+                                      Fluttertoast.showToast(
+                                        msg: engine.dict.value("chat_unarchived"),
+                                        toastLength: Toast.LENGTH_SHORT,
+                                        fontSize: 16.0,
+                                      );
+                                      if (mounted) setState(() {});
+                                    },
+                                  )
+                                else
+                                  CardContents.tap(
+                                    title: engine.dict.value("archive_chat"),
+                                    subtitle: (engine.chats[engine.currentChat]?["pinned"] ?? false)
+                                        ? engine.dict.value("cannot_archive_pinned")
+                                        : engine.dict.value("archive_chat_desc"),
+                                    action: () async {
+                                      if (engine.chats[engine.currentChat]?["pinned"] ?? false) {
+                                        Fluttertoast.showToast(
+                                          msg: engine.dict.value("cannot_archive_pinned"),
+                                          toastLength: Toast.LENGTH_SHORT,
+                                          fontSize: 16.0,
+                                        );
+                                        return;
+                                      }
+                                      await engine.chatData.archiveChat(engine.currentChat);
+                                      Fluttertoast.showToast(
+                                        msg: engine.dict.value("chat_archived"),
+                                        toastLength: Toast.LENGTH_SHORT,
+                                        fontSize: 16.0,
+                                      );
+                                      if (!context.mounted) return;
+                                      setState(() {});
+                                      Navigator.pop(context);
+                                    },
+                                  ),
+                              ],
                               if (engine.context.isNotEmpty) CardContents.longTap(
                                   title: engine.dict.value("clear_context"),
                                   subtitle: engine.dict.value("context_desc").replaceAll("%c", engine.chats[engine.currentChat]?["tokens"]??"0"),

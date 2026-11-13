@@ -3,10 +3,11 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/chat.dart';
+import 'package:geminilocal/pages/archived_chats.dart';
 import 'package:geminilocal/pages/settings.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart' show MotionBlurContainer;
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
 import 'support/elements.dart';
 
@@ -18,6 +19,7 @@ class ChatsPage extends StatefulWidget {
 }
 
 class ChatsPageState extends State<ChatsPage> {
+  bool isArchivedExpanded = false;
 
   String timeAgo(time) {
     DateTime currentTime = DateTime.now();
@@ -114,18 +116,38 @@ class ChatsPageState extends State<ChatsPage> {
                       }
                   );
                 }
-                final regularChatKeys = engine.chats.keys
+                int getChatUpdated(dynamic key) {
+                  final chat = engine.chats[key];
+                  if (chat is Map && chat["updated"] != null) {
+                    final u = chat["updated"];
+                    if (u is int) return u;
+                    if (u is String) return int.tryParse(u) ?? 0;
+                  }
+                  return 0;
+                }
+
+                final allValidKeys = engine.chats.keys
                     .where((k) => k != "testing" && k != "0")
                     .toList()
-                    .reversed
-                    .toList();
-                final pinnedChatKeys = regularChatKeys.where((key) {
+                  ..sort((a, b) => getChatUpdated(b).compareTo(getChatUpdated(a)));
+
+                final pinnedChatKeys = allValidKeys.where((key) {
                   final chat = engine.chats[key];
                   return (chat is Map && (chat["pinned"] ?? false) == true);
                 }).toList();
-                final otherChatKeys = regularChatKeys.where((key) {
+
+                final otherChatKeys = allValidKeys.where((key) {
                   final chat = engine.chats[key];
-                  return !(chat is Map && (chat["pinned"] ?? false) == true);
+                  final isPinned = chat is Map && (chat["pinned"] ?? false) == true;
+                  final isArchived = chat is Map && (chat["isArchived"] ?? false) == true;
+                  return !isPinned && !isArchived;
+                }).toList();
+
+                final archivedChatKeys = allValidKeys.where((key) {
+                  final chat = engine.chats[key];
+                  final isPinned = chat is Map && (chat["pinned"] ?? false) == true;
+                  final isArchived = chat is Map && (chat["isArchived"] ?? false) == true;
+                  return !isPinned && isArchived;
                 }).toList();
 
                 return Scaffold(
@@ -187,6 +209,23 @@ class ChatsPageState extends State<ChatsPage> {
                           ],
                         ),
                         actions: [
+                          IconButton(
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => const ArchivedChatsPage(),
+                                  settings: const RouteSettings(name: 'ArchivedChatsPage'),
+                                ),
+                              );
+                            },
+                            tooltip: engine.dict.value("archived_chats"),
+                            icon: Badge(
+                              isLabelVisible: archivedChatKeys.isNotEmpty,
+                              label: Text(archivedChatKeys.length.toString()),
+                              child: const Icon(Icons.archive_outlined),
+                            ),
+                          ),
                           IconButton(
                             onPressed: (){
                               Navigator.push(
@@ -257,6 +296,42 @@ class ChatsPageState extends State<ChatsPage> {
                                     return chatCard(chat, key);
                                   }).toList(),
                                 ),
+                              ],
+                              if (archivedChatKeys.isNotEmpty) ...[
+                                Category.settings(
+                                  title: "${engine.dict.value("archived")} (${archivedChatKeys.length})",
+                                  context: context,
+                                ),
+                                cards.cardGroup([
+                                  CardContents.doubleTap(
+                                    title: engine.dict.value("archived_chats"),
+                                    subtitle: "${archivedChatKeys.length} ${engine.dict.value("chats")}",
+                                    icon: isArchivedExpanded
+                                        ? Icons.keyboard_arrow_up_rounded
+                                        : Icons.keyboard_arrow_down_rounded,
+                                    action: () {
+                                      setState(() {
+                                        isArchivedExpanded = !isArchivedExpanded;
+                                      });
+                                    },
+                                    secondAction: () {
+                                      setState(() {
+                                        isArchivedExpanded = !isArchivedExpanded;
+                                      });
+                                    },
+                                  ),
+                                  if (isArchivedExpanded)
+                                    ...archivedChatKeys.map((key) {
+                                      Map chat = engine.chats[key] ?? {
+                                        "name": "Nonameyet",
+                                        "tokens": "0",
+                                        "history": {},
+                                        "created": DateTime.now().millisecondsSinceEpoch.toString(),
+                                        "updated": DateTime.now().millisecondsSinceEpoch.toString(),
+                                      };
+                                      return chatCard(chat, key);
+                                    }),
+                                ]),
                               ],
                               text.info(
                                   title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),

@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:collection/collection.dart';
+import 'package:m3x_mesh/m3x_mesh.dart';
 
 class Prompt{
   DeepCollectionEquality mapEquality = const DeepCollectionEquality();
@@ -34,6 +36,8 @@ class Prompt{
     String currentLocale = "en",
     bool ignoreInstructions = false,
     bool ignoreContext = false,
+    List<M3xTool>? tools,
+    bool includeTools = true,
   }) async {
     // Used only for title generation — skip everything
     if (ignoreContext) return "";
@@ -90,6 +94,29 @@ class Prompt{
       output += "\n\n## [DATA & INSTRUCTION RULES]";
       for (var rule in rules) {
         output += "\n - $rule";
+      }
+    }
+
+    // ── 4b. Available tools ───────────────────────────────────────────────────
+    if (includeTools && tools != null && tools.isNotEmpty) {
+      output += "\n\n### [AVAILABLE TOOLS]"
+          "\nYou have access to external agentic tools provided by connected applications in the M3x mesh."
+          "\n\nCRITICAL TOOL INVOCATION RULES:"
+          "\n1. ONLY invoke a tool when the user's latest message explicitly asks for information, status, or an action that REQUIRES that specific tool."
+          '\n2. NEVER invoke a tool for general knowledge, conceptual questions about AI models, Gemini Nano, your own identity, greetings (e.g. "hi", "hello", "who are you"), pleasantries, or casual conversation. Answer all conceptual, identity, and general knowledge questions directly from your own training without calling any tool.'
+          "\n3. NEVER guess or invoke a tool speculatively. If unsure, respond conversationally."
+          "\n4. NEVER invoke a tool when the user is asking about visual contents, images, photos, UI widgets, screenshots, or apps visible on the screen, or when no tool exists for the requested data. There is NO tool for reading screen apps or images; inspect the attached image directly or answer honestly that no such tool exists."
+          "\n\nWhen a tool is genuinely required by the user's explicit request, respond ONLY with a valid JSON tool call block using double quotes:"
+          '\n```json'
+          '\n{"action": "tool_call", "app": "<app>", "tool": "<tool>", "description": "Checking live data", "arguments": {}}'
+          '\n```'
+          '\nDo not add any text before or after the JSON block.'
+          '\nMake description very short, for example for tool "alerts_get_summary" description can be "Getting Air Raid Alerts".'
+          '\n\nAvailable tool schemas:';
+      for (final tool in tools) {
+        final appStr = tool.app != null ? ' (app: "${tool.app}")' : '';
+        output += "\n - ${tool.name}$appStr: ${tool.description}"
+            "\n   arguments schema: ${jsonEncode(tool.parameters)}";
       }
     }
 
@@ -157,15 +184,19 @@ class Prompt{
 
     // System-level continuation — includes the original question so the model
     // knows WHAT it's answering and can recognise when the answer is complete.
+    final trimmedPartial = partialText.trimLeft();
+    final isJsonDraft = trimmedPartial.startsWith('{') ||
+        trimmedPartial.startsWith('```json') ||
+        trimmedPartial.contains('"action"') && trimmedPartial.contains('"tool"');
     output += "\n\n## [CONTINUATION]\n"
         "The user's original question was: \"$originalQuestion\"\n"
-        "Your response was interrupted by a system timeout before you finished answering it.\n"
+        "Your response was interrupted before completion.\n"
         "Rules:\n"
-        " - Output ONLY the direct continuation of the partial text below.\n"
+        " - Output ONLY the exact remaining characters/tokens to complete the partial text below.\n"
         " - Do NOT restart, summarise, or repeat content already in the partial text.\n"
         " - Do NOT add any preamble, greeting, or acknowledgment.\n"
-        " - Pick up EXACTLY where the partial text ends — continue mid-sentence if necessary.\n"
-        " - Once your answer to the original question is complete, STOP. Do not pad or extend.\n"
+        " - Pick up EXACTLY at the final character of the partial text — continue mid-word or mid-JSON if needed.\n"
+        "${isJsonDraft ? ' - The partial text is an incomplete JSON tool call: output ONLY the remaining valid JSON characters (and closing ``` if opened) to complete it, with NO prose.\n' : ' - Once your answer to the original question is complete, STOP. Do not pad or extend.\n'}"
         "--- PARTIAL TEXT (continue from here) ---\n"
         "$partialText\n"
         "--- END OF PARTIAL TEXT ---";

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:provider/provider.dart';
-import 'package:puzzak_ui/puzzak_ui.dart';
+import 'package:m3x_ui/m3x_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../engine.dart';
 import '../services/github_service.dart';
@@ -94,11 +94,14 @@ enum IssueStatusFilter { all, open, closed }
 /// GitHub Explorer Page providing repository documentation viewer,
 /// issue tracking with filtering and search, releases browser, and security status.
 class GitHubExplorerPage extends StatefulWidget {
-  const GitHubExplorerPage({super.key});
+  final int initialTab;
+  const GitHubExplorerPage({super.key, this.initialTab = 0});
 
   @override
   State<GitHubExplorerPage> createState() => _GitHubExplorerPageState();
 }
+
+
 
 class _GitHubExplorerPageState extends State<GitHubExplorerPage>
     with SingleTickerProviderStateMixin {
@@ -116,7 +119,13 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(
+      length: 4,
+      vsync: this,
+      initialIndex: (widget.initialTab >= 0 && widget.initialTab < 4)
+          ? widget.initialTab
+          : 0,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (GitHubService.instance.rootDocs.isEmpty &&
           GitHubService.instance.readmeContent == null) {
@@ -616,7 +625,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                                 children: [
                                   const SizedBox(height: 2),
                                   Text(
-                                    'Opened by ${issue.author} • ${issue.commentsCount} comments',
+                                    'Opened by ${issue.author} вЂў ${issue.commentsCount} comments',
                                     style: const TextStyle(fontSize: 12),
                                   ),
                                   if (issue.labels.isNotEmpty) ...[
@@ -769,7 +778,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                             size: 16,
                           ),
                           label: Text(
-                            '${asset.name} ($sizeMb MB • ${asset.downloadCount} dl)',
+                            '${asset.name} ($sizeMb MB вЂў ${asset.downloadCount} dl)',
                             style: const TextStyle(fontSize: 11),
                           ),
                           onPressed: () => _safeLaunchUrl(asset.downloadUrl),
@@ -1237,7 +1246,7 @@ class _IssueDetailsSheetState extends State<_IssueDetailsSheet> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Opened by ${issue.author} • ${issue.commentsCount} comments',
+                'Opened by ${issue.author} вЂў ${issue.commentsCount} comments',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),

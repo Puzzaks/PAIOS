@@ -7,6 +7,7 @@ import 'package:geminilocal/pages/chats.dart';
 import 'package:geminilocal/pages/intro.dart';
 import 'package:geminilocal/pages/support/elements.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'engine.dart';
 import 'firebase_options.dart';
 
@@ -66,6 +67,13 @@ class MyAppState extends State<MyApp> {
       );
     }
     return DynamicColorBuilder(builder: (lightColorScheme, darkColorScheme) {
+      final activeDark = darkColorScheme ?? defaultDarkColorScheme;
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setInt('theme_color_primary', activeDark.primary.toARGB32());
+        prefs.setInt('theme_color_surface', activeDark.surface.toARGB32());
+        prefs.setInt('theme_color_background', activeDark.surface.toARGB32());
+        prefs.setInt('theme_color_on_surface', activeDark.onSurface.toARGB32());
+      });
       return MaterialApp(
         navigatorObservers: [
           FirebaseAnalyticsObserver(

@@ -1,0 +1,18 @@
+[
+  {
+    "name": "PTK (Puzzak's ToolKit)",
+    "description": "Server telemetry, Statuspage incident monitoring, and TCP ping diagnostics",
+    "package": "page.puzzak.ptk",
+    "icon": "dns_rounded",
+    "status": "Available",
+    "url": "https://play.google.com/store/apps/details?id=page.puzzak.ptk"
+  },
+  {
+    "name": "Alerts",
+    "description": "Ukraine air raid alerts and map",
+    "package": "page.puzzak.alerts",
+    "icon": "alert",
+    "status": "Available",
+    "url": "https://play.google.com/store/apps/details?id=page.puzzak.alerts"
+  }
+]

@@ -1,0 +1,145 @@
+Direct model access lets you explicitly select the version of Gemini Nano used
+by your app. By configuring the model release stage and performance preference,
+you can access new model capabilities earlier or optimize your app for specific
+hardware constraints.
+
+## Understand model configurations
+
+To select a specific model, you must configure two key parameters within the
+`ModelConfig` class: the **release stage** and the **model preference**.
+
+### Release stages
+
+The release stage lets you choose between a stable or preview model:
+
+- **Stable (`ModelReleaseStage.STABLE`):** Selects the latest model version that is fully tested and on consumer devices. This is the default setting.
+- **Preview (`ModelReleaseStage.PREVIEW`):** Selects the latest model version in the preview stage. This stage lets you test beta features or newer model architectures before they are widely deployed to the stable stage.
+
+For prerequisites and enrollment instructions for the developer preview, see the
+[AICore Developer Preview guide](https://developers.google.com/ml-kit/genai/aicore-dev-preview).
+
+> [!NOTE]
+> **Note:** During transitions, the preview model might point to the same model version as stable.
+
+### Model preference
+
+The model preference lets you specify which performance characteristics are most
+important for your use case.
+
+- **Full (`ModelPreference.FULL`):** This preference is recommended when model accuracy and full capabilities are prioritized over speed.
+- **Fast (`ModelPreference.FAST`):** This preference is recommended for latency-sensitive apps that require minimal response times.
+
+## Configure the generative model
+
+To use a specific model variant, you must define a `ModelConfig` and pass it to
+your `GenerationConfig` when initializing the client.
+
+The following example demonstrates how to configure the client to use a **Fast**
+model from the **Preview** stage:
+
+### Kotlin
+
+    // Define the configuration with a specific stage and preference
+    val previewFastConfig = generationConfig {
+        modelConfig = modelConfig {
+            releaseStage = ModelReleaseStage.PREVIEW
+            preference = ModelPreference.FAST
+        }
+    }
+
+    // Initialize the GenerativeModel with the configuration
+    val generativeModel = Generation.getClient(previewFastConfig)
+
+### Java
+
+    // Define the configuration with a specific stage and preference
+    GenerationConfig previewFastConfig = new GenerationConfig.Builder()
+        .setModelConfig(new ModelConfig.Builder()
+            .setReleaseStage(ModelReleaseStage.PREVIEW)
+            .setPreference(ModelPreference.FAST)
+            .build())
+        .build();
+
+    // Initialize the GenerativeModel with the configuration
+    GenerativeModel generativeModel = Generation.INSTANCE.getClient(previewFastConfig);
+
+## Check model availability
+
+Not all devices support every combination of release stage and model
+preference. Preview models are only available on the
+[list of supported devices](https://developers.google.com/ml-kit/genai/aicore-dev-preview#prerequisites) in the AICore Developer Preview guide.
+
+The API does not provide a method to list all available model configurations
+upfront. Instead, initialize the client with your desired configuration and then
+verify its status.
+
+- **Initialize the client:** Create the `GenerativeModel` instance using your preferred `ModelConfig`.
+- **Check status:** Call the `checkStatus()` method on the instance to verify
+  that the specific model variant is available on the device.
+
+### Kotlin
+
+    val generativeModel = Generation.getClient(previewFastConfig)
+
+    // Verify that the specific preview model is available
+    val status = generativeModel.checkStatus()
+
+    when (status) {
+        FeatureStatus.UNAVAILABLE -> {
+            // Specified preview model is not available on this device
+        }
+        FeatureStatus.DOWNLOADABLE -> {
+            // Specified preview model is available for this device, but not downloaded yet.
+            // Model may be downloaded through the AICore app or by calling generativeModel.download()
+        }
+        FeatureStatus.AVAILABLE -> {
+            // Proceed with inference
+        }
+        FeatureStatus.DOWNLOADING -> {
+            // Specified preview model is downloading
+        }
+    }
+
+### Java
+
+    GenerativeModel generativeModel = Generation.INSTANCE.getClient(previewFastConfig);
+
+    // For Java, use GenerativeModelFutures if you prefer ListenableFuture
+    GenerativeModelFutures generativeModelFutures = GenerativeModelFutures.from(generativeModel);
+    Futures.addCallback(
+        generativeModelFutures.checkStatus(),
+        new FutureCallback<Integer>() {
+            @Override
+            public void onSuccess(Integer status) {
+                if (status == FeatureStatus.AVAILABLE) {
+                    // Proceed with inference
+                } else if (status == FeatureStatus.DOWNLOADING) {
+                    // Specified preview model is downloading
+                } else if (status == FeatureStatus.DOWNLOADABLE) {
+                    // Specified preview model is available for this device, but not downloaded yet.
+                    // Call generativeModelFutures.download(callback) or use the AICore app.
+                } else if (status == FeatureStatus.UNAVAILABLE) {
+                    // Specified preview model is not available on this device
+                }
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                // Handle failure
+            }
+        },
+        ContextCompat.getMainExecutor(context));
+
+To ensure forward compatibility with potential future configurations, the SDK is
+designed to avoid throwing a `GenAiException` during client initialization,
+relying solely on the `checkStatus()` method for availability verification.
+
+## Best practices
+
+- **Implement fallback strategies:** Because preview models are not guaranteed to be available on all devices, always implement a fallback strategy. If `checkStatus()` returns `false` for a preview configuration, your app should gracefully revert to `ModelReleaseStage.STABLE` and `ModelPreference.FULL`.
+- **Use model release stages for development and production:** Use the **Preview** stage during development and internal testing to evaluate upcoming model improvements. Switch to **Stable** for your public production releases to ensure consistent behavior for your users.
+
+## Known issues
+
+- For some devices in the preview release stage, they won't support multiple candidates in the output and will return an error if `candidateCount` is set larger than 1. See the [API reference](https://developers.google.com/android/reference/kotlin/com/google/mlkit/genai/prompt/GenerateContentRequest#candidateCount()) for more details.
+- Multiple samples are not supported on some implementations. Performance will be slower than final production.

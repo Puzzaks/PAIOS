@@ -8,13 +8,24 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
     id("com.google.firebase.crashlytics") version "3.0.7" apply false
 }
+
+configurations.all {
+    resolutionStrategy {
+        force("androidx.datastore:datastore-core-android:1.1.7")
+        force("androidx.datastore:datastore-preferences-android:1.1.7")
+        force("androidx.datastore:datastore-core:1.1.7")
+        force("androidx.datastore:datastore-preferences:1.1.7")
+    }
+}
+
 dependencies {
+    implementation("androidx.datastore:datastore-core:1.1.7")
+    implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation("com.google.mlkit:genai-prompt:1.0.0-alpha1")
     implementation("com.google.android.gms:play-services-tasks:18.0.2")
     implementation(platform("com.google.firebase:firebase-bom:34.12.0"))
     implementation("com.google.firebase:firebase-crashlytics")
     implementation("com.google.firebase:firebase-analytics")
-
 }
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
@@ -60,9 +71,14 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("release")
+            proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
         }
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }

@@ -21,8 +21,9 @@ class AiEvent {
   final AiEventStatus status;
   final AiResponse? response;
   final String? error;
+  final String? reason;
 
-  AiEvent({required this.status, this.response, this.error});
+  AiEvent({required this.status, this.response, this.error, this.reason});
 
   factory AiEvent.fromMap(Map<dynamic, dynamic> map) {
     final statusString = map['status'] as String;
@@ -31,6 +32,14 @@ class AiEvent {
         ? Map<String, dynamic>.from(rawResponse)
         : null;
     final errorString = map['error'] as String?;
+    String? reasonString =
+        (map['reason'] ?? responseMap?['reason'])?.toString();
+    if (reasonString != null &&
+        (reasonString.isEmpty ||
+            reasonString == 'null' ||
+            reasonString == 'UNKNOWN')) {
+      reasonString = null;
+    }
     AiEventStatus status;
     switch (statusString) {
       case 'Loading':
@@ -55,6 +64,7 @@ class AiEvent {
           ? AiResponse.fromMap(responseMap)
           : null,
       error: errorString,
+      reason: reasonString,
     );
   }
 }
@@ -114,12 +124,31 @@ class GeminiNano {
     return status;
   }
 
-  Stream<AiEvent> _getAiEvents({required String prompt, GenerationConfig? config, required bool stream}){
+  Future<Map<String, dynamic>?> pickImage() async {
+    final Map<dynamic, dynamic>? res =
+        await _methodChannel.invokeMethod('pickImage');
+    if (res == null) return null;
+    return res.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  Stream<AiEvent> _getAiEvents({
+    required String prompt,
+    GenerationConfig? config,
+    required bool stream,
+    Uint8List? imageBytes,
+    String? imagePath,
+    String? imageBase64,
+    bool downsample = true,
+  }) {
     final arguments = {
       'method': stream ? 'generateTextStream' : 'generateText',
       'payload': {
         'prompt': prompt,
         'config': config?.toMap(),
+        if (imageBytes != null) 'imageBytes': imageBytes,
+        if (imagePath != null) 'imagePath': imagePath,
+        if (imageBase64 != null) 'imageBase64': imageBase64,
+        'downsample': downsample,
       }
     };
     return _eventChannel.receiveBroadcastStream(arguments).map((event) {
@@ -128,11 +157,22 @@ class GeminiNano {
     });
   }
 
-  Future<String> generateText({required String prompt, GenerationConfig? config}) async {
+  Future<String> generateText({
+    required String prompt,
+    GenerationConfig? config,
+    Uint8List? imageBytes,
+    String? imagePath,
+    String? imageBase64,
+    bool downsample = true,
+  }) async {
     final stream = _getAiEvents(
       prompt: prompt,
       config: config,
       stream: true,
+      imageBytes: imageBytes,
+      imagePath: imagePath,
+      imageBase64: imageBase64,
+      downsample: downsample,
     );
     bool isFinished = false;
     String response = "Loading...";
@@ -157,19 +197,42 @@ class GeminiNano {
     }
   }
 
-  Stream<AiResponse> generateTextStream({required String prompt, GenerationConfig? config}) {
+  Stream<AiResponse> generateTextStream({
+    required String prompt,
+    GenerationConfig? config,
+    Uint8List? imageBytes,
+    String? imagePath,
+    String? imageBase64,
+    bool downsample = true,
+  }) {
     return _getAiEvents(
       prompt: prompt,
       config: config,
       stream: true,
+      imageBytes: imageBytes,
+      imagePath: imagePath,
+      imageBase64: imageBase64,
+      downsample: downsample,
     ).where((event) => event.status == AiEventStatus.streaming).map((event) => event.response!);
   }
 
-  Stream<AiEvent> generateTextEvents({required String prompt, GenerationConfig? config, bool stream = true}) {
+  Stream<AiEvent> generateTextEvents({
+    required String prompt,
+    GenerationConfig? config,
+    bool stream = true,
+    Uint8List? imageBytes,
+    String? imagePath,
+    String? imageBase64,
+    bool downsample = true,
+  }) {
     return _getAiEvents(
       prompt: prompt,
       config: config,
       stream: stream,
+      imageBytes: imageBytes,
+      imagePath: imagePath,
+      imageBase64: imageBase64,
+      downsample: downsample,
     );
   }
 
@@ -183,6 +246,39 @@ class GeminiNano {
 
   Future<void> openAICoreDevSettings() async {
     await _methodChannel.invokeMethod('openAICoreDevSettings');
+  }
+
+  Future<Map<String, dynamic>?> getInitialAssistantChat() async {
+    try {
+      final res = await _methodChannel.invokeMethod('getInitialAssistantChat');
+      if (res is Map) {
+        return Map<String, dynamic>.from(res);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  void setAssistantChatHandler(void Function(Map<String, dynamic> payload) handler) {
+    _methodChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onAssistantChatReceived' && call.arguments is Map) {
+        handler(Map<String, dynamic>.from(call.arguments as Map));
+      }
+    });
+  }
+
+  Future<bool> isDefaultAssistant() async {
+    try {
+      final bool? isDefault = await _methodChannel.invokeMethod<bool>('isDefaultAssistant');
+      return isDefault ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> openAssistantSettings() async {
+    try {
+      await _methodChannel.invokeMethod('openAssistantSettings');
+    } catch (_) {}
   }
 
   Future<void> dispose() async {

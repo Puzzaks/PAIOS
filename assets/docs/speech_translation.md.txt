@@ -1,0 +1,126 @@
+This API is offered in alpha, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility.
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-speech-translation.png)
+
+The ML Kit GenAI Speech Translation API enables real-time, on-device translation
+of spoken audio across various languages. Using Google's generative AI speech
+models, the Speech Translation API delivers low-latency, high-quality, and
+privacy-focused speech-to-text translation without requiring cloud-based audio
+processing.
+
+## Key capabilities
+
+- Manage the entire process through a single API, from verifying if a model is ready, initiating downloads, to executing the actual translation. See [Integrate the Speech Translation API](https://developers.google.com/ml-kit/genai/speech-translation/android#integrate-the-speech-translation-api) for implementation details.
+- Process live audio from the microphone or files, and receive both intermediate and final text results using Kotlin Flow for real-time updates.
+- Perform all audio analysis and translation tasks on-device to maintain user privacy and support full offline functionality.
+
+## Example results
+
+| Input audio | Source language | Target language | Output text |
+|---|---|---|---|
+| Spoken audio: "Hello, how are you today?" | English (en-US) | Spanish (es-ES) | "Hola, ¿cómo estás hoy?" |
+| Spoken audio: "こんにちは、はじめまして" | Japanese (ja-JP) | English (en-US) | "Hello, nice to meet you" |
+
+## Prerequisites
+
+To use the Speech Translation API, you must meet these requirements:
+
+- You must have a [supported device](https://developers.google.com/ml-kit/genai/speech-translation/android#supported-devices).
+- Your device must have the latest beta version (`versionCode 210665810` or higher) of the [Speech Recognition and Synthesis app](https://play.google.com/store/apps/details?id=com.google.android.tts&pcampaignid=web_share) (`com.google.android.tts`) from Google.
+- Your device must have at least 4.0 GB of free storage to download Gemini Nano V4.
+
+## Get started
+
+To get started, add the ML Kit Speech Translation dependency to your
+module-level `build.gradle.kts` (or `build.gradle`) file:
+
+### Kotlin
+
+    dependencies {
+        // ML Kit Base Infrastructure
+        implementation("com.google.mlkit:common:18.10.0")
+        // ML Kit GenAI Speech Translation SDK
+        implementation("com.google.mlkit:genai-speech-translation:1.0.0-alpha1")
+    }
+
+### Groovy
+
+    dependencies {
+        // ML Kit Base Infrastructure
+        implementation 'com.google.mlkit:common:18.10.0'
+        // ML Kit GenAI Speech Translation SDK
+        implementation 'com.google.mlkit:genai-speech-translation:1.0.0-alpha1'
+    }
+
+## Integrate the Speech Translation API
+
+To integrate the Speech Translation SDK into your app, complete the following
+steps:
+
+1. Initialize a `SpeechTranslator` client by building a `SpeechTranslatorOptions` configuration object.
+2. Use the Kotlin Flow API to verify feature availability and manage model downloads.
+3. Create a `SpeechTranslatorRequest` object to stream `TranslationAudio` data packets and observe real-time translation results. The input audio must be in PCM 16-bit, 16kHz, mono format.
+
+    // Initialize the client.
+    val options = SpeechTranslatorOptions.Builder(Locale.US, Locale.CHINESE).build()
+    val client = SpeechTranslation.getClient(options)
+
+    // Check and download the on-device model.
+    if (client.checkStatus() == FeatureStatus.DOWNLOADABLE) {
+        client.download().collect { status ->
+            println("Download progress: $status")
+        }
+    }
+
+    // Construct a streaming request with raw audio (PCM 16-bit, 16kHz, mono).
+    val audioFlow = flow {
+        emit(TranslationAudio(Locale.US, rawAudioBytes))
+    }
+    val request = SpeechTranslatorRequest.Builder(audioFlow).build()
+
+    // Start a session and collect translated responses.
+    client.startTranslation(request).collect { response ->
+        when (response) {
+            is SpeechTranslatorResponse.Text -> {
+                println("Translation (${response.locale}): ${response.translatedText}")
+            }
+            is SpeechTranslatorResponse.ErrorResponse -> {
+                println("Translation failed: ${response.e.message}")
+            }
+            is SpeechTranslatorResponse.CompletedResponse -> {
+                println("Session closed.")
+            }
+        }
+    }
+
+    // Close the client when done.
+    client.close()
+
+## Supported devices
+
+To use the Speech Translation API, your device must have a high-performance
+neural accelerator (TPU/NPU) integrated in its chipset. The following table
+lists some major phone models that are supported, but keep in mind that to
+verify support you should check your device's chipset.
+
+| Chipset family | Chipset IDs | Example devices | Minimum OS version |
+|---|---|---|---|
+| Google Tensor | Google Tensor G5, G6+ | - Google Pixel 10, 11 | Android 14 |
+| Qualcomm Snapdragon | SM8650, SM8750, SM8850, SM8845, SM8975, SM8950, SM8735 | - Samsung Galaxy S25, S25+, S25 Ultra - Samsung Galaxy S26, S26+, S26 Ultra - Samsung Galaxy Z Fold7 - Xiaomi 15 - OnePlus 13 - Motorola Razr 60 Ultra | Android 15 |
+| MediaTek | Dimensity 9300, 9400+ | - OPPO Find X10, X10 Pro - Samsung Galaxy Tab S12 | Android 15 |
+
+## Common setup issues
+
+> [!NOTE]
+> **Note:** This API is not supported on devices with an [unlocked bootloader](https://source.android.com/docs/core/architecture/bootloader/locking_unlocking).
+
+ML Kit GenAI APIs rely on the Android AICore app to access Gemini Nano. When a device is just setup (including reset), or the AICore app is just reset (e.g. clear data, uninstalled then reinstalled), the AICore app may not have enough time to finish initialization (including downloading latest configurations from server). As a result, the ML Kit GenAI APIs may not function as expected. Here are the common setup error messages you may see and how to handle them:
+
+|---|---|
+| **Example error message** | **How to handle** |
+| AICore failed with error type 4-CONNECTION_ERROR and error code 601-BINDING_FAILURE: AICore service failed to bind. | This could happen when you install the app using ML Kit GenAI APIs immediately after device setup or when AICore is uninstalled after your app is installed. Updating AICore app then reinstalling your app should fix it. |
+| AICore failed with error type 3-PREPARATION_ERROR and error code 606-FEATURE_NOT_FOUND: Feature ... is not available. | This could happen when AICore hasn't finished downloading the latest configurations. When the device is connected to the internet, it usually takes a few minutes to a few hours to update. Restarting the device can speed up the update. <br /> Note that if the device's bootloader is unlocked, you'll also see this error---this API does not support devices with unlocked bootloaders. |
+| AICore failed with error type 1-DOWNLOAD_ERROR and error code 0-UNKNOWN: Feature ... failed with failure status 0 and error esz: UNAVAILABLE: Unable to resolve host ... | Keep network connection, wait for a few minutes and retry. |
+
+> [!NOTE]
+> **Note:** While various resetting is common to developers, it is much less frequent to users. Also, all these setup failure cases can be caught by the `checkFeatureStatus()` or `checkStatus()` APIs. Make sure to call `checkFeatureStatus()` or `checkStatus()` first before showing any related UI, so your app users won't see these errors in any cases.
