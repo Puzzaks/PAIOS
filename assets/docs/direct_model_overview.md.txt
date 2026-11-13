@@ -1,0 +1,50 @@
+This API is offered in beta, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility. [Video](https://www.youtube.com/watch?v=PoqJh_60Wrw)
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-prompt-description.svg)
+
+With ML Kit's direct model access (`com.google.mlkit:genai-prompt`), you can
+send custom natural language requests on-device to the [Gemini Nano](https://deepmind.google/models/gemini/)
+foundation model through the `GenerativeModel` class. Direct model access
+accepts text or multimodal (image and text) inputs, supports client-managed
+multi-turn conversations (`List<Content>` with `USER` and `MODEL` roles and
+`sessionId`), and emits text output or typed structured output.
+
+You can use direct model access for a variety of use cases, including the
+following:
+
+|---|---|
+| **Use case** | **Example** |
+| Image understanding | Analyzing photos for classification, such as "pets", "food", or "travel". |
+| Short translations | Translating short messages between a delivery driver and customer. |
+| Guided summarization | Summarizing reviews of a restaurant based on a user's specific interest. |
+| Entity extraction | Extracting important details about an upcoming event from an email thread. |
+| Content generation inspiration | Suggesting prompts for a journal entry. |
+| Intelligent document scanning | Extracting and categorizing items from a receipt image. > [!NOTE] > **Note:** For best results, consider using the [ML Kit Text Recognition API](https://developers.google.com/ml-kit/vision/text-recognition/v2) to first extract text from an image. Then, use direct model access to further process the text with the context from the original image. |
+| Text classification | Classifying customer reviews into a positive, neutral, or negative category. |
+
+> [!NOTE]
+> **Managed sessions and automated tool loops:** The `GenerateContentRequest` class already supports client-managed multi-turn conversations using a `List<Content>` object (`USER` and `MODEL` roles) and a `sessionId` value. If you want ML Kit to automate in-memory multi-turn session history and multi-step tool execution on top of the `GenerativeModel` class, see [Agentic workflows](https://developers.google.com/ml-kit/genai/agent/android) (using the `AgentRunner` class).
+
+## Direct model access versus task-specific APIs
+
+Alongside direct access to the Gemini Nano foundation model for custom prompts,
+ML Kit provides pre-configured APIs for dedicated speech, image, and text tasks:
+[Speech Recognition](https://developers.google.com/ml-kit/genai/speech-recognition/android), [Image Description](https://developers.google.com/ml-kit/genai/image-description/android), [Summarization](https://developers.google.com/ml-kit/genai/summarization/android),
+[Proofreading](https://developers.google.com/ml-kit/genai/proofreading/android), [Rewriting](https://developers.google.com/ml-kit/genai/rewriting/android), and more. The text and image task APIs use
+task-specific feature types and fine-tuned LoRA adapters on top of the shared
+base model. The following table outlines the benefits of each approach:
+
+|---|---|---|
+| **Consideration** | **Direct model access (`GenerativeModel`)** | **Text and image task APIs** |
+| Integration effort | High. Requires more effort to implement, due to prompt engineering and quality assurance. | Low. Requires less effort, as these APIs use task-specific feature types and fine-tuned LoRA adapters on top of the base model. No need to work directly with the LLM. |
+| Flexibility | More flexibility, as you can custom engineer prompts, manage multi-turn context, enforce typed structured schemas, or build higher-level [agentic workflows](https://developers.google.com/ml-kit/genai/agent/android) (`AgentRunner`) on top of `GenerativeModel`. | Less flexibility. Each task-specific API has fixed LoRA fine-tuning and a built-in prompt that has the following characteristics: - Image description is generic and short. - Summarizations can only be in 1-3 bullet points. - Rewriting supports only predefined styles. |
+
+As a general rule, use direct model access when you need more customization and
+flexibility, and use the task-specific APIs for standard tasks that don't
+require custom logic.
+
+<br />
+
+## Sample code
+
+- [ML Kit GenAI Samples](https://github.com/googlesamples/mlkit/tree/master/android/genai)

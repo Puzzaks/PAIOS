@@ -5,6 +5,7 @@ import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/storage/file_access_service.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import 'package:share_plus/share_plus.dart';
 import '../../engine.dart';
 import '../support/elements.dart';
@@ -134,34 +135,38 @@ class PromptViewerPageState extends State<PromptViewerPage> {
                   body: CustomScrollView(
                     slivers: [
                       SliverToBoxAdapter(
-                        child: content.isEmpty
-                          ? Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Center(child: Text(engine.dict.value("prompt_empty"))),
-                            )
-                          : Padding(
-                              padding: const EdgeInsets.fromLTRB(15, 8, 15, 100),
-                              child: Markdown(
-                                data: content,
-                                selectable: true,
-                                shrinkWrap: true,
-                                physics: const NeverScrollableScrollPhysics(),
-                                styleSheet: MarkdownStyleSheet(
-                                  p: TextStyle(fontSize: 16),
+                        child: MotionBlurContainer(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              content.isEmpty
+                                ? Padding(
+                                    padding: const EdgeInsets.all(24),
+                                    child: Center(child: Text(engine.dict.value("prompt_empty"))),
+                                  )
+                                : Padding(
+                                    padding: const EdgeInsets.fromLTRB(15, 8, 15, 100),
+                                    child: Markdown(
+                                      data: content,
+                                      selectable: true,
+                                      shrinkWrap: true,
+                                      physics: const NeverScrollableScrollPhysics(),
+                                      styleSheet: MarkdownStyleSheet(
+                                        p: TextStyle(fontSize: 16),
+                                      ),
+                                    ),
+                                  ),
+                              if ((description != null && description.isNotEmpty) && (author != null && author.isNotEmpty) && updatedStr.isNotEmpty)
+                                text.info(
+                                    title: "$description\n${engine.dict.value("by_author").replaceAll("%author%", author)}\n${engine.dict.value("prompt_last_updated")}: $updatedStr",
+                                    context: context,
+                                    subtitle: "",
+                                    action: () {}
                                 ),
-                              ),
-                            ),
-                      ),
-                      if ((description != null && description.isNotEmpty) && (author != null && author.isNotEmpty) && updatedStr.isNotEmpty) ...[
-                        SliverToBoxAdapter(
-                          child: text.info(
-                              title: "$description\n${engine.dict.value("by_author").replaceAll("%author%", author)}\n${engine.dict.value("prompt_last_updated")}: $updatedStr",
-                              context: context,
-                              subtitle: "",
-                              action: () {}
+                            ],
                           ),
                         ),
-                      ],
+                      ),
                     ],
                   ),
                 );

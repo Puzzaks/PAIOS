@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../../engine.dart';
 import '../support/elements.dart';
 
@@ -41,73 +42,208 @@ class ModelSettingsState extends State<ModelSettings> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-
-                            cards.cardGroup([
-                              CardContents.addretract(
-                                  title: engine.dict.value("temperature"),
-                                  subtitle: engine.dict.value("temperature_desc").replaceAll("%value%", engine.temperature.toStringAsFixed(1)),
-                                  actionAdd: (){
-                                    if(engine.temperature < 0.9){
+                        child: MotionBlurContainer(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Category.settings(
+                                  title: engine.dict.value("aicore_channel"),
+                                  context: context
+                              ),
+                              cards.cardGroup([
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              "Gemini Nano",
+                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              "${engine.dict.value("version")}: ${engine.modelInfo["version"] ?? engine.modelInfo["aicoreVersion"] ?? engine.dict.value("loading")}",
+                                              style: TextStyle(
+                                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Chip(
+                                        avatar: engine.isAICoreBeta
+                                            ? Icon(
+                                                Icons.auto_awesome,
+                                                size: 16,
+                                                color: Theme.of(context).colorScheme.onPrimaryContainer,
+                                              )
+                                            : null,
+                                        label: Text(
+                                          engine.isAICoreBeta
+                                              ? engine.dict.value("aicore_beta_badge")
+                                              : engine.dict.value("aicore_stable_badge"),
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: engine.isAICoreBeta
+                                                ? Theme.of(context).colorScheme.onPrimaryContainer
+                                                : Theme.of(context).colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                                        visualDensity: VisualDensity.compact,
+                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        backgroundColor: engine.isAICoreBeta
+                                            ? Theme.of(context).colorScheme.primaryContainer
+                                            : Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        surfaceTintColor: Colors.transparent,
+                                        elevation: 0,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(20),
+                                          side: const BorderSide(color: Colors.transparent),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                CardContents.tapIcon(
+                                    title: engine.dict.value("open_aicore_settings"),
+                                    subtitle: engine.dict.value("in_play_store"),
+                                    icon: Icons.android_rounded,
+                                    colorBG: Theme.of(context).colorScheme.primaryFixedDim,
+                                    color: Theme.of(context).colorScheme.onPrimaryFixed,
+                                    action: () async {
+                                      engine.gemini.openAICorePlayStore();
+                                    }
+                                ),
+                                CardContents.tapIcon(
+                                    title: engine.dict.value("aicore_dev_settings"),
+                                    subtitle: engine.dict.value("aicore_dev_settings_desc"),
+                                    icon: Icons.developer_mode_rounded,
+                                    colorBG: Theme.of(context).colorScheme.primaryFixedDim,
+                                    color: Theme.of(context).colorScheme.onPrimaryFixed,
+                                    action: () async {
+                                      engine.gemini.openAICoreDevSettings();
+                                    }
+                                ),
+                                if (!engine.isAICoreBeta)
+                                  CardContents.tapIcon(
+                                      title: engine.dict.value("join_aicore_beta"),
+                                      subtitle: engine.dict.value("join_aicore_beta_desc"),
+                                      icon: Icons.science_rounded,
+                                      colorBG: Theme.of(context).colorScheme.primaryFixedDim,
+                                      color: Theme.of(context).colorScheme.onPrimaryFixed,
+                                      action: () async {
+                                        engine.gemini.openAICoreBetaProgram();
+                                      }
+                                  ),
+                              ]),
+                              Category.settings(
+                                  title: engine.dict.value("settings_ai"),
+                                  context: context
+                              ),
+                              cards.cardGroup([
+                                CardContents.addretract(
+                                    title: engine.dict.value("temperature"),
+                                    subtitle: engine.dict.value("temperature_desc").replaceAll("%value%", engine.temperature.toStringAsFixed(1)),
+                                    actionAdd: (){
+                                      if(engine.temperature < 0.9){
+                                        setState(() {
+                                          engine.temperature = engine.temperature + 0.1;
+                                        });
+                                        engine.saveSettings();
+                                      }
+                                    },
+                                    actionRetract: (){
+                                      if(engine.temperature > 0.1){
+                                        setState(() {
+                                          engine.temperature = engine.temperature - 0.1;
+                                        });
+                                        engine.saveSettings();
+                                      }
+                                    }
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("add_time"),
+                                    subtitle: engine.dict.value("add_time_desc"),
+                                    action: (){
                                       setState(() {
-                                        engine.temperature = engine.temperature + 0.1;
+                                        engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
                                       });
                                       engine.saveSettings();
-                                    }
-                                  },
-                                  actionRetract: (){
-                                    if(engine.temperature > 0.1){
+                                    },
+                                    switcher: (value){
                                       setState(() {
-                                        engine.temperature = engine.temperature - 0.1;
+                                        engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
                                       });
                                       engine.saveSettings();
-                                    }
-                                  }
-                              ),
-                              CardContents.turn(
-                                  title: engine.dict.value("add_time"),
-                                  subtitle: engine.dict.value("add_time_desc"),
-                                  action: (){
-                                    setState(() {
-                                      engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
-                                    });
-                                    engine.saveSettings();
-                                  },
-                                  switcher: (value){
-                                    setState(() {
-                                      engine.addCurrentTimeToRequests = !engine.addCurrentTimeToRequests;
-                                    });
-                                    engine.saveSettings();
-                                  },
-                                  value: engine.addCurrentTimeToRequests
-                              ),
-                              CardContents.turn(
-                                  title: engine.dict.value("add_lang"),
-                                  subtitle: engine.dict.value("add_lang_desc"),
-                                  action: (){
-                                    setState(() {
-                                      engine.shareLocale = !engine.shareLocale;
-                                    });
-                                    engine.saveSettings();
-                                  },
-                                  switcher: (value){
-                                    setState(() {
-                                      engine.shareLocale = !engine.shareLocale;
-                                    });
-                                    engine.saveSettings();
-                                  },
-                                  value: engine.shareLocale
-                              ),
-                            ]),
-                            text.info(
-                                title: engine.dict.value("welcome_available"),
-                                context: context,
-                                subtitle: "",
-                                action: (){}
-                            )
-                          ],
+                                    },
+                                    value: engine.addCurrentTimeToRequests
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("add_lang"),
+                                    subtitle: engine.dict.value("add_lang_desc"),
+                                    action: (){
+                                      setState(() {
+                                        engine.shareLocale = !engine.shareLocale;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    switcher: (value){
+                                      setState(() {
+                                        engine.shareLocale = !engine.shareLocale;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    value: engine.shareLocale
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("downsample_images"),
+                                    subtitle: engine.dict.value("downsample_images_desc"),
+                                    action: (){
+                                      setState(() {
+                                        engine.downsampleImages = !engine.downsampleImages;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    switcher: (value){
+                                      setState(() {
+                                        engine.downsampleImages = value;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    value: engine.downsampleImages
+                                ),
+                                CardContents.turn(
+                                    title: engine.dict.value("enable_mesh"),
+                                    subtitle: engine.dict.value("enable_mesh_desc"),
+                                    action: (){
+                                      setState(() {
+                                        engine.enableMesh = !engine.enableMesh;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    switcher: (value){
+                                      setState(() {
+                                        engine.enableMesh = value;
+                                      });
+                                      engine.saveSettings();
+                                    },
+                                    value: engine.enableMesh
+                                ),
+                              ]),
+                              text.info(
+                                  title: engine.dict.value("welcome_available"),
+                                  context: context,
+                                  subtitle: "",
+                                  action: (){}
+                              )
+                            ],
+                          ),
                         ),
                       ),
                     ],

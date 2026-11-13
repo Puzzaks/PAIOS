@@ -1,0 +1,391 @@
+This API is offered in preview, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility. To use this feature, the Google account on the device must be part of the [AICore Developer Preview
+program](https://developers.google.com/ml-kit/genai/aicore-dev-preview).
+
+With ML Kit's direct model access, you can use *function calling* to enable
+Gemini Nano models to output structured function execution requests (tool calls)
+instead of plain text responses. Function calling lets you connect on-device
+generative AI models to external tools, APIs, and local app features.
+
+> [!CAUTION]
+> **Caution:** Function calling relies on generative AI model predictions, which may not always suggest the correct function or arguments. The ML Kit SDK doesn't validate or execute these functions itself; you are responsible for the safety and quality of any outputs generated or actions taken based on model function predictions.
+
+## Key capabilities
+
+Function calling provides the following key capabilities:
+
+- Single-turn function calling: Gemini Nano predicts one or more tool calls (`FunctionCall`), your app executes the functions locally, and the flow completes without needing a follow-up model response.
+- Multi-turn function calling: Gemini Nano predicts one or more tool calls (`FunctionCall`), your app executes the functions locally, and passes the results back (`FunctionResponsePart`) to retrieve more tool calls or a final synthesized text response.
+
+When implementing function calling, you can take advantage of the following:
+
+- Programmatic tool definitions: Construct dynamic `FunctionDeclaration` and `FunctionSchema` tool definitions at runtime using the ML Kit GenAI Schema API (`com.google.mlkit:genai-schema`).
+- Structured argument parsing: Receive strongly typed argument values directly from the model response candidate to execute your local app logic.
+
+> [!NOTE]
+> **Note:** Direct model access (`genai-prompt`) defines tools programmatically with `FunctionDeclaration` and doesn't automatically dispatch or execute functions. The model returns the predicted function names and arguments in its response, and your app is in control of executing the local logic for the function and passing the execution results back. To define tools declaratively with Android's `@AppFunction` annotation and let ML Kit automatically orchestrate multi-turn tool execution in an agentic loop, see [agentic workflows](https://developers.google.com/ml-kit/genai/agent/android).
+
+## Example results
+
+Function calling supports both single-turn and multi-turn flows. In both cases,
+the model predicts one or more tool calls consisting of the function name and
+arguments. For multi-turn flows, after receiving the app's execution results,
+the app can send another request to the model with the full conversation history
+to get more tool calls or a final text response for the user.
+
+| Execution flow | User prompt | Model output |
+|---|---|---|
+| Single-turn | "Turn on the living room lights to 80% brightness." | Tool call: `turn_on_light(room="living room", brightness=80)` |
+| Single-turn | "Open the Camera app." | Tool call: `open_app(appName="Camera")` |
+| Multi-turn | "What's the weather like in San Francisco in Celsius?" | Intermediate tool call: `get_current_weather(location="San Francisco, CA", unit="celsius")` <br /> Final model output shown to user: `In SF it's currently 25 degrees Celsius.` |
+
+## Prerequisites
+
+To use function calling, you must meet the following device and account
+requirements:
+
+- [Your device supports the Prompt API](https://developers.google.com/ml-kit/genai#prompt-device).
+- The Google account on your device is part of the [AICore Developer Preview program](https://developers.google.com/ml-kit/genai/aicore-dev-preview).
+
+To check that you've met these requirements, check that the Gemini Nano 4 Fast
+model is available in the AICore app: open the AICore app, click the **Select a
+model** dropdown, and check that **Gemini Nano 4 Fast** is listed. If the model
+isn't there, there's an issue with device support or account enrollment and
+function calling won't work.
+
+> [!TIP]
+> **Tip:** Download the Gemini Nano 4 model to your device to save model downloading time on your first inference.
+
+In addition, your project must meet the following requirements:
+
+- Kotlin version 2.3.0 or higher
+- Minimum SDK (`minSdk`) version 26 or higher
+
+## Get started
+
+Here are the steps to start using function calling.
+
+1. In your project-level `settings.gradle.kts` (or `settings.gradle`) file, add
+   `mavenCentral()` to the `repositories {}` block.
+
+       dependencyResolutionManagement {
+           repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+           repositories {
+               google()
+               mavenCentral()
+           }
+       }
+
+2. In your module-level `build.gradle.kts` (or `build.gradle` file), add the ML
+   Kit Prompt API and schema dependencies:
+
+   ### Kotlin
+
+       plugins {
+           id("com.android.application")
+           id("org.jetbrains.kotlin.android")
+       }
+
+       dependencies {
+           // ML Kit GenAI Prompt and Schema SDKs
+           implementation("com.google.mlkit:genai-prompt:1.0.0-beta5")
+           implementation("com.google.mlkit:genai-schema:1.0.0-alpha2")
+       }
+
+   ### Groovy
+
+       plugins {
+           id 'com.android.application'
+           id 'org.jetbrains.kotlin.android'
+       }
+
+       dependencies {
+           // ML Kit GenAI Prompt and Schema SDKs
+           implementation 'com.google.mlkit:genai-prompt:1.0.0-beta5'
+           implementation 'com.google.mlkit:genai-schema:1.0.0-alpha2'
+       }
+
+3. In your module-level `build.gradle` (or `build.gradle.kts` file), set the
+   `minSdk` version to `26` or higher.
+
+   ### Kotlin
+
+       android {
+           defaultConfig {
+               // ...
+               minSdk = 26
+               // ...
+           }
+       }
+
+   ### Groovy
+
+       android {
+           defaultConfig {
+               // ...
+               minSdk 26
+               // ...
+           }
+       }
+
+## How to use the Function Calling API
+
+To implement function calling, go through the following steps:
+
+1. Define your tools.
+2. Select the model.
+3. Attach tools to your request.
+4. Handle tool calls (single-turn or multi-turn).
+
+The next sections go through an example that demonstrates these steps.
+
+### Define your tools
+
+Construct tool schemas programmatically using `FunctionDeclaration`,
+`FunctionSchema`, and `FunctionType` from the
+`com.google.mlkit.genai.schema.tools` package. (To define tools declaratively at
+compile time using Android's `@AppFunction` annotation with automatic execution,
+see [Define tools](https://developers.google.com/ml-kit/genai/agent/android/define-tools).)
+
+For example, you can define an action-oriented tool (such as turning on a smart
+light for single-turn execution):
+
+    import com.google.mlkit.genai.schema.tools.FunctionDeclaration
+    import com.google.mlkit.genai.schema.tools.FunctionSchema
+    import com.google.mlkit.genai.schema.tools.FunctionType
+
+    val turnOnLightTool = FunctionDeclaration(
+        name = "turn_on_light",
+        description = "Turn on the lights in a room and set the brightness",
+        parameters = FunctionSchema(
+            type = FunctionType.OBJECT,
+            properties = mapOf(
+                "room" to FunctionSchema(
+                    type = FunctionType.STRING,
+                    description = "The room name"
+                ),
+                "brightness" to FunctionSchema(
+                    type = FunctionType.INTEGER,
+                    description = "Brightness level from 0 to 100"
+                )
+            ),
+            required = listOf("room")
+        )
+    )
+
+Or define a data-retrieval tool (such as fetching the current weather for
+multi-turn synthesis):
+
+    import com.google.mlkit.genai.schema.tools.FunctionDeclaration
+    import com.google.mlkit.genai.schema.tools.FunctionSchema
+    import com.google.mlkit.genai.schema.tools.FunctionType
+
+    val getWeatherTool = FunctionDeclaration(
+        name = "get_current_weather",
+        description = "Get the current weather for a location",
+        parameters = FunctionSchema(
+            type = FunctionType.OBJECT,
+            properties = mapOf(
+                "location" to FunctionSchema(
+                    type = FunctionType.STRING,
+                    description = "The city and state, e.g. San Francisco, CA"
+                ),
+                "unit" to FunctionSchema(
+                    type = FunctionType.STRING,
+                    description = "The temperature unit, either 'celsius' or 'fahrenheit'"
+                )
+            ),
+            required = listOf("location")
+        )
+    )
+
+### Select the model
+
+Function calling requires Gemini Nano 4. To access Gemini Nano 4, use the
+[model selection API](https://developers.google.com/ml-kit/genai/prompt/android/select-model) to configure
+your `GenerativeModel` instance to target `ModelReleaseStage.PREVIEW` AND
+`ModelPreference.FAST`.
+
+> [!NOTE]
+> **Note:** On the Samsung Galaxy Z Flip 8 and Fold 8, Gemini Nano 4 is already available in production. If you're using these devices, you don't need to specify the preview fast model; calling the default `Generation.getClient()` client works.
+
+    import com.google.mlkit.genai.prompt.Generation
+    import com.google.mlkit.genai.prompt.ModelPreference
+    import com.google.mlkit.genai.prompt.ModelReleaseStage
+    import com.google.mlkit.genai.prompt.generationConfig
+    import com.google.mlkit.genai.prompt.modelConfig
+
+    // Target the preview fast model (Gemini Nano 4)
+    val config = generationConfig {
+        modelConfig = modelConfig {
+            releaseStage = ModelReleaseStage.PREVIEW
+            preference = ModelPreference.FAST
+        }
+    }
+    val generativeModel = Generation.getClient(config)
+
+### Attach tools to your request
+
+When creating a `GenerateContentRequest` object, pass your `FunctionDeclaration`
+list to `setTools()` in the request builder.
+
+For example, to attach a tool for a single-turn action request with a system
+instruction:
+
+    import com.google.mlkit.genai.prompt.SystemInstruction
+    import com.google.mlkit.genai.prompt.TextPart
+    import com.google.mlkit.genai.prompt.generateContentRequest
+
+    val requestText = "Turn on the living room lights and set brightness to 50"
+
+    val request = generateContentRequest(
+        SystemInstruction("You are a helpful home automation assistant."),
+        TextPart(requestText)
+    ) {
+        // Attach the FunctionDeclaration tool schemas
+        setTools(listOf(turnOnLightTool))
+        temperature = 0.2f
+    }
+
+    // Run non-streaming inference
+    val response = generativeModel.generateContent(request)
+
+Or to attach your `FunctionDeclaration` list for a multi-turn query:
+
+    import com.google.mlkit.genai.prompt.SystemInstruction
+    import com.google.mlkit.genai.prompt.TextPart
+    import com.google.mlkit.genai.prompt.generateContentRequest
+
+    val availableTools = listOf(getWeatherTool)
+
+    // Use the generateContentRequest DSL
+    val request = generateContentRequest(
+        TextPart("What is the weather in San Francisco, CA in celsius?")
+    ) {
+        setTools(availableTools)
+    }
+    val response = generativeModel.generateContent(request)
+
+### Handle tool calls
+
+When Gemini Nano decides to invoke a tool, the model's response candidate
+contains one or more `FunctionCall` objects in `candidate.functionCalls`. To
+handle tool calls, your app must first inspect the response candidate to verify
+whether any tool calls were predicted:
+
+    import com.google.mlkit.genai.common.FunctionArgValue
+    import com.google.mlkit.genai.prompt.Content
+    import com.google.mlkit.genai.prompt.FunctionCallPart
+    import com.google.mlkit.genai.prompt.FunctionResponsePart
+    import com.google.mlkit.genai.prompt.GenerateContentRequest
+    import com.google.mlkit.genai.prompt.TextPart
+    import com.google.mlkit.genai.prompt.content
+
+    val candidate = response.candidates.firstOrNull()
+    val functionCalls = candidate?.functionCalls ?: emptyList()
+
+    if (functionCalls.isNotEmpty()) {
+        // Process tool calls using either the single-turn or multi-turn flow
+        // described in the following sections
+    }
+
+#### Single-turn function calling
+
+Use single-turn function calling for action-oriented tasks where the app
+directly fulfills the request (for example, "Open the camera app" or "Turn on
+the living room lights"). Once your app executes the function locally, the flow
+is complete; no follow-up model response is required.
+
+    for (functionCall in functionCalls) {
+        val name = functionCall.name
+        val args = functionCall.arguments // Map<String, FunctionArgValue>
+
+        when (name) {
+            "open_app" -> {
+                val appName = (args["appName"] as? FunctionArgValue.StringValue)?.value
+                launchApp(appName)
+            }
+            "turn_on_light" -> {
+                val room = (args["room"] as? FunctionArgValue.StringValue)?.value
+                val brightness = (args["brightness"] as? FunctionArgValue.IntValue)?.value ?: 100
+                setLightState(room, brightness)
+            }
+            else -> Log.w(TAG, "Unhandled tool call: $name")
+        }
+    }
+
+#### Multi-turn function calling
+
+Use multi-turn function calling when the user expects a natural language answer
+based on data retrieved by the tool (for example, "What is the weather like in
+San Francisco?").
+
+In a multi-turn flow, your app does the following:
+
+1. Executes the requested function locally.
+2. Packages the result in a `FunctionResponsePart` object.
+3. Appends both the model's call (`MODEL` role) and your execution result (`USER` role) to the conversation history.
+4. Sends a follow-up request back to Gemini Nano to synthesize the final natural language answer.
+
+    // 1. Execute each predicted tool call and collect results
+    val responseParts = mutableListOf<FunctionResponsePart>()
+
+    for (functionCall in functionCalls) {
+        val responsePart: FunctionResponsePart = when {
+            functionCall.name == "get_current_weather" -> {
+                val location = (functionCall.arguments["location"] as? FunctionArgValue.StringValue)?.value ?: ""
+                val unit = (functionCall.arguments["unit"] as? FunctionArgValue.StringValue)?.value ?: "celsius"
+
+                val weatherData = fetchWeather(location, unit) // Local network/API call
+
+                // Package the tool execution result as a key-value map
+                FunctionResponsePart(
+                    id = functionCall.id,
+                    name = functionCall.name,
+                    response = mapOf("result" to weatherData)
+                )
+            }
+
+            else -> throw IllegalArgumentException("Unknown tool: ${functionCall.name}")
+        }
+        responseParts.add(responsePart)
+    }
+
+    // 2. Append turns to conversation history to construct the multi-turn context
+    val history = request.contents.toMutableList().apply {
+        // Turn 1: Model's request containing the predicted FunctionCallPart object
+        add(
+            content(Content.Role.MODEL) {
+                for (call in functionCalls) {
+                    addPart(FunctionCallPart(call))
+                }
+            }
+        )
+        // Turn 2: User's response containing the executed FunctionResponsePart object
+        add(
+            content(Content.Role.USER) {
+                for (responsePart in responseParts) {
+                    addPart(responsePart)
+                }
+            }
+        )
+    }
+
+    // 3. Send the updated history back to Gemini Nano for final text synthesis
+    val followUpRequest = GenerateContentRequest.Builder(history)
+        .setTools(availableTools) // Include tools in case the model requires subsequent tool calls
+        .build()
+
+    val finalResponse = generativeModel.generateContent(followUpRequest)
+    val answer = finalResponse.candidates.firstOrNull()?.text
+
+    Log.d(TAG, "Final Model Response: $answer")
+
+## Sample code
+
+For a complete working example of function calling in an Android app, see this
+[ML Kit sample app](https://github.com/googlesamples/mlkit/tree/master/android/genai).
+
+## Known issues
+
+- AndroidX AppFunctions (`@AppFunction`) in direct model access (`genai-prompt`): Discovering and executing compile-time `@AppFunction` tools directly through the Prompt API (`com.google.mlkit:genai-prompt:1.0.0-beta5`) is not yet available; tools in the `genai-prompt` library must be defined programmatically using the `FunctionDeclaration` class. To use `@AppFunction` tools today, use [agentic workflows](https://developers.google.com/ml-kit/genai/agent/android) (`com.google.mlkit:genai-agent`).
+- When using streaming requests (`generateContentStream`), tool calls are not streamed token-by-token. Instead, complete `FunctionCall` objects are emitted (via `StreamingCallback.onNewFunctionCall` or in the final streamed `GenerateContentResponse.candidates[0].functionCalls`) once the model finishes generating the tool call.

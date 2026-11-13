@@ -1,0 +1,142 @@
+This API is offered in alpha, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility.
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-text-to-speech.png)
+
+With ML Kit's GenAI Text to Speech API, you can synthesize text content to
+speech audio. The Text to Speech API uses a generative AI model to provide
+high-quality speech synthesis.
+
+We recommend using the ML Kit Text to Speech API when possible since it
+provides very human-like voices, but if it's not available you can use the
+Android platform
+[`TextToSpeech` API](https://developer.android.com/reference/android/speech/tts/TextToSpeech)
+instead.
+
+## Key capabilities
+
+- Unified downloading and inference options within a single SDK.
+- Kotlin-first API that uses coroutines and Flow to stream playback status and audio.
+
+## Prerequisites
+
+To use the Text to Speech API, you must meet the following requirements:
+
+- You have one of the following supported devices:
+  - Google: Pixel 8, Pixel 9, Pixel 10, Pixel 11
+  - Samsung: Galaxy S25, Galaxy S26, Galaxy Z Fold8, Galaxy Z Fold8 Ultra, Galaxy Z Flip8
+- You have the latest version of the [Speech Recognition \& Synthesis app](https://play.google.com/store/apps/details?id=com.google.android.tts&pcampaignid=web_share) (`com.google.android.tts`) from Google Play. If the app is missing or out of date, when implementing text to speech the `checkStatus()` method returns `FeatureStatus.UNAVAILABLE`.
+- Your project uses a minimum SDK (`minSdk`) version of 26 or higher.
+
+## Get started
+
+To get started, add the ML Kit Text to Speech dependency to your module-level
+`build.gradle.kts` (or `build.gradle`) file:
+
+### Kotlin
+
+    dependencies {
+        // ML Kit GenAI TTS SDK
+        implementation("com.google.mlkit:genai-text-to-speech:1.0.0-alpha1")
+    }
+
+### Groovy
+
+    dependencies {
+        // ML Kit GenAI TTS SDK
+        implementation 'com.google.mlkit:genai-text-to-speech:1.0.0-alpha1'
+    }
+
+## Integrate the Text to Speech API
+
+To use the Text to Speech API, go through these steps:
+
+1. Initialize the client: Create a `SpeechSynthesizer` client instance by passing a `SpeechSynthesizerOptions` configuration object. You only need a single client instance to support all languages. The locale specified in your options object just determines the default language list returned by the `getSupportedVoices()` method.
+2. Download the model: Check the availability of your target voice. If the status is `FeatureStatus.DOWNLOADABLE`, call the `download()` method to download the voice model to the device.
+3. Synthesize the content: Construct a `SpeechSynthesizerRequest` object containing your input text and the target voice. Call the `synthesize()` method to generate the audio, and collect the playback status updates and audio chunks.
+
+    // Initialize the `SpeechSynthesizer` client.
+    // One client serves every language. `Locale.US` is only the default list locale.
+    val options = speechSynthesizerOptions(Locale.US)
+    val client = SpeechSynthesis.getClient(options)
+
+    // Query voices for multiple languages using the same client instance.
+    val englishVoice = client.getSupportedVoices().first() // Uses the default `Locale.US`
+    val frenchVoice = client.getSupportedVoices(Locale.FRANCE).first()
+
+    // Check and download a voice model (for example, the French voice model).
+    if (client.checkStatus(frenchVoice) == FeatureStatus.DOWNLOADABLE) {
+        client.download(frenchVoice).collect { status -> println("Download status: $status") }
+    }
+
+    // Construct the request.
+    // The `VoiceInfo` instance, `frenchVoice` here, determines the spoken language.
+    val request = SpeechSynthesizerRequest(
+        input = SpeechSynthesizerRequest.Input.Text("Bonjour tout le monde", frenchVoice),
+        audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+    )
+
+    // Speak and collect streaming audio or status.
+    client.synthesize(request).collect { response ->
+        when (response) {
+            is SpeechSynthesizerResponse.StatusUpdate -> println("Playback status: ${response.status}")
+            is SpeechSynthesizerResponse.AudioAvailable -> println("Audio chunk: ${response.audio.size} bytes")
+            is SpeechSynthesizerResponse.Error -> println("Error: ${response.errorCode}")
+        }
+    }
+
+    // Release resources when done.
+    client.close()
+
+## Supported voices
+
+The ML Kit Text to Speech API supports the following voices. Select a voice by
+name using the `VoiceInfo.name` property.
+
+- star02: female, medium pitch
+- star04: male, medium-high pitch
+- star05: male, low pitch
+- star08: female, low pitch
+- star11: male, medium pitch, younger-sounding
+- star12: female, medium-high pitch
+- star13: male, medium pitch
+- star16: female, medium-low pitch
+
+## Supported languages
+
+The ML Kit Text to Speech API supports the following locales:
+
+- Arabic (ar-XA)
+- Danish (da-DK)
+- German (de-DE)
+- English (en-GB)
+- English (en-US)
+- Spanish (es-ES)
+- Spanish (es-US)
+- French (fr-CA)
+- French (fr-FR)
+- Hindi (hi-IN)
+- Indonesian (id-ID)
+- Italian (it-IT)
+- Japanese (ja-JP)
+- Korean (ko-KR)
+- Norwegian (nb-NO)
+- Dutch (nl-NL)
+- Polish (pl-PL)
+- Portuguese (pt-BR)
+- Russian (ru-RU)
+- Swedish (sv-SE)
+- Turkish (tr-TR)
+
+## Common setup issues
+
+Here are some common issues and troubleshooting tips:
+
+| Issue | Possible reason | Recommended fix |
+|---|---|---|
+| The voice list (from the `getSupportedVoices()` method) is empty. | The device isn't supported, or the Speech Recognition \& Synthesis app is missing or out of date. | Check that your [device is supported](https://developers.google.com/ml-kit/genai/text-to-speech/android#prerequisites) and update the Speech Recognition \& Synthesis app. |
+| The `checkStatus()` method returns `FeatureStatus.UNAVAILABLE`. | The device isn't supported, or the Speech Recognition \& Synthesis app is missing or out of date. | Check that your [device is supported](https://developers.google.com/ml-kit/genai/text-to-speech/android#prerequisites) and update the Speech Recognition \& Synthesis app. |
+| The `checkStatus()` method returns `FeatureStatus.DOWNLOADABLE`. | The voice isn't downloaded to the device yet. | Call the `download()` method and wait for it to finish before calling the `synthesize()` method. |
+| The download fails or doesn't progress. | No network connection. | Retry when the device is online. |

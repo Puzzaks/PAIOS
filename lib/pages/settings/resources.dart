@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import 'package:url_launcher/url_launcher.dart';
 import '../../engine.dart';
 import '../support/elements.dart';
@@ -43,7 +44,8 @@ class SettingsResourcesState extends State<SettingsResources> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
+                        child: MotionBlurContainer(
+                          child: Column(
                           children: [
                             Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -87,6 +89,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                           ],
                         ),
                       ),
+                    ),
                     ],
 
                   ),

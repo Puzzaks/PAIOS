@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:geminilocal/pages/settings/prompt_editor.dart';
 import 'package:provider/provider.dart';
+import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../../engine.dart';
 import '../support/elements.dart';
 import 'package:geminilocal/pages/settings/prompt_viewer.dart';
@@ -53,7 +54,8 @@ class PromptsPageState extends State<PromptsPage> {
                         pinned: true,
                       ),
                       SliverToBoxAdapter(
-                        child: Column(
+                        child: MotionBlurContainer(
+                          child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             // ── Default / system prompts ───────────────────────
@@ -139,6 +141,7 @@ class PromptsPageState extends State<PromptsPage> {
                           ],
                         ),
                       ),
+                    ),
                     ],
                   ),
                 );

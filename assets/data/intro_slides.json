@@ -1,0 +1,11 @@
+[
+  {
+    "id": "support_ukraine",
+    "title_key": "intro_slide_ukraine_title",
+    "desc_key": "intro_slide_ukraine_desc",
+    "icon": "volunteer_activism_rounded",
+    "action_label_key": "learn_more",
+    "action_url": "https://u24.gov.ua",
+    "branch": "all"
+  }
+]

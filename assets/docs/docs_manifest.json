@@ -1,0 +1,186 @@
+[
+  {
+    "id": "direct_model_overview",
+    "title": "Direct Model Access (Beta) Overview",
+    "bundledAsset": "assets/docs/direct_model_overview.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android",
+    "icon": "terminal"
+  },
+  {
+    "id": "get_started",
+    "title": "Get Started with Direct Model Access",
+    "bundledAsset": "assets/docs/get_started.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/get-started.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/get-started",
+    "icon": "terminal"
+  },
+  {
+    "id": "prompt_design",
+    "title": "Prompt Design Best Practices",
+    "bundledAsset": "assets/docs/prompt_design.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/prompt-design.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/prompt-design",
+    "icon": "terminal"
+  },
+  {
+    "id": "evaluate_prompt",
+    "title": "Evaluate Prompt Quality",
+    "bundledAsset": "assets/docs/evaluate_prompt.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/evaluate-prompt.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/evaluate-prompt",
+    "icon": "science"
+  },
+  {
+    "id": "system_instructions",
+    "title": "System Instructions & Persona Tuning",
+    "bundledAsset": "assets/docs/system_instructions.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/system-instructions.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/system-instructions",
+    "icon": "terminal"
+  },
+  {
+    "id": "prefix_caching",
+    "title": "Prefix Caching Architecture & Reusability",
+    "bundledAsset": "assets/docs/prefix_caching.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/prefix-caching.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/prefix-caching",
+    "icon": "data_object"
+  },
+  {
+    "id": "structured_output",
+    "title": "Generate Structured JSON Output",
+    "bundledAsset": "assets/docs/structured_output.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/structured-output.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/structured-output",
+    "icon": "data_object"
+  },
+  {
+    "id": "thinking_mode",
+    "title": "Thinking Mode & Reasoning Chains",
+    "bundledAsset": "assets/docs/thinking_mode.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/thinking-mode.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/thinking-mode",
+    "icon": "science"
+  },
+  {
+    "id": "function_calling",
+    "title": "Function Calling & Mesh Tools",
+    "bundledAsset": "assets/docs/function_calling.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/function-calling.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/function-calling",
+    "icon": "smart_toy"
+  },
+  {
+    "id": "select_model",
+    "title": "Model Selection & TPU Acceleration",
+    "bundledAsset": "assets/docs/select_model.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/prompt/android/select-model.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/prompt/android/select-model",
+    "icon": "devices"
+  },
+  {
+    "id": "agent_overview",
+    "title": "Agentic Workflows (Preview) Overview",
+    "bundledAsset": "assets/docs/agent_overview.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/agent/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/agent/android",
+    "icon": "smart_toy"
+  },
+  {
+    "id": "agent_tools",
+    "title": "Defining & Registering Agent Tools",
+    "bundledAsset": "assets/docs/agent_tools.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/agent/android/define-tools.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/agent/android/define-tools",
+    "icon": "smart_toy"
+  },
+  {
+    "id": "agent_lifecycle",
+    "title": "Manage Sessions and Lifecycle",
+    "bundledAsset": "assets/docs/agent_lifecycle.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/agent/android/manage-sessions.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/agent/android/manage-sessions",
+    "icon": "smart_toy"
+  },
+  {
+    "id": "agent_streaming",
+    "title": "Streaming Events & UI Synchronization",
+    "bundledAsset": "assets/docs/agent_streaming.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/agent/android/streaming-events.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/agent/android/streaming-events",
+    "icon": "smart_toy"
+  },
+  {
+    "id": "speech_recognition",
+    "title": "On-Device Speech Recognition (Whisper / Conformer)",
+    "bundledAsset": "assets/docs/speech_recognition.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/speech-recognition/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/speech-recognition/android",
+    "icon": "record_voice_over"
+  },
+  {
+    "id": "speech_translation",
+    "title": "Real-Time Speech Translation",
+    "bundledAsset": "assets/docs/speech_translation.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/speech-translation/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/speech-translation/android",
+    "icon": "translate"
+  },
+  {
+    "id": "tts_api",
+    "title": "Neural Text-to-Speech",
+    "bundledAsset": "assets/docs/tts_api.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/text-to-speech/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/text-to-speech/android",
+    "icon": "record_voice_over"
+  },
+  {
+    "id": "image_description",
+    "title": "Multimodal Image Description & OCR",
+    "bundledAsset": "assets/docs/image_description.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/image-description/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/image-description/android",
+    "icon": "science"
+  },
+  {
+    "id": "summarization",
+    "title": "Document & Conversation Summarization",
+    "bundledAsset": "assets/docs/summarization.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/summarization/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/summarization/android",
+    "icon": "auto_stories"
+  },
+  {
+    "id": "proofreading",
+    "title": "Proofreading & Grammar Correction",
+    "bundledAsset": "assets/docs/proofreading.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/proofreading/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/proofreading/android",
+    "icon": "auto_stories"
+  },
+  {
+    "id": "rewriting",
+    "title": "Text Rewriting & Style Transfer",
+    "bundledAsset": "assets/docs/rewriting.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/rewriting/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/rewriting/android",
+    "icon": "auto_stories"
+  },
+  {
+    "id": "embeddings",
+    "title": "On-Device Vector Embeddings",
+    "bundledAsset": "assets/docs/embeddings.md.txt",
+    "remoteUrl": "https://developers.google.com/ml-kit/genai/embedding/android.md.txt",
+    "officialUrl": "https://developers.google.com/ml-kit/genai/embedding/android",
+    "icon": "data_object"
+  },
+  {
+    "id": "devices",
+    "title": "Supported Hardware & Device Eligibility Matrix",
+    "bundledAsset": "assets/docs/devices.md.txt",
+    "remoteUrl": "https://developer.android.com/ai/aicore",
+    "officialUrl": "https://developer.android.com/ai/aicore",
+    "icon": "devices"
+  }
+]

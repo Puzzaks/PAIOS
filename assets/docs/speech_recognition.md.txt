@@ -1,0 +1,261 @@
+This API is offered in alpha, and is not subject to any SLA or deprecation policy. Changes may be made to this API that break backward compatibility.
+
+![](https://developers.google.com/static/ml-kit/images/genai/card-speech-recognition.svg)
+
+Within ML Kit's GenAI Speech Recognition API, you can transcribe audio content
+to text. This API supports the following modes:
+
+- **Advanced**: The Speech Recognition API uses the GenAI model, which produces broader language coverage and better overall quality. You don't have to download a separate language pack for each language, which saves on storage.
+- **Basic** : The Speech Recognition API uses the traditional on-device speech recognition model, similar to the [SpeechRecognizer API](https://developers.google.com/android/reference/com/google/mlkit/genai/speechrecognition/SpeechRecognizer.md.txt).
+
+The Speech Recognition API transcribes audio content to text in the same
+language. To transcribe audio to text in a different language, use the
+[Speech Translation API](https://developers.google.com/ml-kit/genai/speech-translation/android.md.txt).
+
+## Key capabilities
+
+- Captures streaming input from the microphone or an audio file.
+- Transcribes a whole pre-recorded file with the `AudioSource.fromFile()` or `AudioSource.fromUri()` methods. For details, see [Audio input requirements](https://developers.google.com/ml-kit/genai/speech-recognition/android.md.txt#audio-input-requirements).
+- For streaming inputs, provides the exact start time of each recognized word to help you synchronize UI animations, generate captions, or highlight words as they are spoken. The start time (in milliseconds) of each recognized word is an offset from the start of the event, which is timestamp 0.
+- Transcribed text is provided as a continuous stream, which may initially be partial (and subject to change) before becoming the final recognized text.
+
+## Example results
+
+| Audio | Mode | Locale | Transcription |
+|---|---|---|---|
+| audio_2 | Advanced | es-ES | "Este es un mensaje corto." |
+| audio_1 | Basic | en-US | "This is a short message" |
+
+## Comparison with the platform Speech Recognition API
+
+The ML Kit Speech Recognition API covers the basic functionality of the platform
+`SpeechRecognizer` API when using Basic mode. A key advantage of ML Kit is that
+it's not bound to a specific platform version.
+
+Also, the ML Kit Speech Recognition API supports speech recognition using the
+on-device Gemini model when using Advanced mode, providing extended language
+coverage.
+
+> [!NOTE]
+> **Note:** Advanced mode is available on select devices. See [Supported
+> devices](https://developers.google.com/ml-kit/genai/speech-recognition/android#supported-devices) for details.
+
+## Get started
+
+> [!NOTE]
+> **Note:** The SDK requires `minSdkVersion` 26 or higher. See [Supported devices](https://developers.google.com/ml-kit/genai/speech-recognition/android.md.txt#supported-devices) for runtime requirements for each mode.
+
+Add the ML Kit Speech Recognition API as a dependency in your `build.gradle`
+configuration:
+
+    implementation("com.google.mlkit:genai-speech-recognition:1.0.0-alpha2")
+
+To integrate the Speech Recognition API into your app, create a
+`SpeechRecognizer` client. Check the status of the necessary on-device model
+features and download the model if it isn't already on the device. After
+preparing your audio input in a `SpeechRecognizerRequest`, run inference using
+the client to receive streaming output from the [Kotlin flow](https://developers.google.com/kotlin/flow). Finally,
+remember to close the client to release resources.
+
+```kotlin
+// 1. Create a SpeechRecognizer with desired options.
+val options: SpeechRecognizerOptions =
+    speechRecognizerOptions {
+        locale = Locale.US
+        preferredMode = SpeechRecognizerOptions.Mode.MODE_ADVANCED
+    }
+val speechRecognizer: SpeechRecognizer = SpeechRecognition.getClient(options)
+
+// 2. Check if the recognition model is available or needs downloading.
+launch {
+    val status: Int = speechRecognizer.checkStatus()
+    if (status == FeatureStatus.DOWNLOADABLE) {
+        // 3. If needed, download the model and monitor progress.
+        speechRecognizer.download.collect { downloadStatus ->
+            when (downloadStatus) {
+                is DownloadStatus.DownloadCompleted -> {
+                    // Model is ready, start recognition.
+                    startMyRecognition(speechRecognizer)
+                }
+                is DownloadStatus.DownloadFailed -> {
+                    // Handle download failure (e.g., inform the user).
+                }
+                is DownloadStatus.DownloadProgress -> {
+                    // Handle download progress (e.g., update a progress bar).
+                }
+            }
+        }
+    } else if (status == FeatureStatus.AVAILABLE) {
+        // Model is already ready, start recognition immediately.
+        startMyRecognition(speechRecognizer)
+    } else {
+        // Handle other statuses (e.g., DOWNLOADING, UNAVAILABLE).
+    }
+}
+
+// 4. Define your recognition logic using a suspend function.
+suspend fun startMyRecognition(recognizer: SpeechRecognizer) {
+    // Create a request (e.g., specifying audio source).
+    val request: SpeechRecognizerRequest
+        = speechRecognizerRequest { audioSource = AudioSource.fromMic() }
+    // Start recognition and process the continuous stream of responses.
+    recognizer.startRecognition(request).collect {
+        // Process the SpeechRecognitionResponse data here.
+    }
+}
+
+// 5. Stop recognition and clean up resources when the session is complete.
+launch {
+    recognizer.stopRecognition()
+    recognizer.close()
+}
+```
+
+## Audio input requirements
+
+The GenAI Speech Recognition API supports input from the microphone or a custom
+source via a file descriptor.
+
+If you use `AudioSource.fromPfd(parcelFileDescriptor)`, the input audio must
+meet the following strict requirements:
+
+- **Format**: Raw, headerless 16-bit PCM.
+- **Channels**: Mono (single channel).
+- **Sample Rate**: 16 kHz.
+
+For most use cases, `AudioSource.fromMic()` is recommended as it handles these
+constraints automatically.
+
+## Supported audio input formats
+
+The Speech Recognition API supports the following audio input formats:
+
+- MP3, WAV, FLAC, M4A, and OGG files are decoded automatically on the device.
+- Raw, headerless audio (`.raw` or `.pcm`) must be in 16-bit PCM, 16 kHz, mono format.
+
+If the format is invalid or unsupported, an `ErrorResponse` value is returned
+when recognition starts.
+
+## Implement the Speech Recognition API
+
+Here's how to use the Speech Recognition API to transcribe audio and use word
+timing.
+
+### Transcribe audio
+
+The Speech Recognition API supports audio input from the device microphone,
+pre-recorded files, or custom pipelines using a `ParcelFileDescriptor` object.
+
+To prepare your audio data, construct an `AudioSource` object using one of the
+factory methods listed in the following table:
+
+| Method | Audio mode | Recommended use case |
+|---|---|---|
+| `AudioSource.fromMic()` | `STREAMING` | Capture live voice input from the user. Requires the `RECORD_AUDIO` permission. |
+| `AudioSource.fromFile(file)` `AudioSource.fromUri(context, uri)` | `ONE_SHOT` | Transcribe pre-recorded audio files. Automatically decodes standard file formats directly on the device. |
+| `AudioSource.fromPfd(pfd, mode)` `AudioSource.fromPfd(pfd, mode, audioFormat)` | `STREAMING` or `ONE_SHOT` | Custom audio pipelines (such as audio data processed elsewhere in your app). |
+
+The `AudioSource.Mode` constant controls how the API processes the incoming
+audio:
+
+- The `AudioSource.Mode.STREAMING` constant configures the recognizer to return partial and final transcription results continuously as the audio data arrives. When you provide a custom `ParcelFileDescriptor` object, you must write data to the stream at a real-time pace (approximately 32,000 bytes per second for standard 16 kHz, 16-bit, mono PCM audio). Writing data too quickly can overflow the buffer.
+- The `AudioSource.Mode.ONE_SHOT` constant configures the recognizer to wait for the entire audio source to transfer before performing inference and delivering the final transcription. You can write the audio data as fast as possible, but you must close the write end of your file descriptor to signal end-of-file. The final transcription result is not delivered until this end-of-file signal is received.
+
+> [!NOTE]
+> **Note:** The `AudioSource` object takes ownership of the underlying `ParcelFileDescriptor` object. Remember to call the `AudioSource.close()` method when recognition is done.
+
+The following example transcribes a pre-recorded audio file:
+
+```kotlin
+suspend fun recognizeFromFile(recognizer: SpeechRecognizer, audioFile: File) {
+    val audioSource = AudioSource.fromFile(audioFile)
+    val request = speechRecognizerRequest { this.audioSource = audioSource }
+    try {
+        recognizer.startRecognition(request).collect { response ->
+            when (response) {
+                is SpeechRecognizerResponse.FinalTextResponse -> {
+                    // Process the transcription of the whole file.
+                }
+                is SpeechRecognizerResponse.ErrorResponse -> {
+                    // Handle the error, for example an unsupported audio format.
+                }
+                else -> {}
+            }
+        }
+    } finally {
+        audioSource.close()
+    }
+}
+```
+
+### Use word timing
+
+You can request the start time of each recognized word by setting the
+`enableWordTiming` parameter to `true` in the `recognitionOptions` configuration
+block of your request.
+
+When word timing is enabled, each `SpeechRecognizerResponse.FinalTextResponse`
+object includes a `wordTimings` property containing a list of
+`SpeechRecognizerResponse.WordTiming` objects. Each object provides the
+recognized word string (`text`) and its millisecond offset (`timestampMs`)
+starting from the beginning of the speech recognition session. When word timing
+is disabled (the default setting), the `wordTimings` list is returned empty.
+
+The following code example demonstrates how to configure and enable word timing:
+
+```kotlin
+suspend fun recognizeWithWordTiming(recognizer: SpeechRecognizer) {
+    val request = speechRecognizerRequest {
+        audioSource = AudioSource.fromMic()
+        recognitionOptions { enableWordTiming = true }
+    }
+    recognizer.startRecognition(request).collect { response ->
+        if (response is SpeechRecognizerResponse.FinalTextResponse) {
+            for (wordTiming in response.wordTimings) {
+                val word: String = wordTiming.text
+                val timestamp: Long = wordTiming.timestampMs
+            }
+        }
+    }
+}
+```
+
+> [!NOTE]
+> **Note:** The word timing feature is supported only when using streaming audio sources, such as live input from the `AudioSource.fromMic()` method or custom streaming pipelines from the `AudioSource.fromPfd()` method with the `AudioSource.Mode.STREAMING` constant. Calling the `startRecognition()` method with word timing enabled on a static `ONE_SHOT` audio source, such as those returned by the `AudioSource.fromFile()` or `AudioSource.fromUri()` methods, throws an `IllegalArgumentException` object.
+
+## Supported languages
+
+|---|---|
+| **Mode** | **Locales** |
+| Advanced | ar-SA (beta), cmn-Hans-CN, cmn-Hant-TW, da-DK (beta), de-DE, en-US, es-ES, fr-FR, hi-IN (beta), id-ID (beta), it-IT, ja-JP, ko-KR, nl-NL (beta), pl-PL (beta), pt-PT, ru-RU, sv-SE (beta), th-TH, tr-TR (beta), vi-VN (beta) |
+| Basic | cmn-Hans-CN (beta), cmn-Hant-TW (beta), de-DE (beta), en-US, es-ES (beta), fr-FR (beta), hi-IN (beta), it-IT (beta), ja-JP (beta), ko-KR (beta), pl-PL (beta), pt-BR (beta), ru-RU (beta), tr-TR (beta), vi-VN (beta) |
+
+> [!NOTE]
+> **Note:** Languages in Beta may have a slightly higher word error rate. Additional locales are available. Evaluate their performance based on your specific use case.
+
+## Supported devices
+
+|---|---|
+| **Mode** | **Supported Devices** |
+| Basic | Android devices using API level 31 and higher. |
+| Advanced | Pixel 10 and Pixel 11 series, plus devices with Gemini Nano on the following chipsets (including the Samsung Galaxy S26, Z Flip8, and Z Fold8 series, among others): - Qualcomm Snapdragon: SM8750, SM8845, SM8850, SM8950, SM8975 - MediaTek Dimensity: MT6991, MT6993, MT6995 - Samsung Exynos: Exynos 2600 |
+
+## Common setup issues
+
+> [!NOTE]
+> **Note:** This API is not supported on devices with an [unlocked bootloader](https://source.android.com/docs/core/architecture/bootloader/locking_unlocking).
+
+ML Kit GenAI APIs rely on the Android AICore app to access Gemini Nano. When a device is just setup (including reset), or the AICore app is just reset (e.g. clear data, uninstalled then reinstalled), the AICore app may not have enough time to finish initialization (including downloading latest configurations from server). As a result, the ML Kit GenAI APIs may not function as expected. Here are the common setup error messages you may see and how to handle them:
+
+|---|---|
+| **Example error message** | **How to handle** |
+| AICore failed with error type 4-CONNECTION_ERROR and error code 601-BINDING_FAILURE: AICore service failed to bind. | This could happen when you install the app using ML Kit GenAI APIs immediately after device setup or when AICore is uninstalled after your app is installed. Updating AICore app then reinstalling your app should fix it. |
+| AICore failed with error type 3-PREPARATION_ERROR and error code 606-FEATURE_NOT_FOUND: Feature ... is not available. | This could happen when AICore hasn't finished downloading the latest configurations. When the device is connected to the internet, it usually takes a few minutes to a few hours to update. Restarting the device can speed up the update. <br /> Note that if the device's bootloader is unlocked, you'll also see this error---this API does not support devices with unlocked bootloaders. |
+| AICore failed with error type 1-DOWNLOAD_ERROR and error code 0-UNKNOWN: Feature ... failed with failure status 0 and error esz: UNAVAILABLE: Unable to resolve host ... | Keep network connection, wait for a few minutes and retry. |
+
+> [!NOTE]
+> **Note:** While various resetting is common to developers, it is much less frequent to users. Also, all these setup failure cases can be caught by the `checkFeatureStatus()` or `checkStatus()` APIs. Make sure to call `checkFeatureStatus()` or `checkStatus()` first before showing any related UI, so your app users won't see these errors in any cases.
+
+## Sample code
+
+- Explore the ML Kit Speech Recognition API code sample on [GitHub](https://github.com/googlesamples/mlkit/tree/master/android/speech)
