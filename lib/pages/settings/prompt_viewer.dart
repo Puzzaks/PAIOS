@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -35,9 +36,8 @@ class PromptViewerPageState extends State<PromptViewerPage> {
     final name = engine.promptData.getPromptName(widget.promptId);
     final content = engine.promptData.getPromptContent(widget.promptId);
     final filename = FileAccessService.nameToFilename(name);
-    final bytes = content.codeUnits;
     final xfile = XFile.fromData(
-      Uint8List.fromList(bytes),
+      Uint8List.fromList(utf8.encode(content)),
       name: filename,
       mimeType: 'text/markdown',
     );

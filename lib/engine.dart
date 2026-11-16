@@ -291,7 +291,7 @@ class AIEngine with md.ChangeNotifier {
   static const int maxProseSoftStopChars = 1600;
   static const int maxProseHardStopChars = 2400;
   static const int maxContinuationChars = 12000;
-  static const int maxNullReasonContinuations = 2;
+  static const int maxNullReasonContinuations = 3;
   static const int maxStopCutoffContinuations = 1;
   static const int maxEmptyStreamRetries = 1;
 
@@ -685,7 +685,79 @@ class AIEngine with md.ChangeNotifier {
 
   bool get isAiCoreAvailable => !isAiCoreKnownUnavailable;
 
+  String lastAiCoreError = "";
+  String unsupportedReason = "";
+
+  static final RegExp _featureNotFound606Regex = RegExp(
+    r'(?:\b606\b|feature[_\s-]*not[_\s-]*found)',
+    caseSensitive: false,
+  );
+
+  static bool _matchesFeatureNotFound606(dynamic raw) {
+    if (raw == null) return false;
+    final text = raw.toString().trim();
+    if (text.isEmpty) return false;
+    return _featureNotFound606Regex.hasMatch(text);
+  }
+
+  /// Returns `true` when AICore / ML Kit GenAI reported `ErrorCode 606`
+  /// (`FEATURE_NOT_FOUND`), indicating the AICore system stub is installed
+  /// without a provisioned on-device Gemini Nano model catalog.
+  bool get isAiCoreFeatureNotFoundError {
+    if (_matchesFeatureNotFound606(lastAiCoreError) ||
+        _matchesFeatureNotFound606(unsupportedReason) ||
+        _matchesFeatureNotFound606(status)) {
+      return true;
+    }
+    for (final key in const [
+      'error',
+      'downloadError',
+      'unsupportedReason',
+      'lastAiCoreError',
+      'version',
+      'status',
+      'statusCode',
+    ]) {
+      if (_matchesFeatureNotFound606(modelInfo[key])) {
+        return true;
+      }
+    }
+    for (final entry in modelDownloadLog) {
+      if (entry is Map) {
+        if (_matchesFeatureNotFound606(entry['status']) ||
+            _matchesFeatureNotFound606(entry['info']) ||
+            _matchesFeatureNotFound606(entry['value'])) {
+          return true;
+        }
+      } else if (_matchesFeatureNotFound606(entry)) {
+        return true;
+      }
+    }
+    for (final dl in variantDownloads.values) {
+      if (_matchesFeatureNotFound606(dl.error)) {
+        return true;
+      }
+    }
+    for (final entry in logs) {
+      if (entry['name'] == 'model' &&
+          entry['type'] == 'error' &&
+          _matchesFeatureNotFound606(entry['message'])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   String _unavailableStatusMessage() {
+    if (isAiCoreFeatureNotFoundError) {
+      final hint = dict.value("aicore_error_606_hint");
+      if (hint.isNotEmpty &&
+          hint != "Loading..." &&
+          hint != "aicore_error_606_hint" &&
+          !hint.startsWith("!!!")) {
+        return hint;
+      }
+    }
     final translated = dict.value("intro_aicore_unsupported_desc");
     if (translated.isNotEmpty &&
         translated != "Loading..." &&
@@ -1269,6 +1341,10 @@ class AIEngine with md.ChangeNotifier {
   /// This junk is to update all pages in case we have a modal that is focused in which case setState will not update content underneath it
   void genericRefresh() {
     notifyListeners();
+  }
+
+  void notify() {
+    genericRefresh();
   }
 
   @override
@@ -2129,6 +2205,7 @@ class AIEngine with md.ChangeNotifier {
         final errMsg = (map['error'] ?? map['message'] ?? 'Download failed')
             .toString()
             .trim();
+        lastAiCoreError = errMsg;
         variantDownloads[key] = PaiosVariantDownloadState(
           releaseStage: stage,
           preference: pref,
@@ -2276,6 +2353,7 @@ class AIEngine with md.ChangeNotifier {
       case "Error":
         final errInfo = parts.length > 1 ? parts[1] : "";
         final errDetail = parts.length > 2 ? parts[2] : downloadStatus;
+        lastAiCoreError = errDetail;
         if (variantDownloads.containsKey(activeKey) &&
             variantDownloads[activeKey]!.isDownloading) {
           _downloadSpeedSamples.remove(activeKey);
@@ -2637,6 +2715,7 @@ class AIEngine with md.ChangeNotifier {
     isInitialized = false;
     isInitializing = false;
     _resetTurnLifecycleFlags();
+    lastAiCoreError = e?.toString() ?? "";
     status = "Error during $action: ${e.toString()}";
     notifyListeners();
   }
@@ -3221,6 +3300,8 @@ class AIEngine with md.ChangeNotifier {
                   }
                   await log("mesh", "error", "Discarding incomplete tool call after continuation limit: $responseText");
                   responseText = _buildIncompleteToolFallback();
+                } else {
+                  responseText = trimTrailingIncompleteSentence(responseText);
                 }
                 // Natural stop or cap reached — commit
                 _resetTurnLifecycleFlags();
@@ -3381,13 +3462,59 @@ class AIEngine with md.ChangeNotifier {
     return 0;
   }
 
+  static ({String text, bool detected}) _trimRepeatedTrailingClause(
+    String text, {
+    int minClauseChars = 24,
+  }) {
+    final trimmed = text.trimRight();
+    if (trimmed.length < minClauseChars * 2) {
+      return (text: text, detected: false);
+    }
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) {
+      return (text: text, detected: false);
+    }
+    final boundaryMatches = RegExp(
+      r'[.!?。！？]["”’\x27\)\]\*_]*\s+',
+    ).allMatches(trimmed).toList();
+    if (boundaryMatches.isEmpty) {
+      return (text: text, detected: false);
+    }
+    final lastMatch = boundaryMatches.last;
+    final String beforeBoundary =
+        trimmed.substring(0, lastMatch.end).trimRight();
+    final String trailingClause = trimmed.substring(lastMatch.end).trim();
+    if (trailingClause.length < minClauseChars ||
+        beforeBoundary.length < minClauseChars) {
+      return (text: text, detected: false);
+    }
+
+    int searchFrom = 0;
+    while (searchFrom <= beforeBoundary.length - trailingClause.length) {
+      final int idx = beforeBoundary.indexOf(trailingClause, searchFrom);
+      if (idx < 0) break;
+      final bool startsAtBoundary =
+          idx == 0 || _joinBoundaryCharRegex.hasMatch(beforeBoundary[idx - 1]);
+      if (startsAtBoundary) {
+        return (text: beforeBoundary, detected: true);
+      }
+      searchFrom = idx + 1;
+    }
+    return (text: text, detected: false);
+  }
+
   /// Stitches [incoming] onto [existing] across auto-continuation boundaries,
   /// normalizing ellipses, deduplicating suffix/prefix overlaps and repeated
   /// trailing clauses, and joining mid-word cutoffs seamlessly.
-  static String stitchContinuation(String existing, String incoming) {
+  static String stitchContinuation(String existing, String incoming) =>
+      _stitchContinuationWithMeta(existing, incoming).text;
+
+  static ({String text, bool trimmedLoop}) _stitchContinuationWithMeta(
+    String existing,
+    String incoming,
+  ) {
     String cleaned = stripLeadingEllipsis(incoming);
-    if (existing.isEmpty) return cleaned;
-    if (cleaned.isEmpty) return existing;
+    if (existing.isEmpty) return (text: cleaned, trimmedLoop: false);
+    if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
 
     final trimmedExistingLeft = existing.trimLeft();
     final bool isJsonOrToolDraft = trimmedExistingLeft.startsWith('{') ||
@@ -3403,37 +3530,39 @@ class AIEngine with md.ChangeNotifier {
           cleaned.replaceFirst(RegExp(r'^```(?:json)?\s*', caseSensitive: false), ''),
         );
       }
-      if (cleaned.isEmpty) return existing;
+      if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
       final overlap = _findSuffixPrefixOverlap(existing, cleaned);
       if (overlap >= 4) {
-        return existing + cleaned.substring(overlap);
+        return (text: existing + cleaned.substring(overlap), trimmedLoop: false);
       }
-      return existing + cleaned;
+      return (text: existing + cleaned, trimmedLoop: false);
     }
 
     if (insideCodeBlock) {
       cleaned = stripLeadingEllipsis(
         cleaned.replaceFirst(RegExp(r'^```[a-zA-Z0-9]*\n?'), ''),
       );
-      if (cleaned.isEmpty) return existing;
+      if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
       final overlap = _findSuffixPrefixOverlap(existing, cleaned);
       if (overlap > 0) {
-        return existing + cleaned.substring(overlap);
+        return (text: existing + cleaned.substring(overlap), trimmedLoop: false);
       }
       final sep = (existing.endsWith('\n') || cleaned.startsWith('\n')) ? '' : '\n';
-      return '$existing$sep$cleaned';
+      return (text: '$existing$sep$cleaned', trimmedLoop: false);
     }
 
     // Plain prose: strip trailing standalone continuation ellipsis from existing
     final String baseExisting = existing.replaceFirst(_trailingEllipsisPattern, '');
-    if (baseExisting.isEmpty) return cleaned;
+    if (baseExisting.isEmpty) return (text: cleaned, trimmedLoop: false);
 
     // 1. Direct suffix-prefix overlap check
     final int directOverlap = _findSuffixPrefixOverlap(baseExisting, cleaned);
     if (directOverlap > 0) {
       final remainder = cleaned.substring(directOverlap);
-      if (remainder.isEmpty) return baseExisting;
-      return baseExisting + remainder;
+      if (remainder.isEmpty) return (text: baseExisting, trimmedLoop: false);
+      final joined = baseExisting + remainder;
+      final clauseTrim = _trimRepeatedTrailingClause(joined);
+      return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
     }
 
     // 2. Trailing-space-trimmed suffix-prefix overlap (e.g. "...to " + "...to\n5.0")
@@ -3442,16 +3571,18 @@ class AIEngine with md.ChangeNotifier {
       final int trimmedOverlap = _findSuffixPrefixOverlap(trimmedBase, cleaned);
       if (trimmedOverlap > 0) {
         final remainder = cleaned.substring(trimmedOverlap);
-        if (remainder.isEmpty) return baseExisting;
-        if (RegExp(r'^\s').hasMatch(remainder)) {
-          return trimmedBase + remainder;
-        }
-        return baseExisting + remainder;
+        if (remainder.isEmpty) return (text: baseExisting, trimmedLoop: false);
+        final joined = RegExp(r'^\s').hasMatch(remainder)
+            ? trimmedBase + remainder
+            : baseExisting + remainder;
+        final clauseTrim = _trimRepeatedTrailingClause(joined);
+        return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
       }
     }
 
     // 3. Repeated trailing clause / sentence rollback within last 280 chars (>= 18 chars)
     const int minClauseMatch = 18;
+    bool strippedPrefix = false;
     if (cleaned.length >= minClauseMatch && baseExisting.length >= minClauseMatch) {
       final int windowStart =
           baseExisting.length > 280 ? baseExisting.length - 280 : 0;
@@ -3474,10 +3605,43 @@ class AIEngine with md.ChangeNotifier {
           }
           final String trailingTail = baseExisting.substring(idx + matchLen);
           if (trailingTail.length <= 28 && !RegExp(r'[.!?]').hasMatch(trailingTail)) {
-            return baseExisting.substring(0, idx) + cleaned;
+            final joined = baseExisting.substring(0, idx) + cleaned;
+            final clauseTrim = _trimRepeatedTrailingClause(joined);
+            return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
           }
           final String deduped = cleaned.substring(matchLen).trimLeft();
-          if (deduped.isEmpty) return baseExisting;
+          if (deduped.isEmpty) return (text: baseExisting, trimmedLoop: true);
+          cleaned = deduped;
+          strippedPrefix = true;
+          break;
+        }
+        searchFrom = idx - 1;
+      }
+    }
+
+    // 3b. Earlier-sentence prefix deduplication across full baseExisting (>= 24 chars)
+    const int minFullPrefixMatch = 24;
+    if (!strippedPrefix &&
+        cleaned.length >= minFullPrefixMatch &&
+        baseExisting.length >= minFullPrefixMatch) {
+      final String probe = cleaned.substring(0, minFullPrefixMatch);
+      int searchFrom = baseExisting.length - minFullPrefixMatch;
+      while (searchFrom >= 0) {
+        final int idx = baseExisting.lastIndexOf(probe, searchFrom);
+        if (idx < 0) break;
+        final bool startsAtBoundary =
+            idx == 0 || _joinBoundaryCharRegex.hasMatch(baseExisting[idx - 1]);
+        if (startsAtBoundary) {
+          int matchLen = minFullPrefixMatch;
+          final int maxMatch = (baseExisting.length - idx) < cleaned.length
+              ? (baseExisting.length - idx)
+              : cleaned.length;
+          while (matchLen < maxMatch &&
+              baseExisting[idx + matchLen] == cleaned[matchLen]) {
+            matchLen++;
+          }
+          final String deduped = cleaned.substring(matchLen).trimLeft();
+          if (deduped.isEmpty) return (text: baseExisting, trimmedLoop: true);
           cleaned = deduped;
           break;
         }
@@ -3506,18 +3670,20 @@ class AIEngine with md.ChangeNotifier {
     final bool startsWithPunct =
         !startsWithDecimal && ',.;:!?)]:"\'’”%'.contains(firstChar);
 
-    if (!endsWithBoundary &&
-        !startsWithBoundary &&
-        !endsWithJoiningPunct &&
-        !startsWithPunct) {
-      return '$baseExisting $cleaned';
-    }
-    return '$baseExisting$cleaned';
+    final String joined = (!endsWithBoundary &&
+            !startsWithBoundary &&
+            !endsWithJoiningPunct &&
+            !startsWithPunct)
+        ? '$baseExisting $cleaned'
+        : '$baseExisting$cleaned';
+    final clauseTrim = _trimRepeatedTrailingClause(joined);
+    return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
   }
 
   /// Detects a trailing stutter/repetition loop (3+ consecutive repeats of a
-  /// >=12-char phrase or multi-word sequence like `"and...that"`) and trims
-  /// back to a single occurrence.
+  /// >=12-char phrase or multi-word sequence like `"and...that"`, or a trailing
+  /// clause `>= 24` chars after a sentence boundary that duplicates an earlier
+  /// clause in the message) and trims back cleanly.
   static ({String text, bool detected}) detectAndTrimStutterLoop(String text) {
     final trimmed = text.trimRight();
     if (trimmed.length < 24) return (text: text, detected: false);
@@ -3553,6 +3719,11 @@ class AIEngine with md.ChangeNotifier {
           detected: true,
         );
       }
+    }
+
+    final repeatedClause = _trimRepeatedTrailingClause(trimmed);
+    if (repeatedClause.detected) {
+      return repeatedClause;
     }
 
     return (text: text, detected: false);
@@ -3892,6 +4063,31 @@ class AIEngine with md.ChangeNotifier {
     }
 
     return false;
+  }
+
+  static final RegExp _priorSentenceEndRegex =
+      RegExp(r'[.!?。！？]["”’\x27\)\]\*_]*(?=\s+\S)');
+
+  /// Trims a trailing incomplete sentence/clause at final commit when a prior
+  /// complete sentence (`>= 25` chars) exists in [text]. Preserves single-sentence
+  /// texts, complete texts, code blocks, and tool JSON drafts unchanged.
+  static String trimTrailingIncompleteSentence(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return text;
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) return text;
+    if (M3xToolCallParser.looksLikeIncompleteToolCall(trimmed)) return text;
+    if (!isLikelyMidClauseCutoff(trimmed)) return text;
+
+    final matches = _priorSentenceEndRegex.allMatches(trimmed).toList();
+    for (int i = matches.length - 1; i >= 0; i--) {
+      final candidatePrefix =
+          trimmed.substring(0, matches[i].end).trimRight();
+      if (candidatePrefix.length >= 25 &&
+          !isLikelyMidClauseCutoff(candidatePrefix)) {
+        return candidatePrefix;
+      }
+    }
+    return text;
   }
 
   @visibleForTesting
@@ -4552,6 +4748,7 @@ class AIEngine with md.ChangeNotifier {
               _combinedResponse = responseText;
               await continueGenerating();
             } else {
+              responseText = trimTrailingIncompleteSentence(responseText);
               _resetTurnLifecycleFlags();
               status = "Done";
               await addToContext();
@@ -4661,7 +4858,9 @@ class AIEngine with md.ChangeNotifier {
                 ? _lastFinishReason
                 : event.reason;
 
-            String stitched = stitchContinuation(_combinedResponse, response.text);
+            final stitchMeta =
+                _stitchContinuationWithMeta(_combinedResponse, response.text);
+            String stitched = stitchMeta.text;
             if (!_isSynthesizing && _isPureGreeting(lastPrompt)) {
               final stripped = _stripGreetingAccidentalToolBlock(stitched);
               if (stripped != null) {
@@ -4676,7 +4875,9 @@ class AIEngine with md.ChangeNotifier {
             }
 
             final stutterCheck = detectAndTrimStutterLoop(stitched);
-            if (stutterCheck.detected) {
+            final bool loopDetected =
+                stitchMeta.trimmedLoop || stutterCheck.detected;
+            if (loopDetected) {
               await log(
                 "model",
                 "warning",
@@ -4704,7 +4905,7 @@ class AIEngine with md.ChangeNotifier {
             await log(
               "model",
               "info",
-              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=${stutterCheck.detected}, totalChars=${responseText.length})",
+              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=$loopDetected, totalChars=${responseText.length})",
               sendRemote: false,
             );
             if (myGenId != _streamGenerationId || _disposed) return;
@@ -4714,7 +4915,7 @@ class AIEngine with md.ChangeNotifier {
               responseText,
               lastRoundAddedNonWs: netAddedNonWs,
             );
-            if (netAddedNonWs <= 0 || stutterCheck.detected) {
+            if (netAddedNonWs <= 0 || loopDetected) {
               cutAgain = false;
             }
 
@@ -4772,6 +4973,9 @@ class AIEngine with md.ChangeNotifier {
                 await log("mesh", "error", "Discarding incomplete or unformatted tool response after continuation: $responseText");
                 if (myGenId != _streamGenerationId || _disposed) return;
                 responseText = _buildIncompleteToolFallback();
+              } else {
+                responseText = trimTrailingIncompleteSentence(responseText);
+                _combinedResponse = responseText;
               }
 
               // Commit — cumulative stays as-is; UI shows cumulative + response.x = total
@@ -4999,17 +5203,40 @@ class AIEngine with md.ChangeNotifier {
     } catch (_) {}
   }
 
+  static String _canonicalizeToolName(String rawName) {
+    final norm = rawName.trim();
+    switch (norm.toLowerCase()) {
+      case 'about_paios':
+      case 'paios_info':
+      case 'get_paios_info':
+        return 'query_aicore_documentation';
+      default:
+        return norm;
+    }
+  }
+
   Future<void> _handleSynthesisToolCall(
     Map<String, dynamic> nextToolMap,
     String effectivePrompt,
   ) async {
-    final nextCall = M3xToolCall.fromJson(nextToolMap);
+    final rawCall = M3xToolCall.fromJson(nextToolMap);
+    final canonName = _canonicalizeToolName(rawCall.tool);
+    final nextCall = canonName == rawCall.tool
+        ? rawCall
+        : M3xToolCall(
+            id: rawCall.id,
+            name: canonName,
+            app: rawCall.app,
+            arguments: rawCall.arguments,
+          );
     final nextSig = "${nextCall.tool}:${jsonEncode(nextCall.arguments)}";
 
     if (!_forcedFinalSynthesis && _toolTurnCount < 6 && nextSig != _lastToolCallSignature) {
       _isSynthesizing = false;
+      final normalizedMap = Map<String, dynamic>.from(nextToolMap);
+      normalizedMap['tool'] = nextCall.tool;
       await _handleToolCall(
-        nextToolMap,
+        normalizedMap,
         originalPrompt: effectivePrompt,
         isFollowUpTurn: true,
       );
@@ -5051,7 +5278,16 @@ class AIEngine with md.ChangeNotifier {
   }) async {
     final int myGenId = _streamGenerationId;
     _toolTurnCount++;
-    final call = M3xToolCall.fromJson(toolMap);
+    final rawCall = M3xToolCall.fromJson(toolMap);
+    final canonName = _canonicalizeToolName(rawCall.tool);
+    final call = canonName == rawCall.tool
+        ? rawCall
+        : M3xToolCall(
+            id: rawCall.id,
+            name: canonName,
+            app: rawCall.app,
+            arguments: rawCall.arguments,
+          );
     _lastToolCall = call;
     final matchedTool = toolRegistry.get(call.tool);
     final effectiveApp = (call.app != null && call.app!.isNotEmpty)
@@ -5411,8 +5647,9 @@ class AIEngine with md.ChangeNotifier {
                   M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
                       _looksLikeUnformattedToolEcho(responseText) ||
                       _looksLikeHallucinatedNormalOnError(responseText);
-              final finalMessage =
-                  badOutput ? _buildIncompleteToolFallback() : responseText;
+              final finalMessage = badOutput
+                  ? _buildIncompleteToolFallback()
+                  : trimTrailingIncompleteSentence(responseText);
               _forcedFinalSynthesis = false;
               await _commitSynthesisMessage(
                 finalMessage,

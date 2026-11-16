@@ -46,8 +46,13 @@ object PaiosModelHelper {
     const val SCREEN_CONTEXT_TTL_TURNS = 3
     const val MAX_STOP_CUTOFF_RETRIES = 1
     const val MAX_STOP_CUTOFF_RESCUE_CHARS = 1800
+    private const val MIN_EARLIER_LOOP_REPEAT_CHARS = 24
+    private const val MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS = 25
 
     private val CONTINUATION_DUPLICATE_FENCE_REGEX = Regex("""^```[a-zA-Z0-9]*\r?\n?""")
+    private val SENTENCE_BOUNDARY_AFTER_PUNCT_REGEX = Regex("""[.!?。！？]["”’'\)\]\*_]*\s+""")
+    private val SENTENCE_END_BEFORE_WHITESPACE_REGEX = Regex("""[.!?。！？]["”’'\)\]\*_]*(?=\s+\S)""")
+    private val LIST_NUMBER_BEFORE_PERIOD_REGEX = Regex("""(?:^|\n)\s*\d+\.$""")
     private val LEADING_CONTINUATION_ELLIPSIS_REGEX = Regex("""^(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*""")
     private val TRAILING_CONTINUATION_ELLIPSIS_REGEX = Regex("""(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*$""")
     private val CONTRACTION_TRAILING_APOSTROPHE_REGEX = Regex("""[A-Za-z0-9]['’]$""")
@@ -864,9 +869,123 @@ object PaiosModelHelper {
         return alnumCount >= 6 && distinctChars.size >= 4
     }
 
+    private fun findTrailingEarlierSentenceRepeatCutIndex(text: String): Int {
+        val trimmed = text.trimEnd()
+        if (trimmed.length < MIN_EARLIER_LOOP_REPEAT_CHARS * 2) return -1
+        for (match in SENTENCE_BOUNDARY_AFTER_PUNCT_REGEX.findAll(trimmed)) {
+            val clauseStart = match.range.last + 1
+            if (clauseStart >= trimmed.length) continue
+            val prefixWithSpace = trimmed.substring(0, clauseStart)
+            val sentenceEndIdx = prefixWithSpace.trimEnd().length
+            if (sentenceEndIdx < MIN_EARLIER_LOOP_REPEAT_CHARS) continue
+
+            val trailingClause = trimmed.substring(clauseStart).trim()
+            if (trailingClause.length < MIN_EARLIER_LOOP_REPEAT_CHARS) continue
+            val minSeed = trailingClause.substring(0, MIN_EARLIER_LOOP_REPEAT_CHARS)
+            if (!isMeaningfulClauseForStutter(minSeed)) continue
+
+            var seedIdx = prefixWithSpace.indexOf(minSeed, ignoreCase = true)
+            while (seedIdx >= 0) {
+                val atBoundary = seedIdx == 0 || !prefixWithSpace[seedIdx - 1].isLetterOrDigit()
+                if (atBoundary) {
+                    return sentenceEndIdx
+                }
+                seedIdx = prefixWithSpace.indexOf(minSeed, seedIdx + 1, ignoreCase = true)
+            }
+        }
+        return -1
+    }
+
+    private fun stripEarlierRepeatedPrefix(base: String, next: String): String {
+        val trimmedNext = next.trimStart()
+        if (trimmedNext.length < MIN_EARLIER_LOOP_REPEAT_CHARS ||
+            base.length < MIN_EARLIER_LOOP_REPEAT_CHARS
+        ) {
+            return next
+        }
+        val seed = trimmedNext.substring(0, MIN_EARLIER_LOOP_REPEAT_CHARS)
+        if (!isMeaningfulClauseForStutter(seed)) return next
+
+        var bestMatchLen = 0
+        var searchIdx = base.indexOf(seed, ignoreCase = true)
+        while (searchIdx >= 0) {
+            val atBoundary = searchIdx == 0 || !base[searchIdx - 1].isLetterOrDigit()
+            if (atBoundary) {
+                var len = MIN_EARLIER_LOOP_REPEAT_CHARS
+                while (searchIdx + len < base.length &&
+                    len < trimmedNext.length &&
+                    base[searchIdx + len].equals(trimmedNext[len], ignoreCase = true)
+                ) {
+                    len++
+                }
+                if (len < trimmedNext.length &&
+                    trimmedNext[len - 1].isLetterOrDigit() &&
+                    trimmedNext[len].isLetterOrDigit()
+                ) {
+                    while (len > MIN_EARLIER_LOOP_REPEAT_CHARS && trimmedNext[len - 1].isLetterOrDigit()) {
+                        len--
+                    }
+                }
+                if (len > bestMatchLen) {
+                    bestMatchLen = len
+                }
+            }
+            searchIdx = base.indexOf(seed, searchIdx + 1, ignoreCase = true)
+        }
+
+        if (bestMatchLen < MIN_EARLIER_LOOP_REPEAT_CHARS) return next
+        val matchedPrefix = trimmedNext.substring(0, bestMatchLen).trimEnd()
+        val remainder = trimmedNext.substring(bestMatchLen).trimStart()
+        if (remainder.isEmpty()) {
+            return ""
+        }
+        val baseTrimmedEnd = base.trimEnd()
+        val baseEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(baseTrimmedEnd) ||
+            TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(baseTrimmedEnd)
+        val matchedEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(matchedPrefix) ||
+            TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(matchedPrefix)
+        return if (!baseEndsAtSentence || matchedEndsAtSentence) {
+            remainder
+        } else {
+            next
+        }
+    }
+
+    fun trimTrailingIncompleteSentence(text: String): String {
+        val trimmed = text.trimEnd()
+        if (trimmed.isBlank()) return text
+        if (Regex("```").findAll(trimmed).count() % 2 == 1) return text
+        if (looksLikeIncompleteToolCall(trimmed)) return text
+
+        val repeatedCutIdx = findTrailingEarlierSentenceRepeatCutIndex(trimmed)
+        if (repeatedCutIdx >= MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS) {
+            val deduped = trimmed.substring(0, repeatedCutIdx).trimEnd()
+            if (deduped.length >= MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS && !isTruncationHeuristic(deduped)) {
+                return deduped
+            }
+        }
+
+        if (!isTruncationHeuristic(trimmed)) return text
+
+        val matches = SENTENCE_END_BEFORE_WHITESPACE_REGEX.findAll(trimmed).toList()
+        for (idx in matches.indices.reversed()) {
+            val match = matches[idx]
+            val candidatePrefix = trimmed.substring(0, match.range.last + 1).trimEnd()
+            if (candidatePrefix.length < MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS) continue
+            if (LIST_NUMBER_BEFORE_PERIOD_REGEX.containsMatchIn(candidatePrefix)) continue
+            if (!isTruncationHeuristic(candidatePrefix)) {
+                return candidatePrefix
+            }
+        }
+        return text
+    }
+
     fun hasContinuationStutter(text: String): Boolean {
         val normalizedTail = text.trim().replace(MULTI_SPACE_REGEX, " ")
         if (normalizedTail.length < 36) return false
+        if (findTrailingEarlierSentenceRepeatCutIndex(normalizedTail) > 0) {
+            return true
+        }
         val tail = if (normalizedTail.length > 600) {
             normalizedTail.substring(normalizedTail.length - 600)
         } else {
@@ -1253,6 +1372,18 @@ object PaiosModelHelper {
                 strippedEllipsisAfterOverlap = true
             }
         }
+        if (!isJsonDraft && overlapLen == 0 && !openCodeFence) {
+            val baseTrimmedEnd = stitchedBase.trimEnd()
+            val baseEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(baseTrimmedEnd) ||
+                TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(baseTrimmedEnd)
+            if (baseEndsAtSentence) {
+                val afterEarlierPrefix = stripEarlierRepeatedPrefix(stitchedBase, next)
+                if (afterEarlierPrefix.isEmpty()) {
+                    return baseTrimmedEnd
+                }
+                next = afterEarlierPrefix
+            }
+        }
         if (next.isEmpty()) return existing
 
         if (isJsonDraft) {
@@ -1260,7 +1391,14 @@ object PaiosModelHelper {
         }
 
         if (overlapLen > 0 && !strippedEllipsisAfterOverlap) {
-            return stitchedBase + next
+            val joinedOverlap = stitchedBase + next
+            if (!openCodeFence) {
+                val cutIdx = findTrailingEarlierSentenceRepeatCutIndex(joinedOverlap)
+                if (cutIdx > 0) {
+                    return joinedOverlap.substring(0, cutIdx).trimEnd()
+                }
+            }
+            return joinedOverlap
         }
 
         val lastChar = stitchedBase.last()
@@ -1285,7 +1423,14 @@ object PaiosModelHelper {
             " "
         }
 
-        return stitchedBase + separator + next
+        val stitchedResult = stitchedBase + separator + next
+        if (!openCodeFence) {
+            val cutIdx = findTrailingEarlierSentenceRepeatCutIndex(stitchedResult)
+            if (cutIdx > 0) {
+                return stitchedResult.substring(0, cutIdx).trimEnd()
+            }
+        }
+        return stitchedResult
     }
 
     data class ParsedToolCall(

@@ -401,5 +401,13 @@
     "intro_gemini_nano_downloadable_desc": "Gemini Nano wird unterstützt und kann jetzt auf dein Gerät heruntergeladen werden.",
     "intro_gemini_nano_checking_title": "Modellstatus wird geprüft",
     "intro_gemini_nano_checking_desc": "Verfügbarkeit des lokalen AICore-Modells wird überprüft...",
-    "checking_model_status": "Modellstatus wird geprüft..."
+    "checking_model_status": "Modellstatus wird geprüft...",
+    "lang": "Deutsch",
+    "delete_chat": "Chat löschen?",
+    "delete_chat_desc": "Dieser Chat wird dauerhaft gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.",
+    "long_tap_delete": "Gedrückt halten, um dauerhaft zu löschen",
+    "chat_deleted": "Chat gelöscht",
+    "error_no_response": "Keine Antwort vom Modell generiert.",
+    "error_policy_check": "Durch AICore-Sicherheitsrichtlinie blockiert.",
+    "aicore_error_606_hint": "AICore-Fehler 606 (Feature Not Found): Auf Ihrem Gerät ist zwar der AICore-System-Stub installiert, aber Google Play bzw. Ihr Gerätehersteller hat den lokalen Gemini-Nano-Modellkatalog für diese Firmware noch nicht bereitgestellt."
 }

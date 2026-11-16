@@ -63,8 +63,8 @@ object InternalToolsHelper {
                 InternalToolSpec(
                     name = "query_aicore_documentation",
                     moduleId = MODULE_DOCS,
-                    description = "Searches official Google ML Kit GenAI and AICore documentation for supported devices, token limits, system prompt guidelines, error codes (-101, -100, BUSY, BACKGROUND_USE_BLOCKED), and multimodal vision specs.",
-                    parametersJson = """{"type":"object","properties":{"query":{"type":"string","description":"Search topic, device model, or error code (e.g. \"token limits\", \"-101\", \"Pixel 9\", \"system prompt\", \"vision downsample\")"}},"required":["query"]}""",
+                    description = "Searches official PAIOS & Google ML Kit GenAI / AICore documentation. Call when asked 'who are you?', 'tell me about yourself', 'what is PAIOS?', or about PAIOS features, extensions, assistant overlay, Gemini Nano v3/v4, supported devices, token limits, and error codes.",
+                    parametersJson = """{"type":"object","properties":{"query":{"type":"string","description":"Search topic, PAIOS feature, device model, or error code (e.g. \"PAIOS overview\", \"token limits\", \"-101\", \"Pixel 9\", \"system prompt\")"}},"required":["query"]}""",
                     requiresInternet = false,
                 ),
             ),
@@ -152,14 +152,120 @@ object InternalToolsHelper {
         "references", "external links", "see also", "further reading", "notes", "bibliography",
     )
 
+    internal val DOCS_TOOL_ALIASES = setOf(
+        "query_aicore_documentation",
+        "about_paios",
+        "paios_info",
+        "get_paios_info",
+    )
+
+    internal val DOC_QUERY_ARG_KEYS = listOf(
+        "query", "topic", "q", "question", "search", "subject", "title", "term", "name",
+    )
+
+    private val PAIOS_DOC_BOOST_TERMS = setOf(
+        "paios", "puzzak", "overview", "identity", "assistant", "overlay",
+        "extension", "extensions", "feature", "features", "privacy", "offline",
+    )
+
+    internal fun canonicalToolName(toolName: String): String {
+        val norm = toolName.trim().lowercase(Locale.ROOT)
+        return if (norm in DOCS_TOOL_ALIASES) "query_aicore_documentation" else norm
+    }
+
+    internal fun normalizeDocumentationQueryString(rawQuery: String): String {
+        val trimmed = rawQuery.trim()
+        val normalizedLower = trimmed.lowercase(Locale.ROOT)
+            .trim { !it.isLetterOrDigit() }
+            .replace(Regex("\\s+"), " ")
+        return if (
+            trimmed.isBlank() ||
+            normalizedLower == "who are you" ||
+            normalizedLower == "tell me about yourself" ||
+            normalizedLower == "what are you" ||
+            normalizedLower == "introduce yourself"
+        ) {
+            "PAIOS overview features"
+        } else {
+            trimmed
+        }
+    }
+
+    internal fun normalizeDocumentationQuery(argsMap: Map<String, Any?>): String {
+        val rawQuery = DOC_QUERY_ARG_KEYS
+            .asSequence()
+            .map { key -> argsMap[key]?.toString()?.trim().orEmpty() }
+            .firstOrNull { it.isNotEmpty() }
+            .orEmpty()
+        return normalizeDocumentationQueryString(rawQuery)
+    }
+
+    internal fun normalizeDocumentationQuery(argsJson: JSONObject): String {
+        val rawQuery = DOC_QUERY_ARG_KEYS
+            .asSequence()
+            .map { key -> argsJson.optString(key, "").trim() }
+            .firstOrNull { it.isNotEmpty() }
+            .orEmpty()
+        return normalizeDocumentationQueryString(rawQuery)
+    }
+
+    internal fun normalizeToolArgs(
+        toolName: String,
+        rawArgs: Map<String, Any?>,
+        fallbackQuestion: String? = null,
+    ): Map<String, Any?> {
+        val args = LinkedHashMap<String, Any?>(rawArgs)
+        fun firstNonEmpty(keys: List<String>): String {
+            for (k in keys) {
+                val v = args[k]?.toString()?.trim().orEmpty()
+                if (v.isNotEmpty()) return v
+            }
+            return ""
+        }
+
+        when (canonicalToolName(toolName)) {
+            "query_aicore_documentation" -> {
+                val raw = firstNonEmpty(DOC_QUERY_ARG_KEYS)
+                    .ifEmpty { fallbackQuestion?.trim().orEmpty() }
+                args["query"] = normalizeDocumentationQueryString(raw)
+            }
+            "wikipedia_summary", "wikipedia_details", "duckduckgo_search" -> {
+                if (args["query"]?.toString()?.trim().isNullOrEmpty()) {
+                    val alias = firstNonEmpty(DOC_QUERY_ARG_KEYS)
+                    if (alias.isNotEmpty()) {
+                        args["query"] = alias
+                    }
+                }
+                if (toolName.trim().equals("wikipedia_details", ignoreCase = true) &&
+                    args["question"]?.toString()?.trim().isNullOrEmpty()
+                ) {
+                    val qAlias = firstNonEmpty(listOf("ask", "detail", "prompt"))
+                        .ifEmpty { fallbackQuestion?.trim().orEmpty() }
+                    if (qAlias.isNotEmpty()) {
+                        args["question"] = qAlias
+                    }
+                }
+            }
+            "weather_forecast" -> {
+                if (args["location"]?.toString()?.trim().isNullOrEmpty()) {
+                    val locAlias = firstNonEmpty(listOf("city", "place", "query", "q"))
+                    if (locAlias.isNotEmpty()) {
+                        args["location"] = locAlias
+                    }
+                }
+            }
+        }
+        return args
+    }
+
     fun moduleById(moduleId: String): InternalModuleSpec? {
         val norm = moduleId.trim().lowercase(Locale.ROOT)
         return INTERNAL_MODULES.firstOrNull { it.id == norm }
     }
 
     fun moduleForTool(toolName: String): InternalModuleSpec? {
-        val norm = toolName.trim().lowercase(Locale.ROOT)
-        return INTERNAL_MODULES.firstOrNull { mod -> mod.tools.any { it.name == norm } }
+        val canon = canonicalToolName(toolName)
+        return INTERNAL_MODULES.firstOrNull { mod -> mod.tools.any { it.name == canon } }
     }
 
     fun isInternalTool(toolName: String): Boolean = moduleForTool(toolName) != null
@@ -290,7 +396,7 @@ object InternalToolsHelper {
         argsJson: JSONObject,
         readerCallback: (suspend (text: String, question: String) -> String)? = null,
     ): String {
-        val normTool = toolName.trim()
+        val normTool = toolName.trim().lowercase(Locale.ROOT)
         val module = moduleForTool(normTool)
         if (module != null && !isInternalModuleEnabled(context, module.id)) {
             return JSONObject().apply {
@@ -300,9 +406,9 @@ object InternalToolsHelper {
             }.toString()
         }
 
-        return when (normTool) {
+        return when (canonicalToolName(normTool)) {
             "query_aicore_documentation" -> {
-                val query = argsJson.optString("query", "").trim()
+                val query = normalizeDocumentationQuery(argsJson)
                 withContext(Dispatchers.IO) { queryDocumentation(context, query) }
             }
             "get_battery_status" -> {
@@ -310,25 +416,40 @@ object InternalToolsHelper {
             }
             "wikipedia_summary" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
-                val query = argsJson.optString("query", "").trim()
+                val query = DOC_QUERY_ARG_KEYS.asSequence()
+                    .map { k -> argsJson.optString(k, "").trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    .orEmpty()
                 val lang = argsJson.optString("lang", "en").ifBlank { "en" }
                 executeWikipediaSummary(query, lang)
             }
             "wikipedia_details" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
-                val query = argsJson.optString("query", "").trim()
-                val question = argsJson.optString("question", "").trim()
+                val query = DOC_QUERY_ARG_KEYS.asSequence()
+                    .map { k -> argsJson.optString(k, "").trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    .orEmpty()
+                val question = sequenceOf("question", "ask", "detail", "prompt")
+                    .map { k -> argsJson.optString(k, "").trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    .orEmpty()
                 val lang = argsJson.optString("lang", "en").ifBlank { "en" }
                 executeWikipediaDetails(query, question, lang, readerCallback)
             }
             "duckduckgo_search" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
-                val query = argsJson.optString("query", "").trim()
+                val query = DOC_QUERY_ARG_KEYS.asSequence()
+                    .map { k -> argsJson.optString(k, "").trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    .orEmpty()
                 executeDuckDuckGoSearch(context, query)
             }
             "weather_forecast" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
-                val location = argsJson.optString("location", "").trim()
+                val location = sequenceOf("location", "city", "place", "query", "q")
+                    .map { k -> argsJson.optString(k, "").trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    .orEmpty()
                 executeWeatherForecast(location)
             }
             else -> JSONObject().apply {
@@ -860,6 +981,89 @@ object InternalToolsHelper {
         }
     }
 
+    internal data class DocSearchMatch(
+        val found: Boolean,
+        val query: String,
+        val sectionTitle: String,
+        val content: String,
+        val score: Int,
+    )
+
+    internal fun rankDocumentationSections(docText: String, query: String): DocSearchMatch {
+        val normalizedQuery = normalizeDocumentationQueryString(query)
+        val queryLower = normalizedQuery.lowercase(Locale.ROOT)
+        val rawLower = query.trim().lowercase(Locale.ROOT)
+        val isSelfIdentity = rawLower.isBlank() ||
+            rawLower.contains("who are you") ||
+            rawLower.contains("tell me about yourself") ||
+            rawLower.contains("about yourself") ||
+            rawLower.contains("what are you") ||
+            rawLower.contains("introduce yourself") ||
+            rawLower.contains("what is paios") ||
+            rawLower.contains("about paios") ||
+            queryLower == "paios overview features"
+
+        val expandedQuery = if (isSelfIdentity) {
+            "$normalizedQuery paios overview identity features"
+        } else {
+            normalizedQuery
+        }
+        val qTerms = expandedQuery
+            .lowercase(Locale.ROOT)
+            .split(Regex("[\\s,;:!?\"'()\\[\\]{}/]+"))
+            .map { it.trim('.', '*', '_') }
+            .filter { it.length >= 2 && it !in STOP_WORDS }
+            .distinct()
+
+        val sections = docText.split(Regex("(?=## )"))
+        var bestSection = ""
+        var bestTitle = ""
+        var bestScore = 0
+
+        for (sec in sections) {
+            val secLower = sec.lowercase(Locale.ROOT)
+            val lines = sec.lines()
+            val title = lines.firstOrNull { it.startsWith("##") }
+                ?: lines.firstOrNull { it.startsWith("#") }
+                ?: ""
+            val cleanTitle = title.trimStart('#', ' ').trim()
+            val titleLower = cleanTitle.lowercase(Locale.ROOT)
+
+            var score = 0
+            if (isSelfIdentity) {
+                if (titleLower.contains("paios overview")) {
+                    score += 80
+                } else if (titleLower.contains("paios")) {
+                    score += 30
+                }
+            }
+            for (term in qTerms) {
+                val isBoosted = term in PAIOS_DOC_BOOST_TERMS
+                if (titleLower.contains(term)) score += if (isBoosted) 16 else 10
+                if (secLower.contains(term)) score += if (isBoosted) 5 else 2
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestSection = sec
+                bestTitle = cleanTitle
+            }
+        }
+
+        val content = if (bestScore > 0 && bestSection.isNotBlank()) {
+            bestSection.trim().take(1800)
+        } else {
+            docText.trim().take(1500)
+        }
+
+        return DocSearchMatch(
+            found = content.isNotBlank(),
+            query = normalizedQuery,
+            sectionTitle = bestTitle,
+            content = content,
+            score = bestScore,
+        )
+    }
+
     private fun queryDocumentation(context: Context, query: String): String {
         return try {
             val docText = try {
@@ -869,39 +1073,12 @@ object InternalToolsHelper {
                 context.assets.open("docs/genai.md.txt")
                     .bufferedReader().use { it.readText() }
             }
-            val qTerms = query.lowercase(Locale.ROOT).split(Regex("\\s+")).filter { it.length > 2 }
-
-            val sections = docText.split(Regex("(?=## )"))
-            var bestSection = ""
-            var bestScore = 0
-
-            for (sec in sections) {
-                val secLower = sec.lowercase(Locale.ROOT)
-                val lines = sec.lines()
-                val title = lines.firstOrNull { it.startsWith("##") } ?: ""
-                val titleLower = title.lowercase(Locale.ROOT)
-
-                var score = 0
-                for (term in qTerms) {
-                    if (titleLower.contains(term)) score += 10
-                    if (secLower.contains(term)) score += 2
-                }
-                if (score > bestScore) {
-                    bestScore = score
-                    bestSection = sec
-                }
-            }
-
-            val content = if (bestScore > 0 && bestSection.isNotBlank()) {
-                bestSection.trim().take(1800)
-            } else {
-                docText.take(1500)
-            }
-
+            val match = rankDocumentationSections(docText, query)
             JSONObject().apply {
-                put("found", true)
-                put("query", query)
-                put("content", content)
+                put("found", match.found)
+                put("query", match.query)
+                if (match.sectionTitle.isNotEmpty()) put("title", match.sectionTitle)
+                put("content", match.content)
             }.toString()
         } catch (e: Exception) {
             Log.e(TAG, "queryDocumentation error: ${e.message}", e)

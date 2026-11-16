@@ -1122,4 +1122,90 @@ class PaiosModelHelperTest {
         assertEquals("The forecast", PaiosModelHelper.stripLeadingAssistantLabel("  paios:  The forecast"))
         assertEquals("PAIOS is ready", PaiosModelHelper.stripLeadingAssistantLabel("PAIOS is ready"))
     }
+
+    @Test
+    fun trimTrailingIncompleteSentence_trimsDanglingTailClauseAndPreservesCompleteText() {
+        val kyivTruncated =
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at"
+        assertEquals(
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C).",
+            PaiosModelHelper.trimTrailingIncompleteSentence(kyivTruncated)
+        )
+
+        val completeMultiSentence =
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at 12 km/h."
+        assertEquals(
+            completeMultiSentence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(completeMultiSentence)
+        )
+
+        val singleIncompleteSentence = "The wind is blowing at"
+        assertEquals(
+            singleIncompleteSentence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(singleIncompleteSentence)
+        )
+
+        val openCodeFence = "Here is a snippet. ```kotlin\nval x ="
+        assertEquals(
+            openCodeFence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(openCodeFence)
+        )
+
+        val toolDraft = """Sure thing. {"tool": "inspect_screen", "args": {"""
+        assertEquals(
+            toolDraft,
+            PaiosModelHelper.trimTrailingIncompleteSentence(toolDraft)
+        )
+    }
+
+    @Test
+    fun stitchOverlayContinuation_and_hasContinuationStutter_catchEarlierSentenceLoopRepeat() {
+        val baseInspect =
+            "The status bar displays \"Tyche\" at 59% and \"Verdandi LTE\" at 100%. You will also see a screen time widget. A bottom app bar includes a grid of squares."
+        val repeatedTail = "The status bar displays \"Tyche\" at 59% and"
+
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.stitchOverlayContinuation(baseInspect, repeatedTail)
+        )
+
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.stitchOverlayContinuation(
+                "$baseInspect The status bar",
+                "displays \"Tyche\" at 59% and"
+            )
+        )
+
+        val combinedWithRepeat = "$baseInspect $repeatedTail"
+        assertTrue(PaiosModelHelper.hasContinuationStutter(combinedWithRepeat))
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = combinedWithRepeat,
+                continuationCount = 1,
+                lastRoundAddedChars = repeatedTail.length,
+                isNanoV4 = false
+            )
+        )
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.trimTrailingIncompleteSentence(combinedWithRepeat)
+        )
+    }
+
+    @Test
+    fun internalToolsHelper_supportsPaiosSelfKnowledgeAliasesAndPrefix() {
+        val docsModule = InternalToolsHelper.moduleById(InternalToolsHelper.MODULE_DOCS)
+        assertNotNull(docsModule)
+        val docsTool = docsModule!!.tools.first()
+        assertTrue(docsTool.description.startsWith("Searches official "))
+        assertTrue(docsTool.description.contains("who are you?"))
+
+        assertTrue(InternalToolsHelper.isInternalTool("query_aicore_documentation"))
+        assertTrue(InternalToolsHelper.isInternalTool("about_paios"))
+        assertTrue(InternalToolsHelper.isInternalTool("paios_info"))
+        assertTrue(InternalToolsHelper.isInternalTool("get_paios_info"))
+        assertEquals(docsModule, InternalToolsHelper.moduleForTool("about_paios"))
+    }
 }

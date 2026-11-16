@@ -210,15 +210,72 @@ class MeshOverlayActivity : Activity() {
         }
 
         private fun resolveSupportedLang(context: Context): String {
-            val rawLang = Locale.getDefault().language.lowercase(Locale.ROOT)
+            val prefs = try {
+                context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            } catch (_: Exception) {
+                null
+            }
+            val prefLang = try {
+                (prefs?.getString("flutter.language", null) ?: prefs?.getString("language", null))?.trim().orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+
+            if (prefLang.isNotEmpty() && !prefLang.equals("system", ignoreCase = true)) {
+                if (prefLang.equals("zh-Hans", ignoreCase = true) ||
+                    prefLang.equals("zh_Hans", ignoreCase = true) ||
+                    prefLang.equals("zh-CN", ignoreCase = true) ||
+                    prefLang.equals("zh_CN", ignoreCase = true)
+                ) {
+                    return "zh-Hans"
+                }
+                val normPref = prefLang.lowercase(Locale.ROOT)
+                val supported = getSupportedLanguages(context)
+                return if (supported.contains(normPref)) normPref else "en"
+            }
+
+            val defaultLocale = Locale.getDefault()
+            val rawLang = defaultLocale.language.lowercase(Locale.ROOT)
+            if (rawLang == "zh") {
+                val script = defaultLocale.script
+                val country = defaultLocale.country.uppercase(Locale.ROOT)
+                if (script.equals("Hans", ignoreCase = true) || country in setOf("CN", "SG")) {
+                    return "zh-Hans"
+                }
+            }
             val supported = getSupportedLanguages(context)
             return if (supported.contains(rawLang)) rawLang else "en"
+        }
+
+        private fun loadTranslationAsset(
+            context: Context,
+            langCode: String,
+            fallbackEn: JSONObject
+        ): JSONObject {
+            val candidates = if (langCode.equals("zh-Hans", ignoreCase = true)) {
+                listOf("zh-Hans", "zh")
+            } else {
+                listOf(langCode)
+            }
+            for (candidate in candidates) {
+                try {
+                    val langText = context.assets
+                        .open("flutter_assets/assets/translations/$candidate.json")
+                        .bufferedReader()
+                        .use { it.readText() }
+                    return JSONObject(langText)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to load $candidate.json: ${e.message}")
+                }
+            }
+            return fallbackEn
         }
 
         @Keep
         @JvmStatic
         fun preloadTranslationsAsync(context: android.content.Context) {
-            if (cachedEnDict != null && cachedActiveDict != null) return
+            val supportedLang = resolveSupportedLang(context)
+            if (cachedEnDict != null && cachedActiveDict != null && cachedLangCode == supportedLang) return
             Thread {
                 try {
                     val enText = context.assets.open("flutter_assets/assets/translations/en.json")
@@ -227,16 +284,12 @@ class MeshOverlayActivity : Activity() {
                     val enJson = JSONObject(enText)
                     cachedEnDict = enJson
 
-                    val supportedLang = resolveSupportedLang(context)
                     if (supportedLang == "en") {
                         cachedLangCode = "en"
                         cachedActiveDict = enJson
                     } else {
-                        val langText = context.assets.open("flutter_assets/assets/translations/$supportedLang.json")
-                            .bufferedReader()
-                            .use { it.readText() }
+                        cachedActiveDict = loadTranslationAsset(context, supportedLang, enJson)
                         cachedLangCode = supportedLang
-                        cachedActiveDict = JSONObject(langText)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "preloadTranslationsAsync warning: ${e.message}")
@@ -527,17 +580,9 @@ class MeshOverlayActivity : Activity() {
             return
         }
 
-        try {
-            val langText = assets.open("flutter_assets/assets/translations/$supportedLang.json")
-                .bufferedReader()
-                .use { it.readText() }
-            activeDict = JSONObject(langText)
-            cachedLangCode = supportedLang
-            cachedActiveDict = activeDict
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to load $supportedLang.json, using en.json: ${e.message}")
-            activeDict = fallbackEnDict
-        }
+        activeDict = loadTranslationAsset(this, supportedLang, fallbackEnDict)
+        cachedLangCode = supportedLang
+        cachedActiveDict = activeDict
     }
 
     private fun tr(key: String): String {
@@ -1523,19 +1568,32 @@ class MeshOverlayActivity : Activity() {
     }
 
     private fun resolveActivePersonaContent(): String {
+        val personaId = resolveActivePersona()
         var rawContent = ""
-        try {
-            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val prefContent = prefs.getString("flutter.defaultPromptContent", null)
-            if (!prefContent.isNullOrBlank()) {
-                rawContent = prefContent.trim()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to read defaultPromptContent from prefs: ${e.message}")
+
+        if (personaId == "system_default") {
+            try {
+                val assetPath = "flutter_assets/assets/prompts/system_default.md"
+                val content = assets.open(assetPath).bufferedReader().use { it.readText() }.trim()
+                if (content.isNotBlank()) {
+                    rawContent = content
+                }
+            } catch (_: Exception) {}
         }
 
         if (rawContent.isEmpty()) {
-            val personaId = resolveActivePersona()
+            try {
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val prefContent = prefs.getString("flutter.defaultPromptContent", null)
+                if (!prefContent.isNullOrBlank()) {
+                    rawContent = prefContent.trim()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to read defaultPromptContent from prefs: ${e.message}")
+            }
+        }
+
+        if (rawContent.isEmpty() && personaId != "system_default") {
             try {
                 val assetPath = "flutter_assets/assets/prompts/$personaId.md"
                 val content = assets.open(assetPath).bufferedReader().use { it.readText() }.trim()
@@ -3697,8 +3755,10 @@ class MeshOverlayActivity : Activity() {
             return fallbackOutcome
         }
 
-        val cleanStreamedText = PaiosModelHelper.stripControlToolTags(
-            PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
+        val cleanStreamedText = PaiosModelHelper.trimTrailingIncompleteSentence(
+            PaiosModelHelper.stripControlToolTags(
+                PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
+            )
         )
 
         if (cleanStreamedText.isBlank()) {
@@ -4039,8 +4099,10 @@ class MeshOverlayActivity : Activity() {
             retryError = e
         }
 
-        val cleanRetryText = PaiosModelHelper.stripControlToolTags(
-            PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+        val cleanRetryText = PaiosModelHelper.trimTrailingIncompleteSentence(
+            PaiosModelHelper.stripControlToolTags(
+                PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+            )
         )
 
         val finalError = retryError
@@ -4377,8 +4439,10 @@ class MeshOverlayActivity : Activity() {
                         synthesisBubble.text = formatMarkdownToSpannable(errText)
                     }
                 } else {
-                    val cleanSynthText = PaiosModelHelper.stripControlToolTags(
-                        PaiosModelHelper.stripLeadingAssistantLabel(synthText)
+                    val cleanSynthText = PaiosModelHelper.trimTrailingIncompleteSentence(
+                        PaiosModelHelper.stripControlToolTags(
+                            PaiosModelHelper.stripLeadingAssistantLabel(synthText)
+                        )
                     )
                     withContext(Dispatchers.Main) {
                         sheetProgressBar?.visibility = View.GONE
@@ -4453,7 +4517,7 @@ class MeshOverlayActivity : Activity() {
         val lower = trimmed.lowercase(Locale.ROOT)
         when (lower) {
             InternalToolsHelper.TOOL_INSPECT_SCREEN -> return "Inspecting screen"
-            "query_aicore_documentation" -> return "Searching documentation"
+            "query_aicore_documentation", "about_paios", "paios_info", "get_paios_info" -> return "Searching documentation"
             "get_battery_status" -> return "Checking battery"
             "wikipedia_summary" -> return "Searching Wikipedia"
             "wikipedia_details" -> return "Reading Wikipedia"
