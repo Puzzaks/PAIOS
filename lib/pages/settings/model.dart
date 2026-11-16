@@ -7,6 +7,8 @@ import '../support/elements.dart';
 import '../support/model_selector_dialog.dart';
 
 
+typedef ModelSettingsPage = ModelSettings;
+
 class ModelSettings extends StatefulWidget {
   const ModelSettings({super.key});
   @override
@@ -409,6 +411,37 @@ class ModelSettingsState extends State<ModelSettings> {
                                                 label: engine.dict.value("badge_caching"),
                                               ),
                                           ],
+                                        ),
+                                      ],
+                                      if (engine.isAiCoreFeatureNotFoundError) ...[
+                                        const SizedBox(height: 10),
+                                        Container(
+                                          width: double.infinity,
+                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: colorScheme.errorContainer.withValues(alpha: 0.75),
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Icon(
+                                                Icons.warning_amber_rounded,
+                                                size: 18,
+                                                color: colorScheme.onErrorContainer,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  engine.dict.value("aicore_error_606_hint"),
+                                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                        color: colorScheme.onErrorContainer,
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ],
                                       if (engine.fellBackToStable) ...[

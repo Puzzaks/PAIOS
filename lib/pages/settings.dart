@@ -352,6 +352,8 @@ class SettingsPageState extends State<SettingsPage> {
                                     final picked = await FileAccessService.pickDirectory();
                                     if (picked != null) {
                                       setState(() => _promptDirPath = picked);
+                                      await engine.promptData.importFromDirectory();
+                                      engine.notify();
                                     }
                                   }
                               ),

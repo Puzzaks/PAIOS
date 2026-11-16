@@ -98,7 +98,7 @@ class ChatsPageState extends State<ChatsPage> {
                   return CardContents.doubleTap(
                       title: chat["name"]??"Loading...",
                       subtitle: (engine.isLoading && engine.currentChat == key)
-                          ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
+                          ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", (engine.response.tokenCount ?? 0).toString()).replaceAll("%tokenspersec%", ((engine.response.tokenCount?.toInt() ?? 0)/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
                           : timeAgo(chat["updated"]) == "just now"
                           ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}"
                           : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}",
@@ -309,7 +309,7 @@ class ChatsPageState extends State<ChatsPage> {
                                   );
                                 },
                                   title: engine.dict.value("loading"),
-                                  subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
+                                  subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", (engine.response.tokenCount ?? 0).toString()).replaceAll("%tokenspersec%", ((engine.response.tokenCount?.toInt() ?? 0)/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
                               )]),
 
                               if (pinnedChatKeys.isNotEmpty) ...[

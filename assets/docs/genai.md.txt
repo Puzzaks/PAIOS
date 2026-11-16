@@ -58,3 +58,57 @@ Standard error status codes returned by AICore and ML Kit GenAI:
 | **`-103`** | `SAFETY_VIOLATION` | Prompt or output triggered on-device safety filters for restricted harm categories. | Inform user that request could not be completed safely. |
 | **`-104`** | `DEVICE_NOT_SUPPORTED` | Missing required NPU hardware or unverified OS build. | Direct user to cloud fallback or device eligibility matrix. |
 | **`-105`** | `MODEL_UNAVAILABLE` | Weights are missing or download has not finished. | Query `checkStatus()` and prompt user to download over Wi-Fi. |
+
+---
+
+## PAIOS Overview, Identity & Privacy (Who Are You / About PAIOS)
+
+**PAIOS (Personal AI Operating System)** is a 100% offline-by-default, private on-device AI assistant and native Android interface created by **Puzzak** (`page.puzzak.paios`). When asked *"Who are you?"*, *"Tell me about yourself"*, or *"What is PAIOS?"*, introduce yourself conversationally as **PAIOS**, a private on-device AI assistant built by Puzzak and powered locally by Google's **Gemini Nano** through **Android AICore** and **ML Kit GenAI**.
+
+- **Zero Cloud LLM Calls & Complete Privacy**: All AI inference runs locally on the device's neural processing unit (NPU/TPU) with zero cloud API keys, zero remote model servers, and zero conversation telemetry leaving the phone.
+- **Core Capabilities at a Glance**:
+  - **Multi-Model Gemini Nano Engine**: Switch between `Stable` (`gemini-nano-v3`) and `Preview / Beta` (`gemini-nano-v4-full` and `gemini-nano-v4-fast`) with parallel background model downloads.
+  - **Thinking Mode (`Thought process`)**: Expandable on-device reasoning trace on Gemini Nano v4.
+  - **Multimodal Vision**: Attach photos from Camera or Gallery with fast 768px NPU downsampling and post-turn background visual memory.
+  - **System Digital Assistant Overlay**: Hold the power button or swipe from the corner to summon PAIOS over any app with on-demand `inspect_screen` vision and UI tree analysis.
+  - **M3x Mesh & Extensions**: Built-in offline tools (`query_aicore_documentation`, `get_battery_status`, `inspect_screen`), optional online tools (`wikipedia_summary`, `wikipedia_details`, `duckduckgo_search`, `weather_forecast`), and cross-app `*.mesh` extensions (`PTK`, `Alerts`).
+  - **Multi-Chat & Custom Personas**: Pinning, archiving, per-chat temperature, Markdown (`.md`) system prompt import/export, and localization in 5 languages (`en`, `uk`, `zh`, `de`, `tr`).
+
+---
+
+## PAIOS Model Variants, Thinking Mode & Multimodality
+
+PAIOS provides direct control over on-device foundation model variants, reasoning, and vision:
+
+- **Model Release Stages & Variants**:
+  - **Stable (`gemini-nano-v3`)**: Production-ready on-device Gemini Nano model for fast everyday chat and tool calling.
+  - **Preview / Beta (`gemini-nano-v4-full` & `gemini-nano-v4-fast`)**: Next-generation Gemini Nano v4 variants supporting native Thinking Mode (`<ctrl42>`/`<ctrl43>` reasoning traces) and structured tool calls.
+- **Multi-Model Selector & Parallel Background Downloader**: Users can download and switch between `Stable` and `Preview` (`Full` or `Fast`) variants with live throughput (`B/s`–`GB/s`) and remaining-bytes progress indicators.
+- **Thinking Mode (`Thought process`)**: Displays a collapsible reasoning header above the assistant's reply so users can inspect how the model planned its answer or tool call.
+- **Multimodal Vision & Visual Memory**: Supports Camera capture and Gallery image attachments, optional 768px fast NPU downsampling for low-latency vision, and automatic post-turn background visual memory captions so follow-up turns remember prior images.
+- **Seamless Auto-Continuation**: Automatically stitches multi-round continuations when long answers reach hardware token windows, deduplicating overlaps cleanly.
+
+---
+
+## PAIOS System Assistant Overlay & On-Demand Screen Inspection
+
+PAIOS can be configured as the default **Android Digital Assistant** (`PaiosVoiceInteractionService` / `MeshOverlayActivity`):
+
+- **Draggable Material You Overlay Sheet**: Summon PAIOS over any foreground app without leaving your current task, complete with quick Camera & Gallery vision buttons and one-tap handoff to the full PAIOS app.
+- **Lazy On-Demand Screen Inspection (`inspect_screen`)**: When summoned over an app, PAIOS captures the screen context silently in the background (`3`-turn TTL) and exposes the `inspect_screen` tool. The screenshot and Android `AssistStructure` view hierarchy are only analyzed when the user asks a question about what is on their screen, and are silently dropped for general questions.
+
+---
+
+## PAIOS Extensions & M3x Mesh Ecosystem
+
+PAIOS features a modular extension architecture managed in **Settings > Extensions**:
+
+- **Offline Default-ON Modules**:
+  - `paios.docs` (`query_aicore_documentation`): Searches bundled and cached PAIOS, AICore, and ML Kit GenAI documentation offline.
+  - `paios.device` (`get_battery_status`): Reads live device battery percentage, charging status, and power state.
+  - `inspect_screen`: Available inside the System Assistant Overlay for on-demand screen reading and visual inspection.
+- **Opt-In Online Default-OFF Modules** (require user opt-in in `Settings > Extensions`):
+  - `paios.wikipedia` (`wikipedia_summary`, `wikipedia_details`): Fetches Wikipedia article summaries and targeted section details.
+  - `paios.search` (`duckduckgo_search`): Queries DuckDuckGo Instant Answer API for quick web definitions and references.
+  - `paios.weather` (`weather_forecast`): Retrieves current conditions and 3-day forecasts via Open-Meteo.
+- **Dynamic Inter-App M3x Mesh (`*.mesh`)**: Discovers external sibling apps installed on the device via Android `ContentProvider` (`*.mesh` authority), such as **Puzzak ToolKit (`PTK`)** and **Alerts**, allowing PAIOS to orchestrate cross-app tools locally with user permission.

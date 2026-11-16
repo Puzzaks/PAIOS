@@ -22,9 +22,26 @@ class ResourceRepository {
     final String? cached = box?.get("cached_resources_json");
     if (cached != null && cached.isNotEmpty) {
       try {
+        bool sanitized = false;
         resources = List<Map<String, dynamic>>.from(
-          (jsonDecode(cached) as List).map((e) => Map<String, dynamic>.from(e)),
+          (jsonDecode(cached) as List).map((e) {
+            final map = Map<String, dynamic>.from(e as Map);
+            for (final k in ['value', 'url']) {
+              final v = map[k];
+              if (v is String && v.contains('id=page.puzzak.geminilocal')) {
+                map[k] = v.replaceAll(
+                  'id=page.puzzak.geminilocal',
+                  'id=page.puzzak.paios',
+                );
+                sanitized = true;
+              }
+            }
+            return map;
+          }),
         );
+        if (sanitized && box != null) {
+          await box.put("cached_resources_json", jsonEncode(resources));
+        }
       } catch (_) {}
     }
 

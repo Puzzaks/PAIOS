@@ -7,7 +7,17 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:flutter/services.dart';
 
 class Dictionary {
-  List languages = [];
+  static const List<Map<String, String>> _supportedLangs =
+      <Map<String, String>>[
+    {'origin': 'English', 'name': 'English', 'id': 'en'},
+    {'origin': 'Українська', 'name': 'Ukrainian', 'id': 'uk'},
+    {'origin': '繁體中文', 'name': 'Traditional Chinese', 'id': 'zh'},
+    {'origin': '简体中文', 'name': 'Simplified Chinese', 'id': 'zh-Hans'},
+    {'origin': 'Deutsch', 'name': 'German', 'id': 'de'},
+    {'origin': 'Türkçe', 'name': 'Turkish', 'id': 'tr'},
+  ];
+
+  List languages = List<Map<String, String>>.from(_supportedLangs);
   bool systemLanguage = false;
   Map dictionary = {};
   String locale = "en";
@@ -166,6 +176,50 @@ class Dictionary {
     return Dictionary._internal(path, url);
   }
 
+  /// Resolves a raw system locale string (e.g. `zh_CN`, `zh_Hans`, `zh_TW`, `uk_UA`)
+  /// into a supported PAIOS dictionary language ID.
+  static String resolveSystemLocale(
+    String rawLocale, {
+    Iterable<String>? supportedIds,
+  }) {
+    final Set<String> supported =
+        (supportedIds != null && supportedIds.isNotEmpty)
+            ? supportedIds.toSet()
+            : _supportedLangs.map((e) => e['id']!).toSet();
+    final String cleaned = rawLocale.trim().split(RegExp(r'[.@]')).first;
+    if (cleaned.isEmpty) return 'en';
+    final List<String> parts = cleaned
+        .replaceAll('-', '_')
+        .split('_')
+        .map((p) => p.trim().toLowerCase())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'en';
+
+    final String lang = parts.first;
+    if (lang == 'zh') {
+      final bool isSimplified =
+          parts.contains('hans') || parts.contains('cn') || parts.contains('sg');
+      if (isSimplified && supported.contains('zh-Hans')) {
+        return 'zh-Hans';
+      }
+      if (supported.contains('zh')) {
+        return 'zh';
+      }
+      if (supported.contains('zh-Hans')) {
+        return 'zh-Hans';
+      }
+      return 'en';
+    }
+
+    for (final String candidate in supported) {
+      if (candidate.toLowerCase() == lang) {
+        return candidate;
+      }
+    }
+    return 'en';
+  }
+
   Future<void> decideLanguage() async {
     if (!Hive.isBoxOpen('paios_storage')) {
       await setSystemLanguage();
@@ -173,33 +227,50 @@ class Dictionary {
     }
     final box = Hive.box('paios_storage');
     if (box.containsKey("language")) {
-      locale = box.get("language", defaultValue: "en");
+      final String raw =
+          box.get("language", defaultValue: "en")?.toString().trim() ?? "en";
+      final String lower = raw.toLowerCase();
+      if (lower == 'zh-hans' ||
+          lower == 'zh_hans' ||
+          lower == 'zh_cn' ||
+          lower == 'zh-cn' ||
+          lower == 'zh_sg' ||
+          lower == 'zh-sg') {
+        locale = "zh-Hans";
+      } else if (lower == 'zh_hant' ||
+          lower == 'zh-hant' ||
+          lower == 'zh_tw' ||
+          lower == 'zh-tw' ||
+          lower == 'zh_hk' ||
+          lower == 'zh-hk' ||
+          lower == 'zh_mo' ||
+          lower == 'zh-mo') {
+        locale = "zh";
+      } else {
+        locale = raw;
+      }
     } else {
       await setSystemLanguage();
     }
   }
 
-  Future<void> setSystemLanguage() async {
+  Future<void> setSystemLanguage([String? overridePlatformLocale]) async {
     if (Hive.isBoxOpen('paios_storage')) {
       final box = Hive.box('paios_storage');
       // Remove the saved preference so decideLanguage() falls back to device locale on next boot
       await box.delete("language");
     }
-    String deviceLocale = "en";
+    String rawLocale = "en";
     try {
-      deviceLocale = Platform.localeName.split("_")[0];
+      rawLocale = overridePlatformLocale ?? Platform.localeName;
     } catch (_) {}
-    bool found = false;
-    for (int a = 0; a < languages.length; a++) {
-      if (languages[a]["id"] == deviceLocale) {
-        locale = deviceLocale;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      locale = "en";
-    }
+    final Iterable<String> supportedIds = languages.isNotEmpty
+        ? languages
+            .whereType<Map>()
+            .map((m) => m["id"]?.toString() ?? "")
+            .where((id) => id.isNotEmpty)
+        : _supportedLangs.map((m) => m["id"]!);
+    locale = resolveSystemLocale(rawLocale, supportedIds: supportedIds);
   }
 
   saveLanguage(String variant) async {
@@ -360,8 +431,24 @@ class Dictionary {
         final String langBody = utf8.decode(response.bodyBytes);
         final dynamic decodedLangs = jsonDecode(langBody);
         if (decodedLangs is List) {
-          languages = decodedLangs;
-          await box.put("cached_languages_json", langBody);
+          final List<dynamic> mergedRemoteLangs =
+              List<dynamic>.from(decodedLangs);
+          final Set<String> remoteIds = decodedLangs
+              .whereType<Map>()
+              .map((m) => m["id"]?.toString() ?? "")
+              .where((id) => id.isNotEmpty)
+              .toSet();
+          for (final item in languages) {
+            if (item is Map && item["id"] != null) {
+              final String id = item["id"].toString();
+              if (!remoteIds.contains(id)) {
+                remoteIds.add(id);
+                mergedRemoteLangs.add(item);
+              }
+            }
+          }
+          languages = mergedRemoteLangs;
+          await box.put("cached_languages_json", jsonEncode(mergedRemoteLangs));
           if (!box.containsKey("language")) {
             await decideLanguage();
           }
@@ -436,7 +523,15 @@ class Dictionary {
       return "Loading...";
     }
     if (!dictionary[locale].containsKey(entry)) {
-      if (!dictionary["en"].containsKey(entry)) {
+      if (locale == "zh-Hans" &&
+          dictionary.containsKey("zh") &&
+          dictionary["zh"] is Map &&
+          dictionary["zh"].containsKey(entry)) {
+        return dictionary["zh"][entry].toString();
+      }
+      if (!dictionary.containsKey("en") ||
+          dictionary["en"] is! Map ||
+          !dictionary["en"].containsKey(entry)) {
         if (kDebugMode) {
           return "!!! $entry";
         } else {

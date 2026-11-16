@@ -68,6 +68,18 @@ class PromptRepository {
     // ── 3. Load Local/Cached Content for Default Prompts Immediately ────────
     for (final String key in defaultPrompts.keys) {
       String? content = box?.get("cached_prompt_$key");
+      if (key == 'system_default') {
+        try {
+          final bundled =
+              await rootBundle.loadString('assets/prompts/$key.md');
+          if (bundled.trim().isNotEmpty) {
+            content = bundled;
+            if (box != null && box.get("cached_prompt_$key") != bundled) {
+              await box.put("cached_prompt_$key", bundled);
+            }
+          }
+        } catch (_) {}
+      }
       if (content == null || content.isEmpty) {
         try {
           content = await rootBundle.loadString('assets/prompts/$key.md');
@@ -162,6 +174,8 @@ class PromptRepository {
   }
 
   // ── Import: scan the SAF folder for unknown .md files ────────────────────
+
+  Future<void> importFromDirectory() => _importFromDirectory();
 
   Future<void> _importFromDirectory() async {
     try {

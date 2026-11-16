@@ -770,7 +770,9 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                   engine.modelDownloadLog.last["status"] == "Error")
                 CardContents.doubleTap(
                   title: "Model ${engine.dict.value("unavailable")}",
-                  subtitle: engine.dict.value("whoops"),
+                  subtitle: engine.isAiCoreFeatureNotFoundError
+                      ? engine.dict.value("aicore_error_606_hint")
+                      : engine.dict.value("whoops"),
                   action: () async => engine.gemini.openAICorePlayStore(),
                   secondAction: () {
                     engine.modelDownloadLog.clear();
@@ -846,6 +848,11 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                 ),
 
               // Logs button
+              if (engine.isAiCoreFeatureNotFoundError)
+                CardContents.static(
+                  title: engine.dict.value("aicore_status"),
+                  subtitle: engine.dict.value("aicore_error_606_hint"),
+                ),
               CardContents.tap(
                 title: engine.dict.value(
                   engine.analytics ? "logs_with_analytics" : "logs_no_analytics",
@@ -1094,13 +1101,15 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               ),
               CardContents.static(
                 title: engine.dict.value("aicore_status"),
-                subtitle: (engine.modelInfo["aicoreInstalled"] == true ||
-                        engine.modelInfo["aicoreInstalled"]
-                                ?.toString()
-                                .toLowerCase() ==
-                            "true")
-                    ? "Installed (Model Inactive)"
-                    : engine.dict.value("aicore_unavailable"),
+                subtitle: engine.isAiCoreFeatureNotFoundError
+                    ? engine.dict.value("aicore_error_606_hint")
+                    : (engine.modelInfo["aicoreInstalled"] == true ||
+                            engine.modelInfo["aicoreInstalled"]
+                                    ?.toString()
+                                    .toLowerCase() ==
+                                "true")
+                        ? "Installed (Model Inactive)"
+                        : engine.dict.value("aicore_unavailable"),
               ),
             ]),
             const SizedBox(height: 20),
@@ -1169,6 +1178,11 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             ),
             const SizedBox(height: 20),
             cards.cardGroup([
+              if (engine.isAiCoreFeatureNotFoundError)
+                CardContents.static(
+                  title: engine.dict.value("aicore_status"),
+                  subtitle: engine.dict.value("aicore_error_606_hint"),
+                ),
               CardContents.static(
                 title: "1. Android Settings",
                 subtitle: engine.dict.value("troubleshooting_tip_1"),

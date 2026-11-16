@@ -61,10 +61,11 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                   title: recentTitles[i],
                                                   subtitle: "",
                                                   action: () {
-                                                    recentTitles.remove(recentTitles[i]);
+                                                    final selectedTitle = recentTitles[i];
+                                                    recentTitles.removeAt(i);
                                                     Navigator.of(context).pop();
                                                     setState(() {
-                                                      engine.chats[engine.currentChat]?["name"] = recentTitles[i];
+                                                      engine.chats[engine.currentChat]?["name"] = selectedTitle;
                                                     });
                                                     engine.saveChats();
                                                   }

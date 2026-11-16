@@ -401,5 +401,13 @@
     "intro_gemini_nano_downloadable_desc": "Gemini Nano destekleniyor ve cihazınıza indirilmeye hazır.",
     "intro_gemini_nano_checking_title": "Model Durumu Kontrol Ediliyor",
     "intro_gemini_nano_checking_desc": "Cihaz içi AICore model kullanılabilirliği inceleniyor...",
-    "checking_model_status": "Model durumu kontrol ediliyor..."
+    "checking_model_status": "Model durumu kontrol ediliyor...",
+    "lang": "Türkçe",
+    "delete_chat": "Sohbet silinsin mi?",
+    "delete_chat_desc": "Bu sohbet kalıcı olarak silinecek. Bu işlem geri alınamaz.",
+    "long_tap_delete": "Kalıcı olarak silmek için basılı tutun",
+    "chat_deleted": "Sohbet silindi",
+    "error_no_response": "Model tarafından yanıt oluşturulmadı.",
+    "error_policy_check": "AICore güvenlik politikası tarafından engellendi.",
+    "aicore_error_606_hint": "AICore Hatası 606 (Feature Not Found): Cihazınızda AICore sistem taslağı yüklü, ancak Google Play / cihaz üreticiniz bu yazılım sürümü için cihaz içi Gemini Nano model kataloğunu henüz sağlamadı."
 }

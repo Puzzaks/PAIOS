@@ -7,7 +7,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geminilocal/engine.dart';
 import 'package:geminilocal/parts/prompt.dart';
+import 'package:geminilocal/services/doc_service.dart';
 import 'package:geminilocal/services/internal_tools_service.dart';
+import 'package:geminilocal/storage/prompt_repository.dart';
 import 'package:hive/hive.dart';
 import 'package:m3x_mesh/m3x_mesh.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1603,6 +1605,104 @@ void main() {
       expect(engine.isDownloadingModel, isFalse);
       expect(engine.variantDownloads['stable:full']?.isCompleted, isTrue);
       expect(engine.downloadErrorRetryCount, 0);
+    });
+
+    test('trimTrailingIncompleteSentence trims trailing dangling clause after complete sentence while preserving decimals, complete text, and single sentences', () {
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(
+          'The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at',
+        ),
+        'The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C).',
+      );
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(
+          'A paperclip maximizer is a hypothetical AI agent tasked with maximizing the production of paperclips. The concept, explored in discussions of existential risk, illustrates how an',
+        ),
+        'A paperclip maximizer is a hypothetical AI agent tasked with maximizing the production of paperclips.',
+      );
+      // Preserves complete multi-sentence text
+      const completeText =
+          'The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at 14 km/h.';
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(completeText),
+        completeText,
+      );
+      // Preserves single-sentence text without prior .!?
+      const singleSentenceCutoff =
+          'The concept of a "paperclip maximizer" is a thought experiment that highlights a potential risk with advanced';
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(singleSentenceCutoff),
+        singleSentenceCutoff,
+      );
+    });
+
+    test('earlier-sentence loop deduplication trims repeated sentence-1 clause at the end of continuation', () {
+      const existing =
+          'The status bar displays "Tyche" at 59% and 10:53, alongside several notification ';
+      const incoming =
+          'icons. The status bar displays "Tyche" at 59% and';
+      expect(
+        AIEngine.stitchContinuation(existing, incoming),
+        'The status bar displays "Tyche" at 59% and 10:53, alongside several notification icons.',
+      );
+
+      final stutter = AIEngine.detectAndTrimStutterLoop(
+        'The status bar displays "Tyche" at 59% and 10:53, alongside several notification icons. The status bar displays "Tyche" at 59% and',
+      );
+      expect(stutter.detected, isTrue);
+      expect(
+        stutter.text,
+        'The status bar displays "Tyche" at 59% and 10:53, alongside several notification icons.',
+      );
+    });
+
+    test('DocService and query_aicore_documentation return PAIOS self-knowledge and system_default.md stays slim', () async {
+      final defaultPrompt =
+          File('assets/prompts/system_default.md').readAsStringSync().trim();
+      expect(defaultPrompt.length, lessThan(220));
+      expect(defaultPrompt, contains('query_aicore_documentation'));
+
+      // Verify PromptRepository refreshes stale cached_prompt_system_default from bundled asset
+      final box = Hive.box('paios_storage');
+      await box.put('cached_prompt_system_default', 'Old stale cached prompt');
+      final repo = PromptRepository(notifyEngine: () {});
+      await repo.initFromHive('');
+      expect(
+        repo.defaultPrompts['system_default']?['content']?.toString().trim(),
+        defaultPrompt,
+      );
+      expect(
+        box.get('cached_prompt_system_default')?.toString().trim(),
+        defaultPrompt,
+      );
+
+      final docService = DocService();
+      docService.customCacheDirectory = null;
+      docService.customHttpClient = null;
+      await docService.initialize(null, true);
+
+      final whoRes = await docService.searchDoc('who are you');
+      expect(whoRes.found, isTrue);
+      expect(whoRes.title, contains('PAIOS'));
+      expect(whoRes.content, contains('Puzzak'));
+      expect(whoRes.content, contains('Gemini Nano'));
+
+      final aboutRes = await docService.searchDoc('tell me about yourself');
+      expect(aboutRes.found, isTrue);
+      expect(aboutRes.title, contains('PAIOS'));
+      expect(aboutRes.content, contains('offline'));
+
+      final extRes = await docService.searchDoc('PAIOS extensions');
+      expect(extRes.found, isTrue);
+      expect(extRes.content, contains('paios.wikipedia'));
+      expect(extRes.content, contains('weather_forecast'));
+
+      final formatted = InternalToolsService.formatResultForSynthesis(
+        'query_aicore_documentation',
+        whoRes.toJson(),
+      );
+      expect(formatted, contains('Documentation section:'));
+      expect(formatted, contains('PAIOS'));
     });
   });
 }
