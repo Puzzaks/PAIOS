@@ -11,6 +11,7 @@ param(
     [string]$PlayNotes = "",
     [string]$SinceVersion = "",
     [string]$GhNotesFilePath = "",
+    [switch]$ChangesNotSentForReview,
     [switch]$DryRun
 )
 
@@ -745,6 +746,26 @@ if ($SkipGit) {
         } else {
             Write-Host "Tag '$Tag' already exists locally."
         }
+
+        $env:GIT_TERMINAL_PROMPT = "0"
+        $env:GCM_INTERACTIVE = "never"
+        $step5GhExe = Resolve-Executable -Name "gh" -FallbackPaths @(
+            "$env:ProgramFiles\GitHub CLI\gh.exe",
+            "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
+        )
+        if ($step5GhExe) {
+            $prevPref = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $null = & $step5GhExe auth status 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $null = & $step5GhExe auth setup-git 2>&1
+                }
+            } finally {
+                $ErrorActionPreference = $prevPref
+            }
+        }
+
         & $GitExe -C $ProjectRoot push origin dev
         if ($LASTEXITCODE -ne 0) { throw "git push origin dev failed." }
         & $GitExe -C $ProjectRoot push origin $Tag
@@ -836,7 +857,7 @@ if ($SkipPlayStore) {
         Write-DryRun "  1. POST edits.insert"
         Write-DryRun "  2. POST edits.bundles.upload ($AabPath)"
         Write-DryRun "  3. PUT  edits.tracks.update (track='$Track', versionCode='$VersionCode', language='en-US', notesLength=$($PlayNotesFinal.Length))"
-        Write-DryRun "  4. POST edits.commit"
+        Write-DryRun "  4. POST edits.commit$(if ($ChangesNotSentForReview) { ' (changesNotSentForReview=true)' } else { ' (with automatic changesNotSentForReview=true fallback)' })"
     } else {
         if (-not (Test-Path $AabPath)) {
             throw "Play Store AAB artifact not found at '$AabPath'."
@@ -898,13 +919,40 @@ if ($SkipPlayStore) {
                 -ContentType "application/json; charset=utf-8" `
                 -Body $trackBytes
 
+            $commitUri = if ($ChangesNotSentForReview) {
+                "${baseApiUrl}/${editId}:commit?changesNotSentForReview=true"
+            } else {
+                "${baseApiUrl}/${editId}:commit"
+            }
+            $usedChangesNotSentForReview = [bool]$ChangesNotSentForReview
             Write-Host "Committing Play Store edit ($editId)..."
-            $commitResp = Invoke-RestMethod -Method Post `
-                -Uri "${baseApiUrl}/${editId}:commit" `
-                -Headers $authHeaders `
-                -ContentType "application/json" `
-                -Body "{}"
-            Write-Host "Play Store release committed! Edit ID: $($commitResp.id)" -ForegroundColor Green
+            try {
+                $commitResp = Invoke-RestMethod -Method Post `
+                    -Uri $commitUri `
+                    -Headers $authHeaders `
+                    -ContentType "application/json" `
+                    -Body "{}"
+            } catch {
+                $commitErrorDetail = Get-HttpErrorDetail -ExceptionRecord $_
+                if (-not $ChangesNotSentForReview -and $commitErrorDetail -match "changesNotSentForReview") {
+                    Write-Host "WARNING: Play Console refused auto-submission to review ($commitErrorDetail). Retrying commit with changesNotSentForReview=true..." -ForegroundColor Yellow
+                    $usedChangesNotSentForReview = $true
+                    $commitResp = Invoke-RestMethod -Method Post `
+                        -Uri "${baseApiUrl}/${editId}:commit?changesNotSentForReview=true" `
+                        -Headers $authHeaders `
+                        -ContentType "application/json" `
+                        -Body "{}"
+                } else {
+                    throw
+                }
+            }
+
+            if ($usedChangesNotSentForReview) {
+                Write-Host "Play Store edit committed with changesNotSentForReview=true! Edit ID: $($commitResp.id)" -ForegroundColor Green
+                Write-Host "Edit is committed and ready in Google Play Console (check Publishing Overview / Track '$Track' if Play Console requires a manual 'Send for review' click)." -ForegroundColor Yellow
+            } else {
+                Write-Host "Play Store release committed! Edit ID: $($commitResp.id)" -ForegroundColor Green
+            }
         } catch {
             $detail = Get-HttpErrorDetail -ExceptionRecord $_
             if ($editId) {

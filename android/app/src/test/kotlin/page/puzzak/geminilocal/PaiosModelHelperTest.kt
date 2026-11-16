@@ -249,13 +249,22 @@ class PaiosModelHelperTest {
             )
         )
 
-        // Stall guard and continuation cap
+        // Stall guard, stutter guard, and continuation cap
         assertFalse(
             PaiosModelHelper.shouldContinuePartialResponse(
                 finishReason = "1",
                 partialText = "Partial answer",
                 continuationCount = 1,
                 lastRoundAddedChars = 0,
+                isNanoV4 = false
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = "Partial answer and... that and... that and... that",
+                continuationCount = 1,
+                lastRoundAddedChars = 18,
                 isNanoV4 = false
             )
         )
@@ -294,9 +303,40 @@ class PaiosModelHelperTest {
         )
         assertFalse(sys.lines().first { it.startsWith("Persona:") }.endsWith("..."))
         assertFalse(sys.lines().first { it.startsWith("Question:") }.endsWith("...\""))
-        assertTrue(sys.contains(exactEnd))
+        assertTrue(sys.contains("and I prioritize"))
+        assertFalse(sys.contains(exactEnd))
         assertTrue(sys.length < 1300)
         assertFalse(sys.contains("word0 "))
+    }
+
+    @Test
+    fun buildOverlayContinuationPrompt_backsOffMidWordTailWithin28CharsAndPreservesPunctuationEnd() {
+        val midWordSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "Who is Eliezer Yudkowsky?",
+            partialText = "The author is Eliezer Yud"
+        )
+        val midWordSys = midWordSpec.instructions!!
+        assertTrue(midWordSys.contains("Partial answer tail:\nThe author is Eliezer\nContinue seamlessly"))
+        assertFalse(midWordSys.substringAfter("Partial answer tail:\n").contains("Eliezer Yud"))
+
+        val punctSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "Tell me more",
+            partialText = "The author is older,"
+        )
+        assertTrue(punctSpec.instructions!!.contains("Partial answer tail:\nThe author is older,\n"))
+
+        val spaceSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "Tell me more",
+            partialText = "The author is Eliezer "
+        )
+        assertTrue(spaceSpec.instructions!!.contains("Partial answer tail:\nThe author is Eliezer \n"))
+
+        val longWord = "Supercalifragilisticexpialidocious"
+        val longWordSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "Spell it",
+            partialText = "Word: $longWord"
+        )
+        assertTrue(longWordSpec.instructions!!.contains("Word: $longWord"))
     }
 
     @Test
@@ -317,8 +357,13 @@ class PaiosModelHelperTest {
     fun stripLeadingContinuationEllipsis_removesEllipsesAndPreservesNormalText() {
         assertEquals("", PaiosModelHelper.stripLeadingContinuationEllipsis(""))
         assertEquals("", PaiosModelHelper.stripLeadingContinuationEllipsis("..."))
+        assertEquals("", PaiosModelHelper.stripLeadingContinuationEllipsis(".."))
+        assertEquals("", PaiosModelHelper.stripLeadingContinuationEllipsis(". . ."))
         assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis("...presented"))
         assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis("... presented"))
+        assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis(".. presented"))
+        assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis(". . . presented"))
+        assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis(". . presented"))
         assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis("…presented"))
         assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis("  …  presented"))
         assertEquals("presented", PaiosModelHelper.stripLeadingContinuationEllipsis(".... presented"))
@@ -357,6 +402,22 @@ class PaiosModelHelperTest {
             PaiosModelHelper.stitchOverlayContinuation("often ", "...presented")
         )
         assertEquals(
+            "often presented",
+            PaiosModelHelper.stitchOverlayContinuation("often...", "presented")
+        )
+        assertEquals(
+            "often presented",
+            PaiosModelHelper.stitchOverlayContinuation("often…", "...presented")
+        )
+        assertEquals(
+            "often presented",
+            PaiosModelHelper.stitchOverlayContinuation("often..", ". . . presented")
+        )
+        assertEquals(
+            "Wait what?",
+            PaiosModelHelper.stitchOverlayContinuation("Wait...", "Wait... what?")
+        )
+        assertEquals(
             "I prioritize your privacy.",
             PaiosModelHelper.stitchOverlayContinuation("I prioritize your privacy", "...your privacy.")
         )
@@ -368,6 +429,76 @@ class PaiosModelHelperTest {
             "```dart\nprint('hi');\n```",
             PaiosModelHelper.stitchOverlayContinuation("```dart\nprint('hi');", "```dart\n```")
         )
+    }
+
+    @Test
+    fun stitchOverlayContinuation_deduplicatesLongWeatherClausesAndMidWordSubwords() {
+        val weatherPrefix = "The forecast for November 16th is -0.5°C to "
+        assertEquals(
+            "The forecast for November 16th is -0.5°C to 4.5°C with light wind.",
+            PaiosModelHelper.stitchOverlayContinuation(
+                weatherPrefix,
+                "${weatherPrefix}4.5°C with light wind."
+            )
+        )
+        assertEquals(
+            weatherPrefix,
+            PaiosModelHelper.stitchOverlayContinuation(weatherPrefix, weatherPrefix.trimEnd())
+        )
+
+        val longRepeatedClause = "Today in Kyiv, expect mostly cloudy skies with temperatures ranging from -0.5°C overnight up to "
+        assertTrue(longRepeatedClause.length > 80)
+        assertEquals(
+            "${longRepeatedClause}3.2°C in the afternoon.",
+            PaiosModelHelper.stitchOverlayContinuation(
+                "Weather report: $longRepeatedClause",
+                "${longRepeatedClause}3.2°C in the afternoon."
+            ).removePrefix("Weather report: ")
+        )
+
+        // Mid-word subword completion without inserting space
+        assertEquals(
+            "Eliezer Yudkowsky is a decision theorist.",
+            PaiosModelHelper.stitchOverlayContinuation(
+                "Eliezer Yud",
+                "Yudkowsky is a decision theorist."
+            )
+        )
+        assertEquals(
+            "...Yudkowsky...",
+            PaiosModelHelper.stitchOverlayContinuation("...Yud", "Yudkowsky...")
+        )
+
+        // Single-letter accidental overlap must not over-strip
+        assertEquals(
+            "I saw a apple",
+            PaiosModelHelper.stitchOverlayContinuation("I saw a", "apple")
+        )
+    }
+
+    @Test
+    fun hasContinuationStutter_detectsRepeatedClausesAndIgnoresNormalText() {
+        assertTrue(
+            PaiosModelHelper.hasContinuationStutter(
+                "The outlook is cold and... that and... that and... that"
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.hasContinuationStutter(
+                "Forecast summary: expect light snow tomorrow, expect light snow tomorrow, expect light snow tomorrow"
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.hasContinuationStutter(
+                "The forecast for November 16th is -0.5°C to 4.5°C with partly cloudy skies."
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.hasContinuationStutter(
+                "Section divider:\n------------------------------------\nEnd of report."
+            )
+        )
+        assertFalse(PaiosModelHelper.hasContinuationStutter("Short text"))
     }
 
     @Test

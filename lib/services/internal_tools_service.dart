@@ -56,6 +56,7 @@ class InternalToolsService {
   static const String userAgent = 'PAIOS/1.7 (https://github.com/Puzzaks/PAIOS)';
   static const Duration defaultTimeout = Duration(seconds: 6);
   static const Duration onlineCheckTimeout = Duration(seconds: 2);
+  static const Duration defaultReaderAgentTimeout = Duration(seconds: 25);
 
   static const String moduleDocs = 'paios.docs';
   static const String moduleDevice = 'paios.device';
@@ -284,13 +285,21 @@ class InternalToolsService {
   final HttpClientFactory _httpClientFactory;
   final OnlineCheckFn? _onlineCheckFn;
   final Duration timeout;
+  final Duration readerAgentTimeout;
+  final bool Function(String moduleId)? _isModuleEnabled;
 
   InternalToolsService({
     HttpClientFactory? httpClientFactory,
     OnlineCheckFn? onlineCheckFn,
     this.timeout = defaultTimeout,
+    this.readerAgentTimeout = defaultReaderAgentTimeout,
+    bool Function(String moduleId)? isModuleEnabled,
   })  : _httpClientFactory = httpClientFactory ?? (() => HttpClient()),
-        _onlineCheckFn = onlineCheckFn;
+        _onlineCheckFn = onlineCheckFn,
+        _isModuleEnabled = isModuleEnabled;
+
+  bool isModuleEnabled(String moduleId) =>
+      _isModuleEnabled?.call(moduleId) ?? true;
 
   static Map<String, dynamic> offlineErrorMap() => const {
         'error': 'device_offline',
@@ -298,7 +307,8 @@ class InternalToolsService {
             'Device is offline; cannot reach online lookup service right now.',
       };
 
-  /// Non-ICMP reachability check (DNS lookup with TCP 1.1.1.1:53 fallback).
+  /// Non-ICMP reachability check racing DNS lookup and TCP 1.1.1.1:53 in
+  /// parallel, returning on first success or bounded by [onlineCheckTimeout].
   Future<bool> checkOnline() async {
     final onlineFn = _onlineCheckFn;
     if (onlineFn != null) {
@@ -308,27 +318,48 @@ class InternalToolsService {
         return false;
       }
     }
-    try {
-      final addresses = await InternetAddress.lookup('dns.google')
-          .timeout(onlineCheckTimeout);
-      if (addresses.isNotEmpty) {
-        return true;
-      }
-    } catch (_) {}
 
-    Socket? socket;
+    final completer = Completer<bool>();
+    int remaining = 2;
+    Socket? tcpSocket;
+
+    void finishSuccess() {
+      if (!completer.isCompleted) {
+        completer.complete(true);
+      }
+    }
+
+    void finishFailure() {
+      remaining--;
+      if (remaining <= 0 && !completer.isCompleted) {
+        completer.complete(false);
+      }
+    }
+
+    InternetAddress.lookup('dns.google').timeout(onlineCheckTimeout).then((addrs) {
+      if (addrs.isNotEmpty) {
+        finishSuccess();
+      } else {
+        finishFailure();
+      }
+    }).catchError((_) => finishFailure());
+
+    Socket.connect('1.1.1.1', 53, timeout: onlineCheckTimeout).then((sock) {
+      tcpSocket = sock;
+      try {
+        sock.destroy();
+      } catch (_) {}
+      finishSuccess();
+    }).catchError((_) => finishFailure());
+
     try {
-      socket = await Socket.connect(
-        '1.1.1.1',
-        53,
-        timeout: onlineCheckTimeout,
+      return await completer.future.timeout(
+        onlineCheckTimeout,
+        onTimeout: () => false,
       );
-      return true;
-    } catch (_) {
-      return false;
     } finally {
       try {
-        socket?.destroy();
+        tcpSocket?.destroy();
       } catch (_) {}
     }
   }
@@ -708,7 +739,9 @@ class InternalToolsService {
 
       if (readerAgent != null && rankedText.length > 500) {
         try {
-          final condensed = (await readerAgent(rankedText, trimmedQuestion)).trim();
+          final condensed = (await readerAgent(rankedText, trimmedQuestion)
+                  .timeout(readerAgentTimeout))
+              .trim();
           if (condensed.isNotEmpty) {
             return {
               'found': true,
@@ -720,7 +753,7 @@ class InternalToolsService {
             };
           }
         } catch (_) {
-          // Fall back cleanly to the ranked excerpt if the reader agent fails.
+          // Fall back cleanly to the ranked excerpt if the reader agent times out or fails.
         }
       }
 
@@ -748,7 +781,10 @@ class InternalToolsService {
   }
 
   /// Queries DuckDuckGo Instant Answer API and returns compact JSON (~900 chars max).
-  Future<Map<String, dynamic>> duckDuckGoSearch(String query) async {
+  Future<Map<String, dynamic>> duckDuckGoSearch(
+    String query, {
+    bool? wikipediaEnabled,
+  }) async {
     final trimmedQuery = query.trim();
     if (trimmedQuery.isEmpty) {
       return {
@@ -820,11 +856,13 @@ class InternalToolsService {
           answer.isEmpty &&
           definition.isEmpty &&
           related.isEmpty) {
+        final canSuggestWiki = wikipediaEnabled ?? isModuleEnabled(moduleWikipedia);
         return {
           'found': false,
           'query': trimmedQuery,
-          'message':
-              'No instant answer found; try wikipedia_summary or rephrase query.',
+          'message': canSuggestWiki
+              ? 'No instant answer found; try wikipedia_summary or rephrase query.'
+              : 'No instant answer found; try rephrasing your query.',
         };
       }
 
@@ -1085,29 +1123,93 @@ class InternalToolsService {
     }
   }
 
+  /// Normalizes common small-model argument aliases (e.g. `q`/`topic`/`title`/`subject`
+  /// -> `query`) and fills missing `wikipedia_details` `question` from [fallbackQuestion].
+  static Map<String, dynamic> normalizeToolArgs(
+    String toolName,
+    Map<String, dynamic> rawArgs, {
+    String? fallbackQuestion,
+  }) {
+    final args = Map<String, dynamic>.from(rawArgs);
+    String firstNonEmpty(List<String> keys) {
+      for (final k in keys) {
+        final v = args[k]?.toString().trim() ?? '';
+        if (v.isNotEmpty) return v;
+      }
+      return '';
+    }
+
+    switch (toolName.trim()) {
+      case 'wikipedia_summary':
+      case 'wikipedia_details':
+      case 'duckduckgo_search':
+        if ((args['query']?.toString().trim() ?? '').isEmpty) {
+          final alias = firstNonEmpty(
+            const ['q', 'topic', 'title', 'subject', 'search', 'term', 'name'],
+          );
+          if (alias.isNotEmpty) {
+            args['query'] = alias;
+          }
+        }
+        if (toolName.trim() == 'wikipedia_details' &&
+            (args['question']?.toString().trim() ?? '').isEmpty) {
+          final qAlias = firstNonEmpty(const ['ask', 'detail', 'prompt']);
+          if (qAlias.isNotEmpty) {
+            args['question'] = qAlias;
+          } else if (fallbackQuestion != null &&
+              fallbackQuestion.trim().isNotEmpty) {
+            args['question'] = fallbackQuestion.trim();
+          }
+        }
+        break;
+      case 'weather_forecast':
+        if ((args['location']?.toString().trim() ?? '').isEmpty) {
+          final locAlias = firstNonEmpty(const ['city', 'place', 'query', 'q']);
+          if (locAlias.isNotEmpty) {
+            args['location'] = locAlias;
+          }
+        }
+        break;
+    }
+    return args;
+  }
+
   /// Dispatches an online internal tool by name.
   Future<Map<String, dynamic>> executeOnlineTool(
     String toolName,
     Map<String, dynamic> args, {
     ReaderAgentFn? readerAgent,
+    String? fallbackQuestion,
   }) {
-    switch (toolName.trim()) {
+    final normalizedName = toolName.trim();
+    final normArgs = normalizeToolArgs(
+      normalizedName,
+      args,
+      fallbackQuestion: fallbackQuestion,
+    );
+    switch (normalizedName) {
       case 'wikipedia_summary':
         return wikipediaSummary(
-          args['query']?.toString() ?? '',
-          lang: args['lang']?.toString() ?? 'en',
+          normArgs['query']?.toString() ?? '',
+          lang: normArgs['lang']?.toString() ?? 'en',
         );
       case 'wikipedia_details':
+        final query = normArgs['query']?.toString().trim() ?? '';
+        final question = normArgs['question']?.toString().trim() ?? '';
+        final lang = normArgs['lang']?.toString() ?? 'en';
+        if (query.isNotEmpty && question.isEmpty) {
+          return wikipediaSummary(query, lang: lang);
+        }
         return wikipediaDetails(
-          args['query']?.toString() ?? '',
-          args['question']?.toString() ?? '',
-          lang: args['lang']?.toString() ?? 'en',
+          query,
+          question,
+          lang: lang,
           readerAgent: readerAgent,
         );
       case 'duckduckgo_search':
-        return duckDuckGoSearch(args['query']?.toString() ?? '');
+        return duckDuckGoSearch(normArgs['query']?.toString() ?? '');
       case 'weather_forecast':
-        return weatherForecast(args['location']?.toString() ?? '');
+        return weatherForecast(normArgs['location']?.toString() ?? '');
       default:
         return Future.value({
           'found': false,

@@ -210,7 +210,7 @@ class Prompt{
           '\nWhen calling a tool, respond with ONLY a JSON object using double quotes:'
           '\n{"tool": "<tool>", "app": "<app>", "args": {}}'
           '\nIf a tool takes no parameters, set "args": {} (never leave "args": empty).'
-          '\nAlways fill ALL required arguments in "args" (e.g. for wikipedia_details always include non-empty "query" and "question"). Never call wikipedia_details with empty "args": {}.'
+          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required). Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.'
           "\n\nTools:";
       for (final tool in tools) {
         final appStr = tool.app != null ? ' (app: "${tool.app}")' : '';
@@ -233,6 +233,39 @@ class Prompt{
     }
 
     return output;
+  }
+
+  static final RegExp _trailingWordCharRegex = RegExp(
+    r'[\p{L}\p{N}]$',
+    unicode: true,
+  );
+
+  /// If [text] ends inside a letter/digit sequence (no trailing whitespace or
+  /// punctuation) and whitespace appears within [maxTrimChars] from the end,
+  /// returns `(completeTail, partialToken)` where `completeTail` ends right
+  /// after that whitespace and `partialToken` is the trailing token.
+  static ({String completeTail, String partialToken})? splitTrailingPartialWord(
+    String text, {
+    int maxTrimChars = 28,
+  }) {
+    if (text.isEmpty || !_trailingWordCharRegex.hasMatch(text)) {
+      return null;
+    }
+    final minIndex = text.length > maxTrimChars ? text.length - maxTrimChars : 0;
+    for (int i = text.length - 1; i >= minIndex; i--) {
+      final ch = text[i];
+      if (ch == ' ' || ch == '\t' || ch == '\n') {
+        final splitPos = i + 1;
+        if (splitPos < text.length && i > 0) {
+          return (
+            completeTail: text.substring(0, splitPos),
+            partialToken: text.substring(splitPos),
+          );
+        }
+        return null;
+      }
+    }
+    return null;
   }
 
   /// Builds a compact system prompt for silent continuation of a truncated response.
@@ -281,6 +314,8 @@ class Prompt{
         (trimmedPartial.contains('"tool"') &&
             (trimmedPartial.contains('"args"') ||
                 trimmedPartial.contains('"action"')));
+    final partialSplit =
+        isJsonDraft ? null : splitTrailingPartialWord(boundedTail);
 
     final buffer = StringBuffer("## [CONTINUATION]\n");
     if (boundedPersona.isNotEmpty) {
@@ -300,12 +335,24 @@ class Prompt{
     buffer.writeln("Partial answer tail:");
     buffer.writeln(boundedTail);
     buffer.write("Continue seamlessly from the exact end without repeating.");
-    buffer.write(
-      " Do NOT prepend an ellipsis (...) or repeat words. Complete the trailing thought concisely without starting unrelated new sections.",
-    );
     if (isJsonDraft) {
       buffer.write(
+        " Do NOT prepend an ellipsis (...) or repeat words. Complete the trailing thought concisely without starting unrelated new sections.",
+      );
+      buffer.write(
         " This is an incomplete JSON tool call: output ONLY the remaining valid JSON characters (and closing ``` if opened), with NO prose.",
+      );
+    } else if (partialSplit != null) {
+      final completeTailCue = boundTailAtBoundary(
+        partialSplit.completeTail,
+        maxChars: 36,
+      );
+      buffer.write(
+        ' No "..." or repeats. If "${partialSplit.partialToken}" was cut off, rewrite the full word after "$completeTailCue" cleanly.',
+      );
+    } else {
+      buffer.write(
+        " Do NOT prepend an ellipsis (...) or repeat words. Complete the trailing thought concisely without starting unrelated new sections.",
       );
     }
     return buffer.toString();

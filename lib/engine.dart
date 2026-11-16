@@ -222,7 +222,8 @@ class AIEngine with md.ChangeNotifier {
   static const MethodChannel _localAiChannel = MethodChannel('flutter_local_ai');
   final toolRegistry = M3xToolRegistry();
   final docService = DocService.instance;
-  final InternalToolsService internalToolsService = InternalToolsService();
+  late final InternalToolsService internalToolsService =
+      InternalToolsService(isModuleEnabled: isExtensionEnabled);
   static const MethodChannel _meshHostChannel =
       MethodChannel('page.puzzak.paios/mesh');
   late final meshClient = M3xMeshClient(
@@ -299,6 +300,7 @@ class AIEngine with md.ChangeNotifier {
   int _streamGenerationId = 0;   // invalidates stale onDone/onError callbacks across streams
   bool _activeToolHandling = false;
   bool _forcedFinalSynthesis = false;
+  bool _toolFreeFallbackUsed = false;
   bool _lastToolFailed = false;
   bool _lastToolErrorIsInfra = false;
   String _lastToolErrorText = "";
@@ -311,11 +313,6 @@ class AIEngine with md.ChangeNotifier {
   // Cumulative generation stats across all continuation rounds (exposed to UI)
   int cumulativeGenerationMs = 0;
   int cumulativeTokenCount = 0;
-  // Join-stitching state — resolved once per continuation round on first chunk
-  bool _firstContinuationChunk = true;
-  String _continuationJoinPrefix = "";  // space or newline to insert at join point
-  bool _continuationLowerFirst = false; // lowercase the first char of continuation
-  String _continuationStripPattern = ""; // regex to strip from start of cont text (e.g. duplicate code fence)
 
   final Stopwatch _generationStopwatch = Stopwatch();
   bool _isCurrentSessionMultimodal = false;
@@ -1356,6 +1353,7 @@ class AIEngine with md.ChangeNotifier {
   }
 
   scrollChatlog(Duration speed) {
+    if (!scroller.hasClients) return;
     scroller.animateTo(
       scroller.position.maxScrollExtent,
       duration: speed,
@@ -1484,6 +1482,7 @@ class AIEngine with md.ChangeNotifier {
             handler: (args) => internalToolsService.executeOnlineTool(
               spec.name,
               args,
+              fallbackQuestion: lastPrompt,
               readerAgent: spec.name == 'wikipedia_details'
                   ? (text, question) => gemini.generateInternalInference(
                         prompt: 'Question: $question\n\nWikipedia excerpt:\n$text',
@@ -2289,11 +2288,13 @@ class AIEngine with md.ChangeNotifier {
     if (chat != null && (chat["name"] == null || chat["name"] == "" || chat["name"] == "Still loading")) {
       unawaited(() async {
         try {
+          if (_disposed) return;
           String composeConversation = "";
           for (var line in chatData.context) {
             composeConversation = "$composeConversation\n - ${line["message"]}";
           }
           final title = await generateChatTitle(composeConversation);
+          if (_disposed) return;
           if (title.isNotEmpty && title != "Still loading" && chatData.chats.containsKey(currentChatId)) {
             chatData.chats[currentChatId]!["name"] = title;
             await chatData.saveChats();
@@ -2526,14 +2527,22 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
+  void _resetTurnLifecycleFlags() {
+    isLoading = false;
+    isGenerating = false;
+    isContinuing = false;
+    _isSynthesizing = false;
+    _activeToolHandling = false;
+    _forcedFinalSynthesis = false;
+  }
+
   /// Sets the error state
   void analyzeError(String action, dynamic e) {
     isAvailable = false;
     isError = true;
     isInitialized = false;
     isInitializing = false;
-    isLoading = false;
-    isGenerating = false;
+    _resetTurnLifecycleFlags();
     status = "Error during $action: ${e.toString()}";
     notifyListeners();
   }
@@ -2663,11 +2672,36 @@ class AIEngine with md.ChangeNotifier {
 
   /// Cancels any ongoing generation
   Future<void> cancelGeneration() async {
-    final wasLoading = isLoading;
-    _aiSubscription?.cancel();
+    final wasLoading = isLoading ||
+        isGenerating ||
+        isContinuing ||
+        _isSynthesizing ||
+        _activeToolHandling;
+    _streamGenerationId++;
+    final sub = _aiSubscription;
+    _aiSubscription = null;
+    unawaited(sub?.cancel());
     _clearTurnVisualMemory();
-    isLoading = false;
+    _resetTurnLifecycleFlags();
+    _toolFreeFallbackUsed = false;
+    _combinedResponse = "";
+    _currentSynthesisPrompt = "";
+    _currentUserPromptForSynthesis = "";
+    _lastFinishReason = "";
+    _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    _toolTurnCount = 0;
+    _lastToolCallSignature = "";
+    _recoverableErrorRetries = 0;
+    _lastToolFailed = false;
+    _lastToolErrorIsInfra = false;
+    _lastToolErrorText = "";
+    _lastToolResultPayload = "";
+    _lastToolCall = null;
     currentThoughtChunk = "";
+    responseText = "";
+    lastPrompt = "";
+    chatData.lastImagePath = null;
     streamingMessageTime = null;
     streamingUserMessageTime = null;
     status = "Generation cancelled";
@@ -2696,12 +2730,19 @@ class AIEngine with md.ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (isLoading) return; // Don't run if already generating
+    if (isLoading ||
+        isGenerating ||
+        isContinuing ||
+        _isSynthesizing ||
+        _activeToolHandling) {
+      return; // Don't run if already generating
+    }
 
     if (isAiCoreKnownUnavailable) {
-      await _aiSubscription?.cancel();
-      isLoading = false;
-      isGenerating = false;
+      final oldSub = _aiSubscription;
+      _aiSubscription = null;
+      await oldSub?.cancel();
+      _resetTurnLifecycleFlags();
       isError = true;
       status = _unavailableStatusMessage();
       if (!_unavailableToastShown) {
@@ -2712,16 +2753,50 @@ class AIEngine with md.ChangeNotifier {
       return;
     }
 
-    // Cancel any old streams
-    await _aiSubscription?.cancel();
+    // Allocate generation ID and lock active flags BEFORE the first await so
+    // rapid double-taps or cancelGeneration() during saveChatImage/initEngine
+    // cannot double-enter or resurrect a cancelled turn.
+    final int myGenId = ++_streamGenerationId;
+    _resetTurnLifecycleFlags();
+    isLoading = true;
+    isGenerating = true;
+    isError = false;
+    _toolFreeFallbackUsed = false;
+    _toolTurnCount = 0;
+    _lastToolCallSignature = "";
+    _lastToolFailed = false;
+    _lastToolErrorIsInfra = false;
+    _lastToolErrorText = "";
+    _lastToolResultPayload = "";
+    _lastToolCall = null;
+    _recoverableErrorRetries = 0;
+    responseText = "";
+    currentThoughtChunk = "";
+    _lastFinishReason = ""; // reset for new generation
+    _combinedResponse = ""; // reset accumulator
+    _currentSynthesisPrompt = "";
+    _currentUserPromptForSynthesis = "";
+    _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    cumulativeGenerationMs = 0;
+    cumulativeTokenCount = 0;
     streamingUserMessageTime = DateTime.now();
     streamingMessageTime = DateTime.now();
+    status = "Sending prompt...";
+    notifyListeners();
+
+    // Cancel any old streams
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     // Capture and persist any attached image before initializing/starting stream
     final Uint8List? attachedImageBytes = pendingImageBytes;
     String? savedImagePath;
     if (attachedImageBytes != null) {
       savedImagePath = await chatData.saveChatImage(attachedImageBytes);
+      if (myGenId != _streamGenerationId || _disposed) return;
       chatData.lastImagePath = savedImagePath;
       pendingImageBytes = null;
       pendingImageName = null;
@@ -2740,10 +2815,10 @@ class AIEngine with md.ChangeNotifier {
     if (!isInitializing) {
       await initEngine(hasAttachedImage: hasAttachedImage);
     }
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     if (isError || (!isInitializing && !isInitialized) || isAiCoreKnownUnavailable) {
-      isLoading = false;
-      isGenerating = false;
+      _resetTurnLifecycleFlags();
       isError = true;
       streamingMessageTime = null;
       streamingUserMessageTime = null;
@@ -2752,6 +2827,7 @@ class AIEngine with md.ChangeNotifier {
         if (!_unavailableToastShown) {
           _unavailableToastShown = true;
           await _showToast(_unavailableToastText());
+          if (myGenId != _streamGenerationId || _disposed) return;
         }
       } else if (status.isEmpty) {
         status = "Failed to initialize Gemini Nano.";
@@ -2765,35 +2841,8 @@ class AIEngine with md.ChangeNotifier {
     _generationStopwatch.start();
     _isCurrentSessionMultimodal = attachedImageBytes != null || hasAttachedImage;
 
-    _toolTurnCount = 0;
-    _lastToolCallSignature = "";
-    _forcedFinalSynthesis = false;
-    _activeToolHandling = false;
-    _lastToolFailed = false;
-    _lastToolErrorIsInfra = false;
-    _lastToolErrorText = "";
-    _lastToolResultPayload = "";
-    _lastToolCall = null;
-    _recoverableErrorRetries = 0;
-    final int myGenId = ++_streamGenerationId;
     bool receivedTerminalEvent = false;
-
-    isLoading = true;
-    isGenerating = true;
-    isError = false;
-    responseText = "";
-    currentThoughtChunk = "";
-    _lastFinishReason = ""; // reset for new generation
-    _combinedResponse = ""; // reset accumulator
-    isContinuing = false;
-    _isSynthesizing = false;
-    _continuationCount = 0;
-    _nullReasonContinuationCount = 0;
-    cumulativeGenerationMs = 0;
-    cumulativeTokenCount = 0;
     streamingMessageTime = DateTime.now();
-    status = "Sending prompt...";
-    notifyListeners();
 
     double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
@@ -2820,13 +2869,14 @@ class AIEngine with md.ChangeNotifier {
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             isLoading = true;
             responseText = "";
             status = dict.value("waiting_for_AI");
             await log("model", "info", "Waiting for model to initialize", sendRemote: false);
+            if (myGenId != _streamGenerationId || _disposed) return;
             notifyListeners();
             break;
 
@@ -2876,6 +2926,7 @@ class AIEngine with md.ChangeNotifier {
                   );
                   break;
               }
+              if (myGenId != _streamGenerationId || _disposed) return;
             }
             status = "Streaming response...";
             _appendThoughtChunk(event.thought);
@@ -2886,12 +2937,14 @@ class AIEngine with md.ChangeNotifier {
             try {
               scrollChatlog(Duration(milliseconds: 250));
               await Future.delayed(Duration(milliseconds: 500));
+              if (myGenId != _streamGenerationId || _disposed) return;
               scrollChatlog(Duration(milliseconds: 250));
             } catch (e) {
               if (kDebugMode) {
                 print("Can't scroll: $e");
               }
               await Future.delayed(Duration(milliseconds: 500));
+              if (myGenId != _streamGenerationId || _disposed) return;
             }
             break;
 
@@ -2922,12 +2975,12 @@ class AIEngine with md.ChangeNotifier {
               "Generation done. finishReason=$doneReason (nanoV4=$isNanoV4Active, chars=${responseText.length})",
               sendRemote: false,
             );
+            if (myGenId != _streamGenerationId || _disposed) return;
             // ─────────────────────────────────────────────────────────────────
             if (responseText == "") {
               if (errorRetry) {
                 if (event.response?.text == null) {
-                  isLoading = false;
-                  isGenerating = false;
+                  _resetTurnLifecycleFlags();
                   streamingMessageTime = null;
                   streamingUserMessageTime = null;
                   await _showToast("Unable to generate response.");
@@ -2942,12 +2995,14 @@ class AIEngine with md.ChangeNotifier {
                     isMultimodal: _isCurrentSessionMultimodal,
                   );
                 } else {
+                  _resetTurnLifecycleFlags();
                   await Future.delayed(Duration(milliseconds: 500));
-                  generateStream();
+                  if (myGenId != _streamGenerationId || _disposed) return;
+                  unawaited(generateStream());
+                  return;
                 }
               } else {
-                isLoading = false;
-                isGenerating = false;
+                _resetTurnLifecycleFlags();
                 isError = true;
                 streamingMessageTime = null;
                 streamingUserMessageTime = null;
@@ -2974,6 +3029,7 @@ class AIEngine with md.ChangeNotifier {
                     "info",
                     "Stripped accidental trailing tool JSON after greeting prose.",
                   );
+                  if (myGenId != _streamGenerationId || _disposed) return;
                   responseText = stripped;
                   _combinedResponse = stripped;
                 }
@@ -3010,17 +3066,26 @@ class AIEngine with md.ChangeNotifier {
                   "Response interrupted (reason=$doneReason, nanoV4=$isNanoV4Active), triggering continuation #$_continuationCount",
                   sendRemote: false,
                 );
+                if (myGenId != _streamGenerationId || _disposed) return;
                 if (kDebugMode) print("[AUTO-CONTINUE #$_continuationCount] reason=$doneReason");
                 await continueGenerating();
               } else {
-                if (M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
+                final bool invalidTurn1Tool =
+                    M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                        _looksLikeInvalidToolJson(responseText);
+                if (invalidTurn1Tool) {
+                  if (!_toolFreeFallbackUsed &&
+                      !_lastToolFailed &&
+                      _lastToolResultPayload.isEmpty &&
+                      !_isSynthesizing) {
+                    await _triggerToolFreeFallbackAnswer(effectiveUserPrompt);
+                    break;
+                  }
                   await log("mesh", "error", "Discarding incomplete tool call after continuation limit: $responseText");
                   responseText = _buildIncompleteToolFallback();
                 }
                 // Natural stop or cap reached — commit
-                isContinuing = false;
-                isLoading = false;
-                isGenerating = false;
+                _resetTurnLifecycleFlags();
                 status = "Done";
                 await addToContext();
                 prompt.clear();
@@ -3052,12 +3117,14 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.error:
             receivedTerminalEvent = true;
             if (errorRetry) {
+              _resetTurnLifecycleFlags();
               await Future.delayed(Duration(milliseconds: 500));
-              generateStream();
+              if (myGenId != _streamGenerationId || _disposed) return;
+              unawaited(generateStream());
+              return;
             } else {
               _clearTurnVisualMemory();
-              isLoading = false;
-              isGenerating = false;
+              _resetTurnLifecycleFlags();
               isError = true;
               streamingMessageTime = null;
               streamingUserMessageTime = null;
@@ -3081,12 +3148,14 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isGenerating = false;
+        _resetTurnLifecycleFlags();
         if (errorRetry) {
           await Future.delayed(Duration(milliseconds: 500));
-          generateStream();
+          if (myGenId != _streamGenerationId || _disposed) return;
+          unawaited(generateStream());
+          return;
         } else {
           currentThoughtChunk = "";
           streamingMessageTime = null;
@@ -3105,24 +3174,7 @@ class AIEngine with md.ChangeNotifier {
           );
         }
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        // Final state update when stream closes unexpectedly without terminal event
-        isLoading = false;
-        isGenerating = false;
-        streamingMessageTime = null;
-        streamingUserMessageTime = null;
-        if (!isError) {
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
   }
 
@@ -3131,13 +3183,251 @@ class AIEngine with md.ChangeNotifier {
     return RegExp(r'```').allMatches(text).length % 2 == 1;
   }
 
-  static final RegExp _leadingEllipsisPattern = RegExp(r'^\s*(?:\.{3,}|…+)\s*');
+  static final RegExp _leadingEllipsisPattern =
+      RegExp(r'^\s*(?:\.{2,}|…+|\.\s*\.\s*\.)\s*');
+  static final RegExp _trailingEllipsisPattern =
+      RegExp(r'(?:\.{3,}|…+)\s*$');
+  static final RegExp _wordCharRegex = RegExp(r'[\p{L}\p{N}]', unicode: true);
+  static final RegExp _joinBoundaryCharRegex =
+      RegExp(r'[\s,.;:!?\(\)\[\]{}"“”' "'" r'’\-—/…]');
 
   /// Strips leading continuation ellipses (`...` / `…`) and trailing whitespace
   /// after them before evaluating joins or appending continuation chunks.
   static String stripLeadingEllipsis(String chunk) {
     if (chunk.isEmpty) return chunk;
     return chunk.replaceFirst(_leadingEllipsisPattern, '');
+  }
+
+  static bool _isValidSuffixPrefixOverlap(
+    String existing,
+    String incoming,
+    int len,
+  ) {
+    if (len <= 0) return false;
+    if (len >= 8) return true;
+    final startIdx = existing.length - len;
+    final startsAtBoundary =
+        startIdx == 0 || _joinBoundaryCharRegex.hasMatch(existing[startIdx - 1]);
+    if (!startsAtBoundary) return false;
+
+    final endsAtBoundary = len == incoming.length ||
+        _joinBoundaryCharRegex.hasMatch(incoming[len]) ||
+        _joinBoundaryCharRegex.hasMatch(incoming[len - 1]);
+    if (endsAtBoundary) return true;
+
+    // Mid-word cutoff completion: e.g. existing ends with "Yud" (len >= 3) and
+    // incoming starts with "Yudkowsky" so "Yud" + "kowsky" => "Yudkowsky".
+    final isMidWordCompletion = len >= 3 &&
+        _wordCharRegex.hasMatch(existing[existing.length - 1]) &&
+        len < incoming.length &&
+        _wordCharRegex.hasMatch(incoming[len]);
+    return isMidWordCompletion;
+  }
+
+  static int _findSuffixPrefixOverlap(
+    String existing,
+    String incoming, {
+    int maxLookback = 240,
+  }) {
+    final limit = existing.length < incoming.length
+        ? existing.length
+        : incoming.length;
+    final maxLen = limit < maxLookback ? limit : maxLookback;
+    for (int len = maxLen; len >= 1; len--) {
+      final suffix = existing.substring(existing.length - len);
+      if (incoming.startsWith(suffix) &&
+          _isValidSuffixPrefixOverlap(existing, incoming, len)) {
+        return len;
+      }
+    }
+    return 0;
+  }
+
+  /// Stitches [incoming] onto [existing] across auto-continuation boundaries,
+  /// normalizing ellipses, deduplicating suffix/prefix overlaps and repeated
+  /// trailing clauses, and joining mid-word cutoffs seamlessly.
+  static String stitchContinuation(String existing, String incoming) {
+    String cleaned = stripLeadingEllipsis(incoming);
+    if (existing.isEmpty) return cleaned;
+    if (cleaned.isEmpty) return existing;
+
+    final trimmedExistingLeft = existing.trimLeft();
+    final bool isJsonOrToolDraft = trimmedExistingLeft.startsWith('{') ||
+        trimmedExistingLeft.startsWith('```json') ||
+        RegExp(r'^```(?:json)?\s*\{', caseSensitive: false)
+            .hasMatch(trimmedExistingLeft) ||
+        M3xToolCallParser.looksLikeIncompleteToolCall(existing);
+    final bool insideCodeBlock = RegExp(r'```').allMatches(existing).length % 2 == 1;
+
+    if (isJsonOrToolDraft) {
+      if (insideCodeBlock) {
+        cleaned = stripLeadingEllipsis(
+          cleaned.replaceFirst(RegExp(r'^```(?:json)?\s*', caseSensitive: false), ''),
+        );
+      }
+      if (cleaned.isEmpty) return existing;
+      final overlap = _findSuffixPrefixOverlap(existing, cleaned);
+      if (overlap >= 4) {
+        return existing + cleaned.substring(overlap);
+      }
+      return existing + cleaned;
+    }
+
+    if (insideCodeBlock) {
+      cleaned = stripLeadingEllipsis(
+        cleaned.replaceFirst(RegExp(r'^```[a-zA-Z0-9]*\n?'), ''),
+      );
+      if (cleaned.isEmpty) return existing;
+      final overlap = _findSuffixPrefixOverlap(existing, cleaned);
+      if (overlap > 0) {
+        return existing + cleaned.substring(overlap);
+      }
+      final sep = (existing.endsWith('\n') || cleaned.startsWith('\n')) ? '' : '\n';
+      return '$existing$sep$cleaned';
+    }
+
+    // Plain prose: strip trailing standalone continuation ellipsis from existing
+    final String baseExisting = existing.replaceFirst(_trailingEllipsisPattern, '');
+    if (baseExisting.isEmpty) return cleaned;
+
+    // 1. Direct suffix-prefix overlap check
+    final int directOverlap = _findSuffixPrefixOverlap(baseExisting, cleaned);
+    if (directOverlap > 0) {
+      final remainder = cleaned.substring(directOverlap);
+      if (remainder.isEmpty) return baseExisting;
+      return baseExisting + remainder;
+    }
+
+    // 2. Trailing-space-trimmed suffix-prefix overlap (e.g. "...to " + "...to\n5.0")
+    final String trimmedBase = baseExisting.trimRight();
+    if (trimmedBase.length < baseExisting.length && trimmedBase.isNotEmpty) {
+      final int trimmedOverlap = _findSuffixPrefixOverlap(trimmedBase, cleaned);
+      if (trimmedOverlap > 0) {
+        final remainder = cleaned.substring(trimmedOverlap);
+        if (remainder.isEmpty) return baseExisting;
+        if (RegExp(r'^\s').hasMatch(remainder)) {
+          return trimmedBase + remainder;
+        }
+        return baseExisting + remainder;
+      }
+    }
+
+    // 3. Repeated trailing clause / sentence rollback within last 280 chars (>= 18 chars)
+    const int minClauseMatch = 18;
+    if (cleaned.length >= minClauseMatch && baseExisting.length >= minClauseMatch) {
+      final int windowStart =
+          baseExisting.length > 280 ? baseExisting.length - 280 : 0;
+      final String probe = cleaned.substring(0, minClauseMatch);
+      int searchFrom = baseExisting.length - minClauseMatch;
+      while (searchFrom >= windowStart) {
+        final int idx = baseExisting.lastIndexOf(probe, searchFrom);
+        if (idx < windowStart) break;
+        final bool startsAtBoundary =
+            idx == 0 || _joinBoundaryCharRegex.hasMatch(baseExisting[idx - 1]);
+        if (startsAtBoundary) {
+          int matchLen = minClauseMatch;
+          final int maxMatch = (baseExisting.length - idx) < cleaned.length
+              ? (baseExisting.length - idx)
+              : cleaned.length;
+          while (matchLen < maxMatch &&
+              matchLen < 240 &&
+              baseExisting[idx + matchLen] == cleaned[matchLen]) {
+            matchLen++;
+          }
+          final String trailingTail = baseExisting.substring(idx + matchLen);
+          if (trailingTail.length <= 28 && !RegExp(r'[.!?]').hasMatch(trailingTail)) {
+            return baseExisting.substring(0, idx) + cleaned;
+          }
+          final String deduped = cleaned.substring(matchLen).trimLeft();
+          if (deduped.isEmpty) return baseExisting;
+          cleaned = deduped;
+          break;
+        }
+        searchFrom = idx - 1;
+      }
+    }
+
+    // 4. Plain prose boundary join
+    final String lastChar = baseExisting[baseExisting.length - 1];
+    final String firstChar = cleaned[0];
+    final bool endsWithBoundary =
+        lastChar == ' ' || lastChar == '\n' || lastChar == '\t';
+    final bool startsWithBoundary =
+        firstChar == ' ' || firstChar == '\n' || firstChar == '\t';
+    final bool endsWithJoiningPunct = lastChar == "'" ||
+        lastChar == '’' ||
+        lastChar == '(' ||
+        lastChar == '[' ||
+        lastChar == '{' ||
+        lastChar == '"' ||
+        lastChar == '“' ||
+        lastChar == '-' ||
+        lastChar == '—' ||
+        lastChar == '/';
+    final bool startsWithDecimal = RegExp(r'^\.\d').hasMatch(cleaned);
+    final bool startsWithPunct =
+        !startsWithDecimal && ',.;:!?)]:"\'’”%'.contains(firstChar);
+
+    if (!endsWithBoundary &&
+        !startsWithBoundary &&
+        !endsWithJoiningPunct &&
+        !startsWithPunct) {
+      return '$baseExisting $cleaned';
+    }
+    return '$baseExisting$cleaned';
+  }
+
+  /// Detects a trailing stutter/repetition loop (3+ consecutive repeats of a
+  /// >=12-char phrase or multi-word sequence like `"and...that"`) and trims
+  /// back to a single occurrence.
+  static ({String text, bool detected}) detectAndTrimStutterLoop(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.length < 24) return (text: text, detected: false);
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) {
+      return (text: text, detected: false);
+    }
+
+    final longRepeat = RegExp(
+      r'(.{12,160}?)(?:\s*\1){2,}$',
+      dotAll: true,
+    ).firstMatch(trimmed);
+    if (longRepeat != null) {
+      final unit = longRepeat.group(1)!;
+      if (RegExp(r'[\p{L}]', unicode: true).allMatches(unit).length >= 2) {
+        return (
+          text: trimmed.substring(0, longRepeat.start) + unit,
+          detected: true,
+        );
+      }
+    }
+
+    final shortWordRepeat = RegExp(
+      r'([\p{L}\p{N}]+(?:(?:\.{2,}|…|\s+|[,;:\-]+)[\p{L}\p{N}]+)+)(?:(?:\s+|[,;:\-…]+)*\1){2,}$',
+      unicode: true,
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (shortWordRepeat != null) {
+      final unit = shortWordRepeat.group(1)!;
+      if (unit.length >= 6 &&
+          RegExp(r'[\p{L}]', unicode: true).allMatches(unit).length >= 2) {
+        return (
+          text: trimmed.substring(0, shortWordRepeat.start) + unit,
+          detected: true,
+        );
+      }
+    }
+
+    return (text: text, detected: false);
+  }
+
+  bool _looksLikeInvalidToolJson(String text) {
+    if (M3xToolCallParser.looksLikeIncompleteToolCall(text)) return true;
+    final trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('```')) return false;
+    return RegExp(
+      r'''["'](?:tool|method)["']\s*:|["']action["']\s*:\s*["']tool(?:_)?call["']''',
+      caseSensitive: false,
+    ).hasMatch(trimmed);
   }
 
   static final RegExp _openMidClauseTailRegex = RegExp(r'[,;:\-—(\[\{]$');
@@ -3151,10 +3441,6 @@ class AIEngine with md.ChangeNotifier {
   );
   static final RegExp _draftEmptyArgsRegex = RegExp(
     r'''["'](?:args|arguments|params)["']\s*:\s*\{\s*\}''',
-    caseSensitive: false,
-  );
-  static final RegExp _draftDescriptionKeyRegex = RegExp(
-    r'''["']description["']\s*:''',
     caseSensitive: false,
   );
 
@@ -3186,9 +3472,6 @@ class AIEngine with md.ChangeNotifier {
 
   bool _isMalformedToolJsonDraft(String text) {
     if (!M3xToolCallParser.looksLikeIncompleteToolCall(text)) return false;
-    if (_draftDescriptionKeyRegex.hasMatch(text)) {
-      return true;
-    }
     if (_draftEmptyArgsRegex.hasMatch(text)) {
       final match = _draftToolNameRegex.firstMatch(text);
       final toolName = match?.group(1) ?? '';
@@ -3539,70 +3822,233 @@ class AIEngine with md.ChangeNotifier {
     );
   }
 
-  /// Resolves the join rules between [partial] (accumulated so far) and the
-  /// first [newContent] chunk from the continuation session. Sets the join fields
-  /// so that subsequent streaming chunks are displayed correctly.
-  void _resolveJoin(String partial, String newContent) {
-    newContent = stripLeadingEllipsis(newContent);
-    if (partial.isEmpty || newContent.isEmpty) return;
-    final String lastChar = partial[partial.length - 1];
-    final String firstChar = newContent[0];
-    final String trimmedPartial = partial.trimLeft();
-    final bool isJsonOrToolDraft = trimmedPartial.startsWith('{') ||
-        trimmedPartial.startsWith('```json') ||
-        RegExp(r'^```(?:json)?\s*\{', caseSensitive: false)
-            .hasMatch(trimmedPartial) ||
-        M3xToolCallParser.looksLikeIncompleteToolCall(partial);
+  /// Handles unexpected native stream closure without a terminal Done/Error event.
+  void _handleUnexpectedStreamClose(int myGenId, bool receivedTerminalEvent) {
+    if (myGenId != _streamGenerationId ||
+        _disposed ||
+        receivedTerminalEvent ||
+        _activeToolHandling) {
+      return;
+    }
+    _aiSubscription = null;
+    final wasSynthesizing = _isSynthesizing;
+    _resetTurnLifecycleFlags();
 
-    if (isJsonOrToolDraft) {
-      // Preserve exact JSON token boundaries — never inject whitespace or alter case.
-      _continuationJoinPrefix = '';
-      _continuationLowerFirst = false;
-      _continuationStripPattern = _isInsideCodeBlock(partial)
-          ? r'^```(?:json)?\s*'
-          : '';
+    final candidate = responseText.trim().isNotEmpty
+        ? responseText
+        : _combinedResponse;
+    final hasValidPartial = candidate.trim().isNotEmpty &&
+        !M3xToolCallParser.looksLikeIncompleteToolCall(candidate) &&
+        !_looksLikeInvalidToolJson(candidate);
+
+    if (hasValidPartial && !isError) {
+      responseText = candidate;
+      if (wasSynthesizing) {
+        unawaited(
+          _commitSynthesisMessage(
+            candidate,
+            logNote: "Tool synthesis committed after unexpected stream close",
+          ),
+        );
+        return;
+      }
+      status = "Stream complete";
+      unawaited(() async {
+        await addToContext();
+        prompt.clear();
+        unawaited(_captureVisualMemoryIfNeeded());
+        genericRefresh();
+      }());
       return;
     }
 
-    if (_isInsideCodeBlock(partial)) {
-      // We're inside an open code block — the model may have re-opened it.
-      // Ensure a newline separator and strip any duplicate ``` opening.
-      _continuationJoinPrefix = (lastChar == '\n') ? '' : '\n';
-      // Match things like: ```php\n  or  ```\n  or  ``` at start
-      _continuationStripPattern = r'^```[a-zA-Z0-9]*\n?';
-      _continuationLowerFirst = false;
-    } else {
-      // Plain prose join
-      final bool endsWithBoundary = lastChar == ' ' || lastChar == '\n' || lastChar == '\t';
-      final bool startsWithBoundary = firstChar == ' ' || firstChar == '\n' || firstChar == '\t';
-      final bool endsWithJoiningPunct = lastChar == "'" ||
-          lastChar == '’' ||
-          lastChar == '(' ||
-          lastChar == '[' ||
-          lastChar == '{' ||
-          lastChar == '"' ||
-          lastChar == '“' ||
-          lastChar == '-' ||
-          lastChar == '—' ||
-          lastChar == '/';
-      final bool startsWithPunct = ',.;:!?)]:"\'’”%'.contains(firstChar);
-      if (!endsWithBoundary &&
-          !startsWithBoundary &&
-          !endsWithJoiningPunct &&
-          !startsWithPunct) {
-        // No whitespace at join point — add a space
-        _continuationJoinPrefix = ' ';
-        // Only lowercase if the first char is a letter (not a symbol or digit)
-        final bool isLetter = RegExp(r'[A-Z]').hasMatch(firstChar);
-        _continuationLowerFirst = isLetter;
-      }
-      // If partial ends with punctuation like . ! ? the model likely started a
-      // new sentence correctly — leave capitalisation alone.
-      final bool endsWithSentence = '.!?'.contains(lastChar);
-      if (endsWithSentence) {
-        _continuationLowerFirst = false;
-      }
+    responseText = "";
+    lastPrompt = "";
+    currentThoughtChunk = "";
+    _combinedResponse = "";
+    _currentSynthesisPrompt = "";
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
+    if (!isError) {
+      status = "Stream complete";
     }
+    genericRefresh();
+  }
+
+  /// Retries Turn-1 once WITHOUT tools when Nano outputs an incomplete or invalid
+  /// tool-call draft for a conceptual/non-tool query.
+  Future<void> _triggerToolFreeFallbackAnswer(String originalUserPrompt) async {
+    _toolFreeFallbackUsed = true;
+    final int myGenId = ++_streamGenerationId;
+    bool receivedTerminalEvent = false;
+
+    _resetTurnLifecycleFlags();
+    _forcedFinalSynthesis = true;
+    isLoading = true;
+    isGenerating = true;
+    isError = false;
+    responseText = "";
+    currentThoughtChunk = "";
+    _lastFinishReason = "";
+    _combinedResponse = "";
+    _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    streamingMessageTime = DateTime.now();
+    status = "Retrying without tools...";
+    notifyListeners();
+
+    await log(
+      "mesh",
+      "warning",
+      "Tool request invalid/incomplete on turn 1; retrying without tools",
+    );
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    final String? imagePath = chatData.lastImagePath;
+    final bool hasAttachedImage =
+        imagePath != null && imagePath.trim().isNotEmpty;
+
+    await initEngine(includeTools: false, hasAttachedImage: hasAttachedImage);
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    if (isError || (!isInitializing && !isInitialized) || isAiCoreKnownUnavailable) {
+      _resetTurnLifecycleFlags();
+      responseText = _buildIncompleteToolFallback();
+      status = "Done";
+      await addToContext();
+      prompt.clear();
+      notifyListeners();
+      return;
+    }
+
+    final effectivePrompt = originalUserPrompt.trim().isNotEmpty
+        ? originalUserPrompt.trim()
+        : (lastPrompt.trim().isNotEmpty
+            ? lastPrompt.trim()
+            : "Please answer my previous question.");
+    lastPrompt = effectivePrompt;
+    final userTurnPrompt = hasAttachedImage
+        ? "[Image attached to this message]\nUser's request: $effectivePrompt"
+        : "User's request: $effectivePrompt";
+    final double runTemperature = chatData.chats.containsKey(currentChat) &&
+            chatData.chats[currentChat].containsKey("chatTemperature")
+        ? chatData.chats[currentChat]["chatTemperature"]
+        : temperature;
+
+    final stream = gemini.generateTextEvents(
+      prompt: userTurnPrompt,
+      config: GenerationConfig(
+        temperature: runTemperature,
+        enableThinking: effectiveEnableThinking,
+      ),
+      stream: true,
+      imageBytes: _turnImageBytesForMemory,
+      imagePath: imagePath,
+      downsample: config.downsampleImages,
+    );
+
+    _aiSubscription = stream.listen(
+      (AiEvent event) async {
+        if (myGenId != _streamGenerationId || _disposed) return;
+        switch (event.status) {
+          case AiEventStatus.loading:
+            isLoading = true;
+            responseText = "";
+            status = dict.value("waiting_for_AI");
+            notifyListeners();
+            break;
+
+          case AiEventStatus.streaming:
+            isLoading = true;
+            streamingMessageTime = DateTime.now();
+            status = "Streaming response...";
+            _appendThoughtChunk(event.thought);
+            final String? fr = event.response?.finishReason;
+            if (fr != null && fr != "null" && fr.isNotEmpty) {
+              _lastFinishReason = fr;
+            }
+            if (event.response != null) {
+              response = event.response!;
+              responseText = stripLeadingEllipsis(event.response!.text);
+            }
+            try {
+              scrollChatlog(const Duration(milliseconds: 250));
+            } catch (_) {}
+            break;
+
+          case AiEventStatus.done:
+            receivedTerminalEvent = true;
+            _appendThoughtChunk(event.thought);
+            final String? doneReason = _lastFinishReason.isNotEmpty
+                ? _lastFinishReason
+                : event.reason;
+
+            final bool emittedTool = M3xToolCallParser.extract(responseText) != null ||
+                M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                _looksLikeInvalidToolJson(responseText);
+            if (emittedTool || responseText.trim().isEmpty) {
+              await log(
+                "mesh",
+                "error",
+                "Tool-free fallback retry also failed or emitted tool JSON; committing fallback message.",
+              );
+              if (myGenId != _streamGenerationId || _disposed) return;
+              responseText = _buildIncompleteToolFallback();
+              _resetTurnLifecycleFlags();
+              status = "Done";
+              await addToContext();
+              prompt.clear();
+              unawaited(_captureVisualMemoryIfNeeded());
+              break;
+            }
+
+            final bool shouldContinue = _shouldContinueOnDone(doneReason, responseText);
+            if (shouldContinue) {
+              cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
+              cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
+              if (_isMissingFinishReason(doneReason)) {
+                _nullReasonContinuationCount++;
+              }
+              _continuationCount++;
+              _combinedResponse = responseText;
+              await continueGenerating();
+            } else {
+              _resetTurnLifecycleFlags();
+              status = "Done";
+              await addToContext();
+              prompt.clear();
+              unawaited(_captureVisualMemoryIfNeeded());
+            }
+            break;
+
+          case AiEventStatus.error:
+            receivedTerminalEvent = true;
+            _resetTurnLifecycleFlags();
+            responseText = _buildIncompleteToolFallback();
+            status = "Done";
+            await addToContext();
+            prompt.clear();
+            break;
+        }
+        genericRefresh();
+      },
+      onError: (e) async {
+        if (myGenId != _streamGenerationId || _disposed) return;
+        receivedTerminalEvent = true;
+        _resetTurnLifecycleFlags();
+        responseText = _buildIncompleteToolFallback();
+        status = "Done";
+        await addToContext();
+        prompt.clear();
+        genericRefresh();
+      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
+    );
   }
 
   /// Continues a generation that was cut off (finishReason 0=MAX_TOKENS or 1=OTHER/timeout).
@@ -3617,19 +4063,19 @@ class AIEngine with md.ChangeNotifier {
     isContinuing = true;
     isGenerating = true;
     _lastFinishReason = "";
-    _firstContinuationChunk = true;   // reset join state for this round
-    _continuationJoinPrefix = "";
-    _continuationLowerFirst = false;
-    _continuationStripPattern = "";
     // Show full accumulated text immediately while continuation fires up
     responseText = _combinedResponse;
     notifyListeners();
 
-    await _aiSubscription?.cancel();
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
+
     // Use the continuation-specific init: system-level [CONTINUATION] directive,
     // no user turn, so the model simply outputs more text without addressing anyone
     await _initForContinuation(_combinedResponse, isSynthesis: isSynthesis);
-    if (myGenId != _streamGenerationId) return;
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
@@ -3646,7 +4092,7 @@ class AIEngine with md.ChangeNotifier {
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             status = dict.value("waiting_for_AI");
@@ -3664,24 +4110,9 @@ class AIEngine with md.ChangeNotifier {
             }
             if (event.response != null) {
               response = event.response!;
-              String contText = stripLeadingEllipsis(event.response!.text);
-              // Resolve join rules once on the first non-empty chunk
-              if (_firstContinuationChunk && contText.isNotEmpty) {
-                _firstContinuationChunk = false;
-                _resolveJoin(_combinedResponse, contText);
-              }
-              // Strip duplicate code-fence opening if detected
-              if (_continuationStripPattern.isNotEmpty) {
-                contText = stripLeadingEllipsis(
-                  contText.replaceFirst(RegExp(_continuationStripPattern), ''),
-                );
-              }
-              // Lowercase first char if needed
-              if (_continuationLowerFirst && contText.isNotEmpty) {
-                contText = contText[0].toLowerCase() + contText.substring(1);
-              }
-              // Seamlessly prepend everything accumulated before this call
-              responseText = _combinedResponse + _continuationJoinPrefix + contText;
+              // Dynamically re-stitch cumulative response.text against _combinedResponse
+              // so multi-token overlaps are deduplicated live without freezing on token 1.
+              responseText = stitchContinuation(_combinedResponse, event.response!.text);
             }
             if (hasThought || (event.response != null && responseText != _combinedResponse)) {
               isContinuing = false;
@@ -3695,38 +4126,61 @@ class AIEngine with md.ChangeNotifier {
             final String? contDoneReason = _lastFinishReason.isNotEmpty
                 ? _lastFinishReason
                 : event.reason;
+
+            String stitched = stitchContinuation(_combinedResponse, response.text);
             if (!_isSynthesizing && _isPureGreeting(lastPrompt)) {
-              final stripped = _stripGreetingAccidentalToolBlock(responseText);
+              final stripped = _stripGreetingAccidentalToolBlock(stitched);
               if (stripped != null) {
                 await log(
                   "mesh",
                   "info",
                   "Stripped accidental trailing tool JSON after greeting prose (continuation).",
                 );
-                responseText = stripped;
+                if (myGenId != _streamGenerationId || _disposed) return;
+                stitched = stripped;
               }
             }
-            // Update the accumulator
-            _combinedResponse = responseText;
-            final int roundAddedNonWs =
-                stripLeadingEllipsis(response.text).replaceAll(RegExp(r'\s+'), '').length;
+
+            final stutterCheck = detectAndTrimStutterLoop(stitched);
+            if (stutterCheck.detected) {
+              await log(
+                "model",
+                "warning",
+                "Detected and trimmed continuation stutter loop at round #$_continuationCount.",
+                sendRemote: false,
+              );
+              if (myGenId != _streamGenerationId || _disposed) return;
+              stitched = stutterCheck.text;
+            }
+
+            final int prevNonWs =
+                _combinedResponse.replaceAll(RegExp(r'\s+'), '').length;
+            final int nextNonWs =
+                stitched.replaceAll(RegExp(r'\s+'), '').length;
+            final int netAddedNonWs = nextNonWs - prevNonWs;
+
+            // Update accumulator and displayed responseText consistently
+            _combinedResponse = stitched;
+            responseText = stitched;
+
             // Note: stats are only added to cumulative when RECURSING (see cutAgain branch).
             // On the commit path we leave them in response.x so the UI formula
             // cumulative + response.x is always correct without double-counting.
-            if (kDebugMode) print("[AUTO-CONTINUE DONE] reason=$contDoneReason");
+            if (kDebugMode) print("[AUTO-CONTINUE DONE] reason=$contDoneReason netAddedNonWs=$netAddedNonWs");
             await log(
               "model",
               "info",
-              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, roundNonWs=$roundAddedNonWs, totalChars=${responseText.length})",
+              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=${stutterCheck.detected}, totalChars=${responseText.length})",
               sendRemote: false,
             );
+            if (myGenId != _streamGenerationId || _disposed) return;
 
             bool cutAgain = _shouldContinueOnDone(
               contDoneReason,
               responseText,
-              lastRoundAddedNonWs: roundAddedNonWs,
+              lastRoundAddedNonWs: netAddedNonWs,
             );
-            if (roundAddedNonWs == 0) {
+            if (netAddedNonWs <= 0 || stutterCheck.detected) {
               cutAgain = false;
             }
 
@@ -3762,22 +4216,33 @@ class AIEngine with md.ChangeNotifier {
                 break;
               }
 
-              if (M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+              final bool badToolDraft =
+                  M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                      _looksLikeInvalidToolJson(responseText);
+              if (!_isSynthesizing &&
+                  badToolDraft &&
+                  !_toolFreeFallbackUsed &&
+                  !_lastToolFailed &&
+                  _lastToolResultPayload.isEmpty) {
+                await _triggerToolFreeFallbackAnswer(lastPrompt);
+                break;
+              }
+
+              if (badToolDraft ||
                   (_isSynthesizing &&
                       (_looksLikeUnformattedToolEcho(responseText) ||
                           _looksLikeHallucinatedNormalOnError(responseText)))) {
                 await log("mesh", "error", "Discarding incomplete or unformatted tool response after continuation: $responseText");
+                if (myGenId != _streamGenerationId || _disposed) return;
                 responseText = _buildIncompleteToolFallback();
               }
 
               // Commit — cumulative stays as-is; UI shows cumulative + response.x = total
-              isContinuing = false;
-              isLoading = false;
-              isGenerating = false;
+              final wasSynthesizing = _isSynthesizing;
+              _resetTurnLifecycleFlags();
               status = "Done";
 
-              if (_isSynthesizing) {
-                _isSynthesizing = false;
+              if (wasSynthesizing) {
                 final committedText = responseText;
                 final trimmedThought = currentThoughtChunk.trim();
                 final commitTime = streamingMessageTime ?? DateTime.now();
@@ -3826,13 +4291,11 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.error:
             receivedTerminalEvent = true;
-            isContinuing = false;
-            isLoading = false;
-            isGenerating = false;
+            final wasSynthesizing = _isSynthesizing;
+            _resetTurnLifecycleFlags();
             isError = true;
             status = "Error during continuation";
-            if (_isSynthesizing) {
-              _isSynthesizing = false;
+            if (wasSynthesizing) {
               if (_combinedResponse.isNotEmpty &&
                   !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
                 final committedText = _combinedResponse;
@@ -3894,13 +4357,11 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isContinuing = false;
-        isLoading = false;
-        isGenerating = false;
-        if (_isSynthesizing) {
-          _isSynthesizing = false;
+        final wasSynthesizing = _isSynthesizing;
+        _resetTurnLifecycleFlags();
+        if (wasSynthesizing) {
           if (_combinedResponse.isNotEmpty &&
               !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
             final committedText = _combinedResponse;
@@ -3962,25 +4423,8 @@ class AIEngine with md.ChangeNotifier {
         }
         genericRefresh();
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        if (!isError) {
-          isLoading = false;
-          isGenerating = false;
-          streamingMessageTime = null;
-          streamingUserMessageTime = null;
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
-
   }
 
 
@@ -4068,6 +4512,7 @@ class AIEngine with md.ChangeNotifier {
     String originalPrompt = "",
     bool isFollowUpTurn = false,
   }) async {
+    final int myGenId = _streamGenerationId;
     _toolTurnCount++;
     final call = M3xToolCall.fromJson(toolMap);
     _lastToolCall = call;
@@ -4079,16 +4524,29 @@ class AIEngine with md.ChangeNotifier {
         : (matchedTool?.packageName ?? matchedTool?.app ?? _selfPackageId);
     final canonEffectiveApp = canonicalExtensionId(effectiveApp);
 
-    _lastToolCallSignature = "${call.tool}:${jsonEncode(call.arguments)}";
+    final effectiveOriginalPrompt = originalPrompt.isNotEmpty
+        ? originalPrompt
+        : (lastPrompt.isNotEmpty ? lastPrompt : prompt.text.trim());
+    final internalMod = InternalToolsService.moduleForTool(call.tool);
+    final Map<String, dynamic> effectiveArgs = internalMod != null
+        ? InternalToolsService.normalizeToolArgs(
+            call.tool,
+            call.arguments,
+            fallbackQuestion: effectiveOriginalPrompt,
+          )
+        : call.arguments;
 
-    await log("mesh", "info", "Detected tool call (#$_toolTurnCount): '${call.tool}' on app: '$effectiveApp' with arguments: ${jsonEncode(call.arguments)}");
+    _lastToolCallSignature = "${call.tool}:${jsonEncode(effectiveArgs)}";
+
+    await log("mesh", "info", "Detected tool call (#$_toolTurnCount): '${call.tool}' on app: '$effectiveApp' with arguments: ${jsonEncode(effectiveArgs)}");
+    if (myGenId != _streamGenerationId || _disposed) return;
+
     status = "Executing ${call.tool}...";
     isLoading = true;
     isGenerating = true;
     _isSynthesizing = true;
     notifyListeners();
 
-    final internalMod = InternalToolsService.moduleForTool(call.tool);
     final bool isPermitted = internalMod != null
         ? isExtensionEnabled(internalMod.id)
         : (canonEffectiveApp == _selfPackageId ||
@@ -4103,9 +4561,10 @@ class AIEngine with md.ChangeNotifier {
         : await meshClient.callTool(
             effectiveApp,
             call.tool,
-            call.arguments,
+            effectiveArgs,
             callId: call.id,
           );
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final String resultPayload;
     String? toolErrorMessage;
@@ -4149,11 +4608,8 @@ class AIEngine with md.ChangeNotifier {
       toolResultEntry = "[TOOL RESULT: $resultPayload]";
       await log("mesh", "info", "Tool '${call.tool}' succeeded: $resultPayload");
     }
+    if (myGenId != _streamGenerationId || _disposed) return;
     _lastToolResultPayload = resultPayload;
-
-    final effectiveOriginalPrompt = originalPrompt.isNotEmpty
-        ? originalPrompt
-        : (lastPrompt.isNotEmpty ? lastPrompt : prompt.text.trim());
 
     if (!isFollowUpTurn) {
       await chatData.appendMessage(
@@ -4162,6 +4618,7 @@ class AIEngine with md.ChangeNotifier {
         time: streamingUserMessageTime,
         imagePath: chatData.lastImagePath,
       );
+      if (myGenId != _streamGenerationId || _disposed) return;
       streamingUserMessageTime = null;
       chatData.lastImagePath = null;
       lastPrompt = ""; // Clear lastPrompt / mark pending turn committed so it doesn't duplicate in the UI
@@ -4175,9 +4632,11 @@ class AIEngine with md.ChangeNotifier {
       time: streamingMessageTime,
       thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
     );
+    if (myGenId != _streamGenerationId || _disposed) return;
     currentThoughtChunk = "";
     streamingMessageTime = null;
     await chatData.appendMessage(user: "System", message: toolResultEntry);
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     // Trigger second-stage continuation/synthesis so Gemini Nano explains the result in natural language.
     // On infrastructure errors or exhausted parameter retries, disable tools so the model reports the failure cleanly.
@@ -4218,11 +4677,14 @@ class AIEngine with md.ChangeNotifier {
     streamingMessageTime = DateTime.now();
     notifyListeners();
 
-    await _aiSubscription?.cancel();
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     // Re-initialize engine to ensure context includes the tool result (and strip tools if forcing final prose)
     await initEngine(includeTools: !forceFinalNoTools, hasAttachedImage: false);
-    if (myGenId != _streamGenerationId) return;
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final effectivePrompt = userPrompt.isNotEmpty
         ? userPrompt
@@ -4233,6 +4695,16 @@ class AIEngine with md.ChangeNotifier {
       langInstruction = "Respond in ${dict.value("current_language")}.\n";
     } else {
       langInstruction = "Respond in the same language as \"$effectivePrompt\".\n";
+    }
+
+    bool isNotFoundResult = false;
+    if (toolErrorMessage == null && resultPayload.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(resultPayload);
+        if (decoded is Map && decoded['found'] == false) {
+          isNotFoundResult = true;
+        }
+      } catch (_) {}
     }
 
     final String readableToolData = toolErrorMessage == null
@@ -4252,6 +4724,13 @@ class AIEngine with md.ChangeNotifier {
           "Tool output from ${call.tool}: $readableToolData\n\n"
           "$langInstruction"
           "${_buildRecoverableErrorHint(call.tool, toolErrorMessage)}";
+    } else if (isNotFoundResult) {
+      _currentSynthesisPrompt =
+          "User question: \"$effectivePrompt\"\n\n"
+          "Lookup note from ${call.tool}: $readableToolData\n\n"
+          "$langInstruction"
+          "The online lookup returned no direct result. Answer the user's question from your own knowledge if possible, or briefly say you couldn't find it."
+          "${forceFinalNoTools ? ' Do not output JSON.' : ' Call a different enabled tool only if clearly needed; never repeat ${call.tool} with the same arguments.'}";
     } else if (forceFinalNoTools) {
       _currentSynthesisPrompt =
           "User question: \"$effectivePrompt\"\n\n"
@@ -4284,7 +4763,7 @@ class AIEngine with md.ChangeNotifier {
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             isLoading = true;
@@ -4334,6 +4813,7 @@ class AIEngine with md.ChangeNotifier {
               "Tool synthesis done. finishReason=$doneReason (nanoV4=$isNanoV4Active, chars=${responseText.length})",
               sendRemote: false,
             );
+            if (myGenId != _streamGenerationId || _disposed) return;
             final bool shouldContinue = _shouldContinueOnDone(doneReason, responseText);
 
             if (shouldContinue) {
@@ -4352,6 +4832,7 @@ class AIEngine with md.ChangeNotifier {
                 "Tool synthesis interrupted (reason=$doneReason, nanoV4=$isNanoV4Active), triggering continuation #$_continuationCount",
                 sendRemote: false,
               );
+              if (myGenId != _streamGenerationId || _disposed) return;
               if (kDebugMode) print("[AUTO-CONTINUE #$_continuationCount] tool synthesis reason=$doneReason");
               await continueGenerating(isSynthesis: true);
             } else if (!forceFinalNoTools &&
@@ -4361,6 +4842,7 @@ class AIEngine with md.ChangeNotifier {
                 "warning",
                 "Synthesis returned empty or echoed tool wrapper; retrying with tool-free prose synthesis.",
               );
+              if (myGenId != _streamGenerationId || _disposed) return;
               await _triggerToolSynthesis(
                 _lastToolCall ?? call,
                 _lastToolResultPayload,
@@ -4376,6 +4858,7 @@ class AIEngine with md.ChangeNotifier {
                       _looksLikeHallucinatedNormalOnError(responseText);
               final finalMessage =
                   badOutput ? _buildIncompleteToolFallback() : responseText;
+              _forcedFinalSynthesis = false;
               await _commitSynthesisMessage(
                 finalMessage,
                 logNote: badOutput
@@ -4387,10 +4870,7 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.error:
             receivedTerminalEvent = true;
-            isLoading = false;
-            isContinuing = false;
-            isGenerating = false;
-            _isSynthesizing = false;
+            _resetTurnLifecycleFlags();
             isError = true;
             status = "Error";
             currentThoughtChunk = "";
@@ -4403,12 +4883,9 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isLoading = false;
-        isContinuing = false;
-        isGenerating = false;
-        _isSynthesizing = false;
+        _resetTurnLifecycleFlags();
         currentThoughtChunk = "";
         streamingMessageTime = null;
         streamingUserMessageTime = null;
@@ -4416,23 +4893,7 @@ class AIEngine with md.ChangeNotifier {
         analyzeError("Synthesis", e);
         genericRefresh();
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        if (!isError) {
-          isLoading = false;
-          isGenerating = false;
-          streamingMessageTime = null;
-          streamingUserMessageTime = null;
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
   }
 

@@ -38,9 +38,12 @@ object PaiosModelHelper {
     const val MAX_OVERLAY_CONTINUATIONS = 6
     const val MAX_OVERLAY_ACCUMULATED_CHARS = 12000
     const val MAX_CONTINUATION_TAIL_CHARS = 450
+    const val MAX_CONTINUATION_OVERLAP_CHARS = 240
+    const val MID_WORD_BACKOFF_MAX_CHARS = 28
 
     private val CONTINUATION_DUPLICATE_FENCE_REGEX = Regex("""^```[a-zA-Z0-9]*\r?\n?""")
-    private val LEADING_CONTINUATION_ELLIPSIS_REGEX = Regex("""^\s*(?:\.\.\.+|…+)\s*""")
+    private val LEADING_CONTINUATION_ELLIPSIS_REGEX = Regex("""^(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*""")
+    private val TRAILING_CONTINUATION_ELLIPSIS_REGEX = Regex("""(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*$""")
     private val CONTRACTION_TRAILING_APOSTROPHE_REGEX = Regex("""[A-Za-z0-9]['’]$""")
     private val TERMINAL_PUNCTUATION_REGEX = Regex("""[.!?…"\x27”’`\)\]。！？]+$""")
     private val TRAILING_MARKDOWN_WITH_TERMINAL_REGEX = Regex("""[.!?…"\x27”’`\)\]。！？][*_]+$""")
@@ -655,6 +658,65 @@ object PaiosModelHelper {
         return wordCount >= 3
     }
 
+    private fun isMeaningfulClauseForStutter(candidate: String): Boolean {
+        val trimmed = candidate.trim()
+        if (candidate.length < 12 || trimmed.length < 10) return false
+        var alnumCount = 0
+        val distinctChars = HashSet<Char>()
+        for (ch in trimmed) {
+            if (ch.isLetterOrDigit()) {
+                alnumCount++
+            }
+            if (!ch.isWhitespace()) {
+                distinctChars.add(ch.lowercaseChar())
+            }
+        }
+        return alnumCount >= 6 && distinctChars.size >= 4
+    }
+
+    fun hasContinuationStutter(text: String): Boolean {
+        val normalizedTail = text.trim().replace(MULTI_SPACE_REGEX, " ")
+        if (normalizedTail.length < 36) return false
+        val tail = if (normalizedTail.length > 600) {
+            normalizedTail.substring(normalizedTail.length - 600)
+        } else {
+            normalizedTail
+        }
+        val tailWithSpace = "$tail "
+        val n = tail.length
+        val maxPatternLen = minOf(160, tailWithSpace.length / 3)
+        for (len in 12..maxPatternLen) {
+            val maxStart = tailWithSpace.length - len * 3
+            for (start in maxStart downTo 0) {
+                if (tailWithSpace[start] != tailWithSpace[start + len] ||
+                    tailWithSpace[start] != tailWithSpace[start + len * 2]
+                ) {
+                    continue
+                }
+                if (!tailWithSpace.regionMatches(start, tailWithSpace, start + len, len)) continue
+                if (!tailWithSpace.regionMatches(start, tailWithSpace, start + len * 2, len)) continue
+                val candidate = tailWithSpace.substring(start, start + len)
+                if (isMeaningfulClauseForStutter(candidate)) {
+                    return true
+                }
+            }
+            val maxPunctStart = n - len * 2 - 12
+            for (start in maxPunctStart downTo 0) {
+                if (!tail.regionMatches(start, tail, start + len, len)) continue
+                val candidate = tail.substring(start, start + len)
+                val trimmedEnd = candidate.trimEnd(',', '.', ';', ':', ' ')
+                if (trimmedEnd.length >= 12 &&
+                    start + len * 2 + trimmedEnd.length <= n &&
+                    tail.regionMatches(start, tail, start + len * 2, trimmedEnd.length) &&
+                    isMeaningfulClauseForStutter(trimmedEnd)
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     fun shouldContinuePartialResponse(
         finishReason: String?,
         partialText: String,
@@ -669,6 +731,7 @@ object PaiosModelHelper {
         if (partialText.isBlank()) return false
         if (partialText.length >= maxAccumulatedChars) return false
         if (continuationCount > 0 && lastRoundAddedChars <= 0) return false
+        if (hasContinuationStutter(partialText)) return false
 
         val normalized = normalizeFinishReason(finishReason)?.uppercase(Locale.ROOT)
         if (normalized != null) {
@@ -744,7 +807,23 @@ object PaiosModelHelper {
     ): ContinuationPrompt {
         val boundedPersona = personaAnchor?.let { boundHeadAtBoundary(it, 240) }.orEmpty()
         val boundedQuestion = boundHeadAtBoundary(originalQuestion, maxQuestionChars)
-        val boundedTail = boundTailAtBoundary(partialText, maxTailChars)
+        var boundedTail = boundTailAtBoundary(partialText, maxTailChars)
+        if (!isJsonDraft && boundedTail.isNotEmpty() && boundedTail.last().isLetterOrDigit()) {
+            val minIdx = (boundedTail.length - MID_WORD_BACKOFF_MAX_CHARS).coerceAtLeast(0)
+            var lastWs = -1
+            for (i in boundedTail.length - 1 downTo minIdx) {
+                if (boundedTail[i].isWhitespace()) {
+                    lastWs = i
+                    break
+                }
+            }
+            if (lastWs > 0) {
+                val backedOff = boundedTail.substring(0, lastWs).trimEnd()
+                if (backedOff.isNotEmpty()) {
+                    boundedTail = backedOff
+                }
+            }
+        }
         val trimmedLang = languageCode?.trim().orEmpty()
 
         val sysBlock = buildString {
@@ -770,6 +849,26 @@ object PaiosModelHelper {
         return ContinuationPrompt(instructions = sysBlock, userPrompt = "Continue.")
     }
 
+    private fun findSuffixPrefixOverlap(base: String, next: String): Int {
+        val maxOverlap = minOf(MAX_CONTINUATION_OVERLAP_CHARS, base.length, next.length)
+        for (len in maxOverlap downTo 2) {
+            val ignoreCase = len >= 8
+            if (base.regionMatches(base.length - len, next, 0, len, ignoreCase = ignoreCase)) {
+                val boundaryBefore = base.length == len || !base[base.length - len - 1].isLetterOrDigit()
+                val boundaryAfterNext = next.length == len || !next[len].isLetterOrDigit()
+                val validMatch = when {
+                    len >= 8 -> true
+                    len >= 3 -> boundaryBefore
+                    else -> boundaryBefore && boundaryAfterNext
+                }
+                if (validMatch) {
+                    return len
+                }
+            }
+        }
+        return 0
+    }
+
     fun stitchOverlayContinuation(existing: String, incoming: String): String {
         if (incoming.isEmpty()) return existing
         if (existing.isEmpty()) return incoming
@@ -777,34 +876,59 @@ object PaiosModelHelper {
         var next = stripLeadingContinuationEllipsis(incoming)
         if (next.isEmpty()) return existing
 
-        val openCodeFence = Regex("```").findAll(existing).count() % 2 == 1
+        val trimmedExistingLeft = existing.trimStart()
+        val isJsonDraft = trimmedExistingLeft.startsWith("{") ||
+            trimmedExistingLeft.startsWith("```json") ||
+            (trimmedExistingLeft.contains("\"tool\"") && trimmedExistingLeft.contains("\"args\""))
+
+        val base = if (isJsonDraft) {
+            existing
+        } else {
+            existing.replaceFirst(TRAILING_CONTINUATION_ELLIPSIS_REGEX, "")
+        }
+        if (base.isEmpty()) return next
+
+        val openCodeFence = Regex("```").findAll(base).count() % 2 == 1
         if (openCodeFence) {
             next = next.replaceFirst(CONTINUATION_DUPLICATE_FENCE_REGEX, "")
             if (next.isEmpty()) return existing
         }
 
-        // Trim exact suffix-prefix overlap (>= 8 chars) if the model echoed the tail
-        val maxOverlap = minOf(64, existing.length, next.length)
-        for (len in maxOverlap downTo 8) {
-            if (existing.regionMatches(existing.length - len, next, 0, len)) {
-                val boundaryBefore = existing.length == len || existing[existing.length - len - 1].isWhitespace()
-                if (boundaryBefore || len >= 14) {
-                    next = next.substring(len)
-                    break
+        // Trim exact suffix-prefix overlap (up to 240 chars) if the model echoed the tail
+        var stitchedBase = base
+        var overlapLen = findSuffixPrefixOverlap(stitchedBase, next)
+        if (overlapLen == 0 && stitchedBase.last().isWhitespace()) {
+            val trimmedBase = stitchedBase.trimEnd()
+            if (trimmedBase.isNotEmpty()) {
+                val trimmedOverlap = findSuffixPrefixOverlap(trimmedBase, next)
+                if (trimmedOverlap > 0) {
+                    stitchedBase = trimmedBase
+                    overlapLen = trimmedOverlap
                 }
+            }
+        }
+        if (overlapLen > 0) {
+            next = next.substring(overlapLen)
+        }
+        var strippedEllipsisAfterOverlap = false
+        if (!isJsonDraft && overlapLen > 0) {
+            val afterEllipsis = stripLeadingContinuationEllipsis(next)
+            if (afterEllipsis != next) {
+                next = afterEllipsis
+                strippedEllipsisAfterOverlap = true
             }
         }
         if (next.isEmpty()) return existing
 
-        val trimmedExistingLeft = existing.trimStart()
-        val isJsonDraft = trimmedExistingLeft.startsWith("{") ||
-            trimmedExistingLeft.startsWith("```json") ||
-            (trimmedExistingLeft.contains("\"tool\"") && trimmedExistingLeft.contains("\"args\""))
         if (isJsonDraft) {
-            return existing + next
+            return stitchedBase + next
         }
 
-        val lastChar = existing.last()
+        if (overlapLen > 0 && !strippedEllipsisAfterOverlap) {
+            return stitchedBase + next
+        }
+
+        val lastChar = stitchedBase.last()
         val firstChar = next.first()
         val endsWithSpace = lastChar.isWhitespace()
         val startsWithSpace = firstChar.isWhitespace()
@@ -819,13 +943,13 @@ object PaiosModelHelper {
             firstChar == '"' || firstChar == '”' || firstChar == '%'
 
         val separator = if (openCodeFence) {
-            if (endsWithSpace) "" else "\n"
+            if (endsWithSpace || startsWithSpace) "" else "\n"
         } else if (endsWithSpace || startsWithSpace || endsWithJoiningPunct || startsWithPunctuation) {
             ""
         } else {
             " "
         }
 
-        return existing + separator + next
+        return stitchedBase + separator + next
     }
 }

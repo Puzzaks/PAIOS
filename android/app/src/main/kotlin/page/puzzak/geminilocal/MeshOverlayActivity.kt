@@ -3365,6 +3365,7 @@ class MeshOverlayActivity : Activity() {
                                 isNanoV4 = resolved.capabilities.isNanoV4,
                                 nullReasonRetryCount = nullReasonRetryCount
                             ) || (incompleteTool &&
+                                !PaiosModelHelper.hasContinuationStutter(accumulatedText) &&
                                 continuationCount < PaiosModelHelper.MAX_OVERLAY_CONTINUATIONS &&
                                 lastRoundAddedNonWs > 0 &&
                                 accumulatedText.length < PaiosModelHelper.MAX_OVERLAY_ACCUMULATED_CHARS)
@@ -3414,11 +3415,13 @@ class MeshOverlayActivity : Activity() {
                             )
                             when (contResult) {
                                 is StreamAttemptResult.Completed -> {
-                                    lastRoundAddedNonWs = contResult.text.count { !it.isWhitespace() }
-                                    accumulatedText = PaiosModelHelper.stitchOverlayContinuation(
+                                    val prevNonWs = accumulatedText.count { !it.isWhitespace() }
+                                    val stitched = PaiosModelHelper.stitchOverlayContinuation(
                                         accumulatedText,
                                         contResult.text
                                     )
+                                    lastRoundAddedNonWs = stitched.count { !it.isWhitespace() } - prevNonWs
+                                    accumulatedText = stitched
                                     currentFinishReason = contResult.finishReason
                                     currentHandledTool = contResult.handledToolCall
                                 }
@@ -4029,8 +4032,10 @@ class MeshOverlayActivity : Activity() {
                         }
                         break
                     }
-                    synthLastAddedNonWs = roundText.count { !it.isWhitespace() }
-                    synthText = PaiosModelHelper.stitchOverlayContinuation(synthText, roundText)
+                    val prevNonWs = synthText.count { !it.isWhitespace() }
+                    val stitched = PaiosModelHelper.stitchOverlayContinuation(synthText, roundText)
+                    synthLastAddedNonWs = stitched.count { !it.isWhitespace() } - prevNonWs
+                    synthText = stitched
                     lastSynthFinishReason = roundReason
                 }
 
