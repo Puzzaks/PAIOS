@@ -470,6 +470,63 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
     ColorScheme scheme,
     TextTheme textTheme,
   ) {
+    final bool isModelReady = engine.hasAnyAvailableModel ||
+        engine.isAvailable ||
+        (engine.modelDownloadLog.isNotEmpty &&
+            engine.modelDownloadLog.last["status"] == "Available");
+    final PaiosVariantDownloadState? activeDownload =
+        isModelReady ? null : _activeOnboardingDownload(engine);
+    final PaiosModelVariant? stableVariant = _defaultStableVariant(engine);
+    final bool isDownloadable = !isModelReady &&
+        activeDownload == null &&
+        stableVariant != null &&
+        stableVariant.isDownloadable;
+    final bool isChecking = !isModelReady &&
+        activeDownload == null &&
+        !isDownloadable &&
+        engine.modelInfo.isEmpty &&
+        engine.modelDownloadLog.isEmpty;
+
+    final String slideA4Title = isModelReady
+        ? _dictTemplateOrFallback(
+            engine,
+            'intro_gemini_nano_ready_title',
+            'Gemini Nano Ready',
+          )
+        : isDownloadable
+            ? _dictTemplateOrFallback(
+                engine,
+                'intro_gemini_nano_downloadable_title',
+                'Download Gemini Nano',
+              )
+            : isChecking
+                ? _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_title',
+                    'Checking Model Status',
+                  )
+                : engine.dict.value("intro_gemini_nano_title");
+
+    final String slideA4Desc = isModelReady
+        ? _dictTemplateOrFallback(
+            engine,
+            'intro_gemini_nano_ready_desc',
+            'On-device AI weights are already installed and ready to use.',
+          )
+        : isDownloadable
+            ? _dictTemplateOrFallback(
+                engine,
+                'intro_gemini_nano_downloadable_desc',
+                'Gemini Nano is supported and ready to download onto your device.',
+              )
+            : isChecking
+                ? _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_desc',
+                    'Inspecting on-device AICore model availability...',
+                  )
+                : engine.dict.value("intro_gemini_nano_desc");
+
     return [
       // Slide A-1: 100% On-Device Intelligence
       _buildSlideContainer(
@@ -619,7 +676,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
         ),
       ),
 
-      // Slide A-4: Preparing Gemini Nano (Exact custom card & Relaunch Quirk)
+      // Slide A-4: Preparing / Ready / Downloadable / Checking Gemini Nano
       _buildSlideContainer(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -628,13 +685,13 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             Icon(Icons.psychology_rounded, size: 72, color: scheme.primary),
             const SizedBox(height: 24),
             Text(
-              engine.dict.value("intro_gemini_nano_title"),
+              slideA4Title,
               style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Text(
-              engine.dict.value("intro_gemini_nano_desc"),
+              slideA4Desc,
               style: textTheme.bodyLarge?.copyWith(
                 color: scheme.onSurfaceVariant,
                 height: 1.4,
@@ -647,14 +704,36 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               context: context,
             ),
             cards.cardGroup([
+              // Ready / Already downloaded state (mutually exclusive with download/checking cards)
+              if (isModelReady)
+                CardContents.tapIcon(
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_ready_title',
+                    'Gemini Nano Ready',
+                  ),
+                  subtitle: engine.modelInfo["version"] == null
+                      ? _dictTemplateOrFallback(
+                          engine,
+                          'intro_gemini_nano_ready_status',
+                          'Model is available',
+                        )
+                      : engine.dict
+                          .value("model_available")
+                          .replaceAll("%s", engine.modelInfo["version"].toString()),
+                  icon: Icons.check_circle_rounded,
+                  colorBG: scheme.primaryContainer,
+                  color: scheme.primary,
+                  action: () {},
+                )
               // Active variant download with live DownloadStarted.bytesToDownload / speed / remaining
-              if (_activeOnboardingDownload(engine) case final activeDl?) ...[
-                if (activeDl.totalBytes > 0)
+              else if (activeDownload != null) ...[
+                if (activeDownload.totalBytes > 0)
                   CardContents.progress(
                     title: engine.dict.value("downloading_model"),
                     subtitle:
-                        "${_convertSize(activeDl.bytesDownloaded, false)} / ${_convertSize(activeDl.totalBytes, false)} (${(activeDl.progress * 100).toStringAsFixed(1)}%)",
-                    subsubtitle: activeDl.bytesPerSec > 0
+                        "${_convertSize(activeDownload.bytesDownloaded, false)} / ${_convertSize(activeDownload.totalBytes, false)} (${(activeDownload.progress * 100).toStringAsFixed(1)}%)",
+                    subsubtitle: activeDownload.bytesPerSec > 0
                         ? _dictTemplateOrFallback(
                             engine,
                             'model_download_speed_remaining',
@@ -662,11 +741,11 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                           )
                             .replaceAll(
                               '{speed}',
-                              _convertSize(activeDl.bytesPerSec.round(), true),
+                              _convertSize(activeDownload.bytesPerSec.round(), true),
                             )
                             .replaceAll(
                               '{remaining}',
-                              _convertSize(activeDl.remainingBytes, false),
+                              _convertSize(activeDownload.remainingBytes, false),
                             )
                         : _dictTemplateOrFallback(
                             engine,
@@ -674,9 +753,9 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                             '{remaining} remaining',
                           ).replaceAll(
                             '{remaining}',
-                            _convertSize(activeDl.remainingBytes, false),
+                            _convertSize(activeDownload.remainingBytes, false),
                           ),
-                    progress: activeDl.progress,
+                    progress: activeDownload.progress,
                   )
                 else
                   CardContents.progress(
@@ -685,7 +764,22 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                     subsubtitle: "",
                     progress: null,
                   ),
-              ] else if (engine.modelDownloadLog.isNotEmpty &&
+              ]
+              // Error state
+              else if (engine.modelDownloadLog.isNotEmpty &&
+                  engine.modelDownloadLog.last["status"] == "Error")
+                CardContents.doubleTap(
+                  title: "Model ${engine.dict.value("unavailable")}",
+                  subtitle: engine.dict.value("whoops"),
+                  action: () async => engine.gemini.openAICorePlayStore(),
+                  secondAction: () {
+                    engine.modelDownloadLog.clear();
+                    engine.checkEngine();
+                  },
+                  icon: Icons.refresh_rounded,
+                )
+              // Legacy log-based download state
+              else if (engine.modelDownloadLog.isNotEmpty &&
                   engine.modelDownloadLog.last["status"] == "Download" &&
                   engine.modelDownloadLog.last["info"] != "Error") ...[
                 if ((int.tryParse(engine.modelDownloadLog.last["value"].toString()) ?? 0) > 0)
@@ -706,75 +800,50 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                     subsubtitle: "",
                     progress: 0.0,
                   ),
-              ],
-
-              // Success / Ready state (single default stable model unlocked)
-              if (engine.hasAnyAvailableModel ||
-                  engine.isAvailable ||
-                  (engine.modelDownloadLog.isNotEmpty &&
-                      engine.modelDownloadLog.last["status"] == "Available"))
-                CardContents.tapIcon(
-                  title: "Gemini Nano Ready",
-                  subtitle: engine.modelInfo["version"] == null
-                      ? engine.dict.value("available")
-                      : engine.dict
-                          .value("model_available")
-                          .replaceAll("%s", engine.modelInfo["version"].toString()),
-                  icon: Icons.check_circle_rounded,
-                  colorBG: scheme.primaryContainer,
-                  color: scheme.primary,
-                  action: () {},
-                ),
-
-              // Error state
-              if (engine.modelDownloadLog.isNotEmpty &&
-                  engine.modelDownloadLog.last["status"] == "Error")
-                CardContents.doubleTap(
-                  title: "Model ${engine.dict.value("unavailable")}",
-                  subtitle: engine.dict.value("whoops"),
-                  action: () async => engine.gemini.openAICorePlayStore(),
-                  secondAction: () {
-                    engine.modelDownloadLog.clear();
-                    engine.checkEngine();
-                  },
-                  icon: Icons.refresh_rounded,
-                ),
-
+              ]
               // Supported device with 0 downloaded models and no active download yet -> trigger stable download
-              if (_activeOnboardingDownload(engine) == null &&
-                  !engine.hasAnyAvailableModel &&
-                  !engine.isAvailable &&
-                  !(engine.modelDownloadLog.isNotEmpty &&
-                      (engine.modelDownloadLog.last["status"] == "Error" ||
-                          engine.modelDownloadLog.last["status"] == "Download"))) ...[
-                if (_defaultStableVariant(engine) case final stableVariant?
-                    when stableVariant.isDownloadable)
-                  CardContents.tapIcon(
-                    title: _dictTemplateOrFallback(
-                      engine,
-                      'onboarding_download_model',
-                      'Download default model',
-                    ),
-                    subtitle: stableVariant.internalModelName,
-                    icon: Icons.download_rounded,
-                    colorBG: scheme.primaryContainer,
-                    color: scheme.onPrimaryContainer,
-                    action: () {
-                      HapticFeedback.lightImpact();
-                      engine.downloadVariant(
-                        stableVariant.releaseStage,
-                        stableVariant.preference,
-                      );
-                    },
-                  )
-                else if (engine.modelDownloadLog.isEmpty)
-                  CardContents.progress(
-                    title: engine.dict.value("downloading_model"),
-                    subtitle: engine.dict.value("aicore_background_download"),
-                    subsubtitle: "",
-                    progress: null, // Indeterminate progress indicator
+              else if (isDownloadable)
+                CardContents.tapIcon(
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'onboarding_download_model',
+                    'Download default model',
                   ),
-              ],
+                  subtitle: stableVariant.internalModelName,
+                  icon: Icons.download_rounded,
+                  colorBG: scheme.primaryContainer,
+                  color: scheme.onPrimaryContainer,
+                  action: () {
+                    HapticFeedback.lightImpact();
+                    engine.downloadVariant(
+                      stableVariant.releaseStage,
+                      stableVariant.preference,
+                    );
+                  },
+                )
+              // Probing / inspecting initial AICore status
+              else if (isChecking)
+                CardContents.progress(
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'checking_model_status',
+                    'Checking model status...',
+                  ),
+                  subtitle: _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_desc',
+                    'Inspecting on-device AICore model availability...',
+                  ),
+                  subsubtitle: "",
+                  progress: null,
+                )
+              else if (engine.modelDownloadLog.isEmpty)
+                CardContents.progress(
+                  title: engine.dict.value("downloading_model"),
+                  subtitle: engine.dict.value("aicore_background_download"),
+                  subsubtitle: "",
+                  progress: null, // Indeterminate progress indicator
+                ),
 
               // Logs button
               CardContents.tap(
@@ -794,7 +863,8 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               ),
             ]),
             const SizedBox(height: 12),
-            if (engine.modelDownloadLog.isNotEmpty &&
+            if (!isModelReady &&
+                engine.modelDownloadLog.isNotEmpty &&
                 engine.modelDownloadLog.last["info"] == "downloading_model")
               text.infoShort(
                 title: engine.dict.value("welcome_gtfo"),

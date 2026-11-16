@@ -13,7 +13,7 @@ To help you navigate the codebase, here are the key components:
 
 ### Running Locally
 1.  **Prerequisites**: [Flutter SDK](https://flutter.dev/docs/get-started/install) installed.
-2.  **Clone**: Clone the repository `git clone https://github.com/Puzzaks/gemininano.git`
+2.  **Clone**: Clone the repository `git clone https://github.com/Puzzaks/PAIOS.git`
 3.  **Dependencies**: Run `flutter pub get` to install packages.
 4.  **Run**: `flutter run` (Android is the only targeted platform).
 

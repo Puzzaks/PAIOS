@@ -393,5 +393,13 @@
     "onboarding_download_required": "Laden Sie das Standardmodell Gemini Nano herunter, um fortzufahren.",
     "onboarding_download_model": "Standardmodell herunterladen",
     "model_download_remaining": "noch {remaining}",
-    "model_download_speed_remaining": "{speed} • noch {remaining}"
+    "model_download_speed_remaining": "{speed} • noch {remaining}",
+    "intro_gemini_nano_ready_title": "Gemini Nano bereit",
+    "intro_gemini_nano_ready_desc": "Lokale KI-Gewichte sind bereits auf deinem Gerät installiert und einsatzbereit.",
+    "intro_gemini_nano_ready_status": "Modell ist verfügbar",
+    "intro_gemini_nano_downloadable_title": "Gemini Nano herunterladen",
+    "intro_gemini_nano_downloadable_desc": "Gemini Nano wird unterstützt und kann jetzt auf dein Gerät heruntergeladen werden.",
+    "intro_gemini_nano_checking_title": "Modellstatus wird geprüft",
+    "intro_gemini_nano_checking_desc": "Verfügbarkeit des lokalen AICore-Modells wird überprüft...",
+    "checking_model_status": "Modellstatus wird geprüft..."
 }

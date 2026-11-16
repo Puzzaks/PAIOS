@@ -1567,6 +1567,8 @@ class FlutterLocalAiPlugin(
                                                 cumulativeText = textBuffer.toString()
                                                 cumulativeThought = thoughtBuffer.toString()
                                             }
+                                            val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
+                                            val cleanChunk = PaiosModelHelper.stripControlToolTags(thought)
                                             val generationTime = System.currentTimeMillis() - startTime
                                             val tokenCount = cumulativeText.split(" ").count { it.isNotEmpty() }
                                             trySend(
@@ -1574,8 +1576,8 @@ class FlutterLocalAiPlugin(
                                                     "status" to "streaming",
                                                     "text" to cumulativeText,
                                                     "chunk" to "",
-                                                    "thought" to cumulativeThought,
-                                                    "thoughtChunk" to thought,
+                                                    "thought" to cleanThought,
+                                                    "thoughtChunk" to cleanChunk,
                                                     "generationTimeMs" to generationTime,
                                                     "tokenCount" to tokenCount
                                                 )
@@ -1591,6 +1593,7 @@ class FlutterLocalAiPlugin(
                                                 cumulativeText = textBuffer.toString()
                                                 cumulativeThought = thoughtBuffer.toString()
                                             }
+                                            val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
                                             val generationTime = System.currentTimeMillis() - startTime
                                             val tokenCount = cumulativeText.split(" ").count { it.isNotEmpty() }
                                             trySend(
@@ -1598,7 +1601,7 @@ class FlutterLocalAiPlugin(
                                                     "status" to "streaming",
                                                     "text" to cumulativeText,
                                                     "chunk" to text,
-                                                    "thought" to cumulativeThought,
+                                                    "thought" to cleanThought,
                                                     "generationTimeMs" to generationTime,
                                                     "tokenCount" to tokenCount
                                                 )
@@ -1606,10 +1609,21 @@ class FlutterLocalAiPlugin(
                                         }
                                     }
                                 )
-                                val finalText = synchronized(lock) { textBuffer.toString() }
+                                val rawFinalText = synchronized(lock) { textBuffer.toString() }
                                     .ifEmpty { finalResponse.candidates.firstOrNull()?.text ?: "" }
-                                val finalThought = synchronized(lock) { thoughtBuffer.toString() }
+                                val rawFinalThought = synchronized(lock) { thoughtBuffer.toString() }
                                     .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
+                                val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
+                                    PaiosModelHelper.extractToolCallJson(rawFinalThought)
+                                } else {
+                                    null
+                                }
+                                val finalText = if (promotedToolCall != null) {
+                                    promotedToolCall.toJsonObject().toString()
+                                } else {
+                                    rawFinalText
+                                }
+                                val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
                                 val finishReason = PaiosModelHelper.normalizeFinishReason(
                                     finalResponse.candidates.firstOrNull()?.finishReason
                                 )

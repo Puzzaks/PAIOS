@@ -395,5 +395,13 @@
     "onboarding_download_required": "Завантажте базову модель Gemini Nano, щоб продовжити.",
     "onboarding_download_model": "Завантажити базову модель",
     "model_download_remaining": "залишилось {remaining}",
-    "model_download_speed_remaining": "{speed} • залишилось {remaining}"
+    "model_download_speed_remaining": "{speed} • залишилось {remaining}",
+    "intro_gemini_nano_ready_title": "Gemini Nano готовий",
+    "intro_gemini_nano_ready_desc": "Ваги локального ШІ вже встановлені на пристрої та готові до роботи.",
+    "intro_gemini_nano_ready_status": "Модель доступна",
+    "intro_gemini_nano_downloadable_title": "Завантажити Gemini Nano",
+    "intro_gemini_nano_downloadable_desc": "Gemini Nano підтримується та готовий до завантаження на ваш пристрій.",
+    "intro_gemini_nano_checking_title": "Перевірка стану моделі",
+    "intro_gemini_nano_checking_desc": "Перевірка доступності моделі AICore на пристрої...",
+    "checking_model_status": "Перевірка стану моделі..."
 }

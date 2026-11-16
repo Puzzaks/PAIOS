@@ -205,12 +205,16 @@ class Prompt{
 
     // ── 4. Available tools (only when enabled and non-empty) ─────────────────
     if (includeTools && tools != null && tools.isNotEmpty) {
+      final hasWikipediaTools = tools.any(
+        (t) => t.name == 'wikipedia_summary' || t.name == 'wikipedia_details',
+      );
       output += "\n\n### [AVAILABLE TOOLS]"
           "\nUse a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text."
           '\nWhen calling a tool, respond with ONLY a JSON object using double quotes:'
           '\n{"tool": "<tool>", "app": "<app>", "args": {}}'
           '\nIf a tool takes no parameters, set "args": {} (never leave "args": empty).'
-          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required). Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.'
+          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required).'
+          '${hasWikipediaTools ? ' Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.' : ''}'
           "\n\nTools:";
       for (final tool in tools) {
         final appStr = tool.app != null ? ' (app: "${tool.app}")' : '';

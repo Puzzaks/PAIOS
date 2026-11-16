@@ -393,5 +393,13 @@
     "onboarding_download_required": "Download the default Gemini Nano model to continue.",
     "onboarding_download_model": "Download default model",
     "model_download_remaining": "{remaining} remaining",
-    "model_download_speed_remaining": "{speed} • {remaining} remaining"
+    "model_download_speed_remaining": "{speed} • {remaining} remaining",
+    "intro_gemini_nano_ready_title": "Gemini Nano Ready",
+    "intro_gemini_nano_ready_desc": "On-device AI weights are already installed and ready to use.",
+    "intro_gemini_nano_ready_status": "Model is available",
+    "intro_gemini_nano_downloadable_title": "Download Gemini Nano",
+    "intro_gemini_nano_downloadable_desc": "Gemini Nano is supported and ready to download onto your device.",
+    "intro_gemini_nano_checking_title": "Checking Model Status",
+    "intro_gemini_nano_checking_desc": "Inspecting on-device AICore model availability...",
+    "checking_model_status": "Checking model status..."
 }

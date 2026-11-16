@@ -3013,6 +3013,7 @@ class MeshOverlayActivity : Activity() {
         }
         append(" - Respond naturally and concisely to greetings, casual conversation, and general questions.\n")
         append(" - Stay truthful and concise; say when you do not know something instead of guessing.\n")
+        append(" - Reply directly without prepending \"PAIOS:\".\n")
         if (hasAnySessionImage) {
             append(" - Inspect and answer directly from the attached image.\n")
         }
@@ -3073,7 +3074,12 @@ class MeshOverlayActivity : Activity() {
                                     snapshotThought = thoughtBuffer.toString()
                                     hasAnswer = textBuffer.isNotEmpty()
                                 }
-                                bubbleViews.updateThought(snapshotThought, isStillThinking = !hasAnswer)
+                                val displayThought = PaiosModelHelper.stripControlToolTags(snapshotThought)
+                                if (displayThought.isNotBlank()) {
+                                    bubbleViews.updateThought(displayThought, isStillThinking = !hasAnswer)
+                                } else {
+                                    bubbleViews.hideThought()
+                                }
                                 outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
                             }
                         }
@@ -3092,7 +3098,10 @@ class MeshOverlayActivity : Activity() {
                                 } else {
                                     snapshotText
                                 }
-                                val toolCall = extractToolCallJson(displayText)
+                                val toolCall = PaiosModelHelper.extractToolCallJson(
+                                    displayText,
+                                    allowTruncatedRepair = false
+                                )?.toJsonObject()
                                 val isToolCallPending = looksLikeIncompleteToolCall(displayText)
                                 if (toolCall != null || isToolCallPending) {
                                     handledToolCall = true
@@ -3101,9 +3110,14 @@ class MeshOverlayActivity : Activity() {
                                     bubbleViews.hideThought()
                                     val desc = formatToolChipLabel(toolCall, displayText)
                                     applyToolChipStyle(aiBubbleView, desc)
-                                } else if (displayText.isNotBlank()) {
-                                    bubbleViews.collapseThoughtIfAuto()
-                                    aiBubbleView.text = formatMarkdownToSpannable(displayText)
+                                } else {
+                                    val cleanDisplay = PaiosModelHelper.stripControlToolTags(
+                                        PaiosModelHelper.stripLeadingAssistantLabel(displayText)
+                                    )
+                                    if (cleanDisplay.isNotBlank()) {
+                                        bubbleViews.collapseThoughtIfAuto()
+                                        aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                    }
                                 }
                                 outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
                             }
@@ -3111,22 +3125,45 @@ class MeshOverlayActivity : Activity() {
                     }
                 )
 
-                val finalText = synchronized(streamLock) { textBuffer.toString() }
+                val rawFinalText = synchronized(streamLock) { textBuffer.toString() }
                     .ifEmpty { finalResponse.candidates.firstOrNull()?.text ?: "" }
-                val finalThought = synchronized(streamLock) { thoughtBuffer.toString() }
+                val rawFinalThought = synchronized(streamLock) { thoughtBuffer.toString() }
                     .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
                 lastFinishReason = PaiosModelHelper.normalizeFinishReason(
                     finalResponse.candidates.firstOrNull()?.finishReason
                 )
+                val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
+                    PaiosModelHelper.extractToolCallJson(rawFinalThought)
+                } else {
+                    null
+                }
+                val finalText = if (promotedToolCall != null) {
+                    handledToolCall = true
+                    promotedToolCall.toJsonObject().toString()
+                } else if (!handledToolCall) {
+                    PaiosModelHelper.stripLeadingAssistantLabel(rawFinalText)
+                } else {
+                    rawFinalText
+                }
+                val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
                 streamedText = finalText
 
-                if (finalThought.isNotBlank() && !handledToolCall) {
-                    withContext(Dispatchers.Main) {
-                        if (overlayTurnSequence == turnId && !isDismissing) {
+                withContext(Dispatchers.Main) {
+                    if (overlayTurnSequence == turnId && !isDismissing) {
+                        if (handledToolCall) {
+                            bubbleViews.hideThought()
+                            val desc = formatToolChipLabel(
+                                promotedToolCall?.toJsonObject() ?: extractToolCallJson(finalText),
+                                finalText
+                            )
+                            applyToolChipStyle(aiBubbleView, desc)
+                        } else if (finalThought.isNotBlank()) {
                             bubbleViews.updateThought(finalThought, isStillThinking = false)
                             if (finalText.isNotBlank()) {
                                 bubbleViews.collapseThoughtIfAuto()
                             }
+                        } else {
+                            bubbleViews.hideThought()
                         }
                     }
                 }
@@ -3147,7 +3184,10 @@ class MeshOverlayActivity : Activity() {
                         } else {
                             streamedText
                         }
-                        val toolCall = extractToolCallJson(displayText)
+                        val toolCall = PaiosModelHelper.extractToolCallJson(
+                            displayText,
+                            allowTruncatedRepair = false
+                        )?.toJsonObject()
                         val isToolCallPending = looksLikeIncompleteToolCall(displayText)
                         if (toolCall != null || isToolCallPending) {
                             handledToolCall = true
@@ -3158,8 +3198,13 @@ class MeshOverlayActivity : Activity() {
                                 bubbleViews.hideThought()
                                 val desc = formatToolChipLabel(toolCall, displayText)
                                 applyToolChipStyle(aiBubbleView, desc)
-                            } else if (displayText.isNotBlank()) {
-                                aiBubbleView.text = formatMarkdownToSpannable(displayText)
+                            } else {
+                                val cleanDisplay = PaiosModelHelper.stripControlToolTags(
+                                    PaiosModelHelper.stripLeadingAssistantLabel(displayText)
+                                )
+                                if (cleanDisplay.isNotBlank()) {
+                                    aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                }
                             }
                             outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
                         }
@@ -3174,7 +3219,12 @@ class MeshOverlayActivity : Activity() {
                 if (failure != null) {
                     return StreamAttemptResult.Failed(failure, streamedText)
                 }
-                return StreamAttemptResult.Completed(streamedText, handledToolCall, lastFinishReason)
+                val finalOutText = if (!handledToolCall && prefixText.isEmpty()) {
+                    PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
+                } else {
+                    streamedText
+                }
+                return StreamAttemptResult.Completed(finalOutText, handledToolCall, lastFinishReason)
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -3187,7 +3237,8 @@ class MeshOverlayActivity : Activity() {
         activeStreamJob?.cancel()
         visualSummaryJob?.cancel()
         if (activeTurnIdPendingTtlConsume > 0L) {
-            consumePendingScreenTurnIfNeeded(activeTurnIdPendingTtlConsume)
+            // Cancelled mid-turn for a retry; don't prematurely burn screen TTL.
+            activeTurnIdPendingTtlConsume = -1L
         }
         val turnId = ++overlayTurnSequence
 
@@ -3379,7 +3430,10 @@ class MeshOverlayActivity : Activity() {
 
                         while (overlayTurnSequence == turnId &&
                             !isDismissing &&
-                            extractToolCallJson(accumulatedText) == null
+                            PaiosModelHelper.extractToolCallJson(
+                                accumulatedText,
+                                allowTruncatedRepair = false
+                            ) == null
                         ) {
                             val incompleteTool = looksLikeIncompleteToolCall(accumulatedText)
                             val shouldContinue = PaiosModelHelper.shouldContinuePartialResponse(
@@ -3389,12 +3443,9 @@ class MeshOverlayActivity : Activity() {
                                 lastRoundAddedChars = lastRoundAddedNonWs,
                                 isNanoV4 = resolved.capabilities.isNanoV4,
                                 nullReasonRetryCount = nullReasonRetryCount,
-                                stopCutoffRetryCount = stopCutoffRetryCount
-                            ) || (incompleteTool &&
-                                !PaiosModelHelper.hasContinuationStutter(accumulatedText) &&
-                                continuationCount < PaiosModelHelper.MAX_OVERLAY_CONTINUATIONS &&
-                                lastRoundAddedNonWs > 0 &&
-                                accumulatedText.length < PaiosModelHelper.MAX_OVERLAY_ACCUMULATED_CHARS)
+                                stopCutoffRetryCount = stopCutoffRetryCount,
+                                isToolDraft = incompleteTool
+                            )
 
                             if (!shouldContinue) break
 
@@ -3513,7 +3564,9 @@ class MeshOverlayActivity : Activity() {
                             }
                             val errText = if (partial.isBlank()) errMsg else "$partial\n\n*$errMsg*"
                             aiBubbleView.text = formatMarkdownToSpannable(errText)
-                            consumePendingScreenTurnIfNeeded(turnId)
+                            if (activeTurnIdPendingTtlConsume == turnId) {
+                                activeTurnIdPendingTtlConsume = -1L
+                            }
                         }
                     }
                 }
@@ -3536,7 +3589,9 @@ class MeshOverlayActivity : Activity() {
                         e.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
                     }
                     aiBubbleView.text = formatMarkdownToSpannable(errMsg)
-                    consumePendingScreenTurnIfNeeded(turnId)
+                    if (activeTurnIdPendingTtlConsume == turnId) {
+                        activeTurnIdPendingTtlConsume = -1L
+                    }
                 }
             }
         }
@@ -3572,10 +3627,13 @@ class MeshOverlayActivity : Activity() {
     ): Pair<Boolean, String> {
         val finalToolCall = extractToolCallJson(streamedText)
         if (finalToolCall != null) {
-            val tool = finalToolCall.optString("tool", "")
-            val app = finalToolCall.optString("app", "paios")
+            val tool = finalToolCall.optString("tool", "").trim()
+                .ifEmpty { finalToolCall.optString("name", "").trim() }
+                .ifEmpty { finalToolCall.optString("method", "").trim() }
+            val app = finalToolCall.optString("app", "").trim().ifEmpty { "paios" }
             val args = finalToolCall.optJSONObject("args")
                 ?: finalToolCall.optJSONObject("arguments")
+                ?: finalToolCall.optJSONObject("parameters")
                 ?: finalToolCall.optJSONObject("params")
                 ?: JSONObject()
             val desc = formatToolChipLabel(finalToolCall, streamedText)
@@ -3605,18 +3663,46 @@ class MeshOverlayActivity : Activity() {
         }
 
         if (handledToolCall || looksLikeIncompleteToolCall(streamedText)) {
-            Log.w(TAG, "[STREAM INCOMPLETE TOOL] Discarding unparseable tool call draft")
+            Log.w(TAG, "[STREAM INCOMPLETE TOOL] Unparseable tool draft; running tool-free fallback attempt")
+            val isScreenToolDraft = streamedText.contains(
+                InternalToolsHelper.TOOL_INSPECT_SCREEN,
+                ignoreCase = true
+            )
             withContext(Dispatchers.Main) {
-                sheetProgressBar?.visibility = View.GONE
-                bubbleViews.hideThought()
-                aiBubbleView.text = formatMarkdownToSpannable("Unable to parse completed tool request. Please try again.")
-                consumePendingScreenTurnIfNeeded(turnId)
+                restoreAiBubbleStyle(bubbleViews)
+                sheetProgressBar?.visibility = View.VISIBLE
             }
-            return Pair(false, "")
+            val fallbackOutcome = runToolFreeFallbackAttempt(
+                userPrompt = userPrompt,
+                personaSystemPrompt = personaSystemPrompt,
+                historySnapshot = historySnapshot,
+                userBitmapsSnapshot = userBitmapsSnapshot,
+                newUserCompositeBitmap = newUserCompositeBitmap,
+                aiBubbleView = aiBubbleView,
+                temperatureValue = temperatureValue,
+                turnId = turnId,
+                emptyFallbackMessage = "Unable to parse completed tool request. Please try again.",
+                forceOverrideOnError = true
+            )
+            withContext(Dispatchers.Main) {
+                if (isScreenToolDraft) {
+                    // Preserve pendingScreenBitmap across retries when inspect_screen failed to complete
+                    if (activeTurnIdPendingTtlConsume == turnId) {
+                        activeTurnIdPendingTtlConsume = -1L
+                    }
+                } else {
+                    consumePendingScreenTurnIfNeeded(turnId)
+                }
+            }
+            return fallbackOutcome
         }
 
-        if (streamedText.isBlank()) {
-            runEmptyStreamFallback(
+        val cleanStreamedText = PaiosModelHelper.stripControlToolTags(
+            PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
+        )
+
+        if (cleanStreamedText.isBlank()) {
+            val emptyOutcome = runEmptyStreamFallback(
                 userPrompt = userPrompt,
                 personaSystemPrompt = personaSystemPrompt,
                 historySnapshot = historySnapshot,
@@ -3627,9 +3713,11 @@ class MeshOverlayActivity : Activity() {
                 turnId = turnId
             )
             withContext(Dispatchers.Main) {
-                consumePendingScreenTurnIfNeeded(turnId)
+                if (activeTurnIdPendingTtlConsume == turnId) {
+                    activeTurnIdPendingTtlConsume = -1L
+                }
             }
-            return Pair(false, "")
+            return emptyOutcome
         }
 
         if (userBitmapsSnapshot.isNotEmpty() && newUserCompositeBitmap != null) {
@@ -3638,15 +3726,18 @@ class MeshOverlayActivity : Activity() {
 
         withContext(Dispatchers.Main) {
             sheetProgressBar?.visibility = View.GONE
-            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $streamedText\n"
-            lastResponseText = streamedText
+            if (cleanStreamedText != streamedText) {
+                aiBubbleView.text = formatMarkdownToSpannable(cleanStreamedText)
+            }
+            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $cleanStreamedText\n"
+            lastResponseText = cleanStreamedText
             if (effectiveBitmaps.isNotEmpty() || activeSessionBitmap != null) {
-                visualContextMemory = streamedText.take(1200)
+                visualContextMemory = cleanStreamedText.take(1200)
             }
             val aiMsg = JSONObject().apply {
                 put("user", "Gemini")
                 put("author", resolveOverlayAuthorLabel())
-                put("message", streamedText)
+                put("message", cleanStreamedText)
                 put("time", System.currentTimeMillis().toString())
             }
             sessionMessages.add(aiMsg)
@@ -3655,7 +3746,7 @@ class MeshOverlayActivity : Activity() {
         val shouldSummarize = userBitmapsSnapshot.isNotEmpty() &&
             activeSessionBitmap != null &&
             overlayTurnSequence == turnId
-        return Pair(shouldSummarize, if (shouldSummarize) streamedText else "")
+        return Pair(shouldSummarize, if (shouldSummarize) cleanStreamedText else "")
     }
 
     private fun resolveEmptyResponseFallback(): String {
@@ -3668,6 +3759,24 @@ class MeshOverlayActivity : Activity() {
             ?: "This request couldn't be processed by the on-device safety check. Try rephrasing or clearing screen context."
     }
 
+    private fun restoreAiBubbleStyle(bubbleViews: AiBubbleViews) {
+        bubbleViews.hideThought()
+        bubbleViews.cardContainer.setPadding(dp(14), dp(9), dp(14), dp(9))
+        bubbleViews.cardContainer.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            val r = dp(18).toFloat()
+            val tail = dp(4).toFloat()
+            cornerRadii = floatArrayOf(r, r, r, r, r, r, tail, tail)
+            setColor(palette.aiBubbleBg)
+            setStroke(dp(1), palette.aiBubbleBorder)
+        }
+        bubbleViews.answerView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        bubbleViews.answerView.setTextColor(palette.bodyText)
+        bubbleViews.answerView.background = null
+        bubbleViews.answerView.setPadding(0, 0, 0, 0)
+        bubbleViews.answerView.text = formatMarkdownToSpannable(tr("assistant_thinking"))
+    }
+
     private suspend fun runEmptyStreamFallback(
         userPrompt: String,
         personaSystemPrompt: String,
@@ -3677,17 +3786,43 @@ class MeshOverlayActivity : Activity() {
         aiBubbleView: TextView,
         temperatureValue: Float,
         turnId: Long
-    ) {
+    ): Pair<Boolean, String> = runToolFreeFallbackAttempt(
+        userPrompt = userPrompt,
+        personaSystemPrompt = personaSystemPrompt,
+        historySnapshot = historySnapshot,
+        userBitmapsSnapshot = userBitmapsSnapshot,
+        newUserCompositeBitmap = newUserCompositeBitmap,
+        aiBubbleView = aiBubbleView,
+        temperatureValue = temperatureValue,
+        turnId = turnId,
+        emptyFallbackMessage = resolveEmptyResponseFallback(),
+        forceOverrideOnError = false
+    )
+
+    private suspend fun runToolFreeFallbackAttempt(
+        userPrompt: String,
+        personaSystemPrompt: String,
+        historySnapshot: String,
+        userBitmapsSnapshot: List<Bitmap>,
+        newUserCompositeBitmap: Bitmap?,
+        aiBubbleView: TextView,
+        temperatureValue: Float,
+        turnId: Long,
+        emptyFallbackMessage: String,
+        forceOverrideOnError: Boolean
+    ): Pair<Boolean, String> {
         val hasUserPhotos = userBitmapsSnapshot.isNotEmpty()
-        Log.w(TAG, "[EMPTY STREAM RETRY] Initial stream returned blank; retrying once (hasUserPhotos=$hasUserPhotos)")
+        Log.w(TAG, "[TOOL-FREE FALLBACK] Retrying once without tool schemas (hasUserPhotos=$hasUserPhotos)")
         val retryInstructions = buildString {
             val boundedPersona = PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt)
             if (!boundedPersona.isNullOrBlank()) {
                 append(boundedPersona)
             }
+            if (isNotEmpty()) append("\n\n")
+            append("## [GUIDELINES]\n")
+            append(" - Reply directly without prepending \"PAIOS:\".")
             if (!hasUserPhotos && historySnapshot.isNotBlank()) {
-                if (isNotEmpty()) append("\n\n")
-                append("### [CHAT HISTORY]\n")
+                append("\n\n### [CHAT HISTORY]\n")
                 append(historySnapshot.takeLast(1200))
             }
         }.takeIf { it.isNotBlank() }
@@ -3700,6 +3835,7 @@ class MeshOverlayActivity : Activity() {
 
         var retryText = ""
         var retryError: Throwable? = null
+        var lastFinishReason: String? = null
         try {
             val resolved = getOverlayResolvedClient()
             val retryBitmap = if (hasUserPhotos) (newUserCompositeBitmap ?: compositeBitmaps(userBitmapsSnapshot)) else null
@@ -3716,10 +3852,18 @@ class MeshOverlayActivity : Activity() {
             )
             resolved.model.generateContentStream(retryRequest)
                 .onEach { chunk ->
-                    val piece = chunk.candidates.firstOrNull()?.text ?: ""
+                    val candidate = chunk.candidates.firstOrNull()
+                    val piece = candidate?.text ?: ""
+                    val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                    if (chunkReason != null) {
+                        lastFinishReason = chunkReason
+                    }
                     retryText += piece
-                    if (retryText.isNotBlank()) {
-                        val formatted = formatMarkdownToSpannable(retryText)
+                    val cleanPreview = PaiosModelHelper.stripControlToolTags(
+                        PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+                    )
+                    if (cleanPreview.isNotBlank()) {
+                        val formatted = formatMarkdownToSpannable(cleanPreview)
                         withContext(Dispatchers.Main) {
                             aiBubbleView.text = formatted
                             outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
@@ -3737,8 +3881,9 @@ class MeshOverlayActivity : Activity() {
                 PaiosModelHelper.isPolicyCheckException(retryError!!) &&
                 retryInstructions != null
             ) {
-                Log.w(TAG, "[POLICY FALLBACK RETRY] Empty-stream retry hit policy check; retrying bare prompt")
+                Log.w(TAG, "[POLICY FALLBACK RETRY] Tool-free fallback hit policy check; retrying bare prompt")
                 retryError = null
+                lastFinishReason = null
                 val bareRequest = PaiosModelHelper.buildRequest(
                     prompt = retryPrompt,
                     instructions = null,
@@ -3752,10 +3897,18 @@ class MeshOverlayActivity : Activity() {
                 )
                 resolved.model.generateContentStream(bareRequest)
                     .onEach { chunk ->
-                        val piece = chunk.candidates.firstOrNull()?.text ?: ""
+                        val candidate = chunk.candidates.firstOrNull()
+                        val piece = candidate?.text ?: ""
+                        val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                        if (chunkReason != null) {
+                            lastFinishReason = chunkReason
+                        }
                         retryText += piece
-                        if (retryText.isNotBlank()) {
-                            val formatted = formatMarkdownToSpannable(retryText)
+                        val cleanPreview = PaiosModelHelper.stripControlToolTags(
+                            PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+                        )
+                        if (cleanPreview.isNotBlank()) {
+                            val formatted = formatMarkdownToSpannable(cleanPreview)
                             withContext(Dispatchers.Main) {
                                 aiBubbleView.text = formatted
                                 outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
@@ -3768,57 +3921,178 @@ class MeshOverlayActivity : Activity() {
                     }
                     .collect {}
             }
+
+            retryText = PaiosModelHelper.stripControlToolTags(
+                PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+            )
+
+            // Auto-continue truncated tool-free fallback responses (e.g. MAX_TOKENS or mid-clause STOP)
+            var fallbackContinuationCount = 0
+            var fallbackNullReasonRetries = 0
+            var fallbackStopCutoffRetries = 0
+            var fallbackLastAddedNonWs = retryText.count { !it.isWhitespace() }
+            val fallbackLang = if (isShareLocaleEnabled()) tr("current_language") else null
+            while (retryError == null &&
+                overlayTurnSequence == turnId &&
+                !isDismissing &&
+                PaiosModelHelper.shouldContinuePartialResponse(
+                    finishReason = lastFinishReason,
+                    partialText = retryText,
+                    continuationCount = fallbackContinuationCount,
+                    lastRoundAddedChars = fallbackLastAddedNonWs,
+                    isNanoV4 = resolved.capabilities.isNanoV4,
+                    nullReasonRetryCount = fallbackNullReasonRetries,
+                    stopCutoffRetryCount = fallbackStopCutoffRetries
+                )
+            ) {
+                val normReason = PaiosModelHelper.normalizeFinishReason(lastFinishReason)
+                    ?.uppercase(Locale.ROOT)
+                if (normReason == null) {
+                    fallbackNullReasonRetries++
+                } else if (normReason == "0" || normReason == "STOP") {
+                    fallbackStopCutoffRetries++
+                }
+                fallbackContinuationCount++
+                Log.i(
+                    TAG,
+                    "[TOOL-FREE FALLBACK AUTO-CONTINUE #$fallbackContinuationCount] reason=$lastFinishReason chars=${retryText.length}"
+                )
+                withContext(Dispatchers.Main) {
+                    if (overlayTurnSequence == turnId && !isDismissing) {
+                        sheetProgressBar?.visibility = View.VISIBLE
+                    }
+                }
+                val contSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+                    originalQuestion = userPrompt,
+                    partialText = retryText,
+                    personaAnchor = personaSystemPrompt,
+                    languageCode = fallbackLang
+                )
+                val contRequest = PaiosModelHelper.buildRequest(
+                    prompt = contSpec.userPrompt,
+                    instructions = contSpec.instructions,
+                    image = null,
+                    maxTokens = null,
+                    temperature = temperatureValue,
+                    enableThinking = false,
+                    useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                    useThinkingCapability = false,
+                    candidateCount = 1
+                )
+                var roundText = ""
+                var roundReason: String? = null
+                var roundError: Throwable? = null
+                resolved.model.generateContentStream(contRequest)
+                    .onEach { chunk ->
+                        val candidate = chunk.candidates.firstOrNull()
+                        val piece = candidate?.text ?: ""
+                        val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                        if (chunkReason != null) {
+                            roundReason = chunkReason
+                        }
+                        roundText += piece
+                        val stitchedPreview = PaiosModelHelper.stripControlToolTags(
+                            PaiosModelHelper.stripLeadingAssistantLabel(
+                                PaiosModelHelper.stitchOverlayContinuation(retryText, roundText)
+                            )
+                        )
+                        if (stitchedPreview.isNotBlank()) {
+                            val formatted = formatMarkdownToSpannable(stitchedPreview)
+                            withContext(Dispatchers.Main) {
+                                if (overlayTurnSequence == turnId && !isDismissing) {
+                                    aiBubbleView.text = formatted
+                                    outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                }
+                            }
+                        }
+                    }
+                    .catch { e ->
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        roundError = e
+                    }
+                    .collect {}
+
+                if (roundError != null) {
+                    Log.w(TAG, "[TOOL-FREE FALLBACK AUTO-CONTINUE #$fallbackContinuationCount] failed: ${roundError?.message}")
+                    if (roundText.isNotBlank()) {
+                        retryText = PaiosModelHelper.stripControlToolTags(
+                            PaiosModelHelper.stripLeadingAssistantLabel(
+                                PaiosModelHelper.stitchOverlayContinuation(retryText, roundText)
+                            )
+                        )
+                    }
+                    break
+                }
+                val prevNonWs = retryText.count { !it.isWhitespace() }
+                val stitched = PaiosModelHelper.stripControlToolTags(
+                    PaiosModelHelper.stripLeadingAssistantLabel(
+                        PaiosModelHelper.stitchOverlayContinuation(retryText, roundText)
+                    )
+                )
+                fallbackLastAddedNonWs = stitched.count { !it.isWhitespace() } - prevNonWs
+                retryText = stitched
+                lastFinishReason = roundReason
+            }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             retryError = e
         }
 
+        val cleanRetryText = PaiosModelHelper.stripControlToolTags(
+            PaiosModelHelper.stripLeadingAssistantLabel(retryText)
+        )
+
         val finalError = retryError
         if (finalError != null) {
-            Log.e(TAG, "[EMPTY STREAM RETRY ERROR] ${finalError.message}", finalError)
+            Log.e(TAG, "[TOOL-FREE FALLBACK ERROR] ${finalError.message}", finalError)
             withContext(Dispatchers.Main) {
                 sheetProgressBar?.visibility = View.GONE
-                val errMsg = if (PaiosModelHelper.isPolicyCheckException(finalError)) {
+                val errMsg = if (forceOverrideOnError) {
+                    emptyFallbackMessage
+                } else if (PaiosModelHelper.isPolicyCheckException(finalError)) {
                     resolvePolicyCheckFallbackMessage()
                 } else {
-                    finalError.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
+                    finalError.message?.takeIf { it.isNotBlank() } ?: emptyFallbackMessage
                 }
-                val errText = if (retryText.isBlank()) errMsg else "$retryText\n\n*$errMsg*"
+                val errText = if (cleanRetryText.isBlank() || forceOverrideOnError) errMsg else "$cleanRetryText\n\n*$errMsg*"
                 aiBubbleView.text = formatMarkdownToSpannable(errText)
             }
-            return
+            return Pair(false, "")
         }
 
-        if (hasUserPhotos && retryText.isNotBlank()) {
+        if (hasUserPhotos && cleanRetryText.isNotBlank()) {
             activeSessionBitmap = newUserCompositeBitmap ?: activeSessionBitmap
         }
 
         withContext(Dispatchers.Main) {
             sheetProgressBar?.visibility = View.GONE
-            if (retryText.isNotBlank()) {
-                aiBubbleView.text = formatMarkdownToSpannable(retryText)
-                conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $retryText\n"
-                lastResponseText = retryText
+            if (cleanRetryText.isNotBlank()) {
+                aiBubbleView.text = formatMarkdownToSpannable(cleanRetryText)
+                conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $cleanRetryText\n"
+                lastResponseText = cleanRetryText
                 if (hasUserPhotos) {
-                    visualContextMemory = retryText.take(1200)
+                    visualContextMemory = cleanRetryText.take(1200)
                 }
                 val aiMsg = JSONObject().apply {
                     put("user", "Gemini")
                     put("author", resolveOverlayAuthorLabel())
-                    put("message", retryText)
+                    put("message", cleanRetryText)
                     put("time", System.currentTimeMillis().toString())
                 }
                 sessionMessages.add(aiMsg)
             } else {
-                aiBubbleView.text = formatMarkdownToSpannable(resolveEmptyResponseFallback())
+                aiBubbleView.text = formatMarkdownToSpannable(emptyFallbackMessage)
             }
             outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
         }
         val turnBitmap = activeSessionBitmap
-        if (hasUserPhotos && retryText.isNotBlank() && turnBitmap != null && overlayTurnSequence == turnId && !isDismissing) {
-            schedulePostTurnVisualSummary(turnBitmap, userPrompt, retryText, turnId)
-        }
+        val shouldSummarize = hasUserPhotos &&
+            cleanRetryText.isNotBlank() &&
+            turnBitmap != null &&
+            overlayTurnSequence == turnId &&
+            !isDismissing
+        return Pair(shouldSummarize, if (shouldSummarize) cleanRetryText else "")
     }
 
     private fun applyToolChipStyle(view: TextView, description: String) {
@@ -3932,8 +4206,11 @@ class MeshOverlayActivity : Activity() {
                             lastSynthFinishReason = chunkReason
                         }
                         synthText += piece
-                        if (synthText.isNotBlank()) {
-                            val formatted = formatMarkdownToSpannable(synthText)
+                        val cleanPreview = PaiosModelHelper.stripControlToolTags(
+                            PaiosModelHelper.stripLeadingAssistantLabel(synthText)
+                        )
+                        if (cleanPreview.isNotBlank()) {
+                            val formatted = formatMarkdownToSpannable(cleanPreview)
                             withContext(Dispatchers.Main) {
                                 synthesisBubble.text = formatted
                                 outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
@@ -4100,15 +4377,21 @@ class MeshOverlayActivity : Activity() {
                         synthesisBubble.text = formatMarkdownToSpannable(errText)
                     }
                 } else {
+                    val cleanSynthText = PaiosModelHelper.stripControlToolTags(
+                        PaiosModelHelper.stripLeadingAssistantLabel(synthText)
+                    )
                     withContext(Dispatchers.Main) {
                         sheetProgressBar?.visibility = View.GONE
-                        if (synthText.isNotBlank()) {
-                            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $synthText\n"
-                            lastResponseText = synthText
+                        if (cleanSynthText.isNotBlank()) {
+                            if (cleanSynthText != synthText) {
+                                synthesisBubble.text = formatMarkdownToSpannable(cleanSynthText)
+                            }
+                            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $cleanSynthText\n"
+                            lastResponseText = cleanSynthText
                             val aiMsg = JSONObject().apply {
                                 put("user", "Gemini")
                                 put("author", resolveOverlayAuthorLabel(resolved))
-                                put("message", synthText)
+                                put("message", cleanSynthText)
                                 put("time", System.currentTimeMillis().toString())
                             }
                             sessionMessages.add(aiMsg)
@@ -4470,7 +4753,7 @@ class MeshOverlayActivity : Activity() {
             append("### [AVAILABLE TOOLS]\n")
             append("Use a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text.\n")
             append("When calling a tool, respond with ONLY a JSON object using double quotes:\n")
-            append("""{"tool": "<tool>", "app": "<app>", "args": {}, "description": "<2-4 word action label>"}""")
+            append("""{"tool": "<tool>", "app": "<app>", "args": {}}""")
             append("\n\nTools:")
             if (internalSpecs.isNotBlank()) {
                 append(internalSpecs)
@@ -4481,165 +4764,11 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
-    private fun looksLikeIncompleteToolCall(text: String): Boolean {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return false
-        if (extractToolCallJson(trimmed) != null) return false
-        if (trimmed.startsWith("{") || trimmed.startsWith("```json", ignoreCase = true)) {
-            return true
-        }
-        val stripped = trimmed.replace(Regex("""^```(?:json)?\s*""", RegexOption.IGNORE_CASE), "")
-        if (!stripped.startsWith("{")) return false
-        return stripped.contains("\"action\"") ||
-            stripped.contains("\"tool_call\"") ||
-            stripped.contains("\"tool\"") ||
-            stripped.contains("'action'") ||
-            stripped.contains("'tool'")
-    }
+    private fun looksLikeIncompleteToolCall(text: String): Boolean =
+        PaiosModelHelper.looksLikeIncompleteToolCall(text)
 
-    private fun extractToolCallJson(text: String): JSONObject? {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return null
-
-        val mdRegex = Regex("""```(?:json)?\s*([\s\S]*?)\s*(?:```|$)""", RegexOption.IGNORE_CASE)
-        for (match in mdRegex.findAll(trimmed)) {
-            val block = match.groupValues[1].trim()
-            val parsed = scanBalancedToolObjects(block)
-            if (parsed != null) return parsed
-        }
-        return scanBalancedToolObjects(trimmed)
-    }
-
-    private fun scanBalancedToolObjects(source: String): JSONObject? {
-        var i = 0
-        while (i < source.length) {
-            if (source[i] != '{') {
-                i++
-                continue
-            }
-            val end = findMatchingBrace(source, i)
-            if (end == -1) {
-                i++
-                continue
-            }
-            val candidate = source.substring(i, end + 1)
-            val obj = tryParseToolObject(candidate)
-            if (obj != null) return obj
-            i = end + 1
-        }
-        return null
-    }
-
-    private fun findMatchingBrace(source: String, start: Int): Int {
-        var depth = 0
-        var quote: Char? = null
-        var escaped = false
-        for (i in start until source.length) {
-            val ch = source[i]
-            if (escaped) {
-                escaped = false
-                continue
-            }
-            if (quote != null) {
-                if (ch == '\\') {
-                    escaped = true
-                } else if (ch == quote) {
-                    quote = null
-                }
-                continue
-            }
-            when (ch) {
-                '"', '\'' -> quote = ch
-                '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) return i
-                }
-            }
-        }
-        return -1
-    }
-
-    private fun tryParseToolObject(candidate: String): JSONObject? {
-        val attempts = listOf(
-            candidate,
-            sanitizeJsonLikeString(candidate, convertSingleQuotes = false),
-            sanitizeJsonLikeString(candidate, convertSingleQuotes = true)
-        )
-        for (attempt in attempts) {
-            try {
-                val obj = JSONObject(attempt)
-                if (isToolCallObject(obj)) return obj
-            } catch (_: Exception) {}
-        }
-        return null
-    }
-
-    private fun isToolCallObject(obj: JSONObject): Boolean {
-        if (obj.optString("action") == "tool_call") return true
-        val tool = obj.opt("tool")?.toString()?.trim()
-        if (tool.isNullOrEmpty()) return false
-        return obj.has("args") || obj.has("arguments") || obj.has("params") || obj.has("app") || obj.has("description")
-    }
-
-    private fun sanitizeJsonLikeString(raw: String, convertSingleQuotes: Boolean): String {
-        val out = StringBuilder(raw.length)
-        var quote: Char? = null
-        var i = 0
-        while (i < raw.length) {
-            val ch = raw[i]
-            if (quote != null) {
-                if (ch == '\\' && i + 1 < raw.length) {
-                    val next = raw[i + 1]
-                    if (next == '_') {
-                        out.append('_')
-                        i += 2
-                        continue
-                    }
-                    out.append(ch).append(next)
-                    i += 2
-                    continue
-                }
-                if (ch == '\n' || ch == '\r') {
-                    out.append("\\n")
-                    i++
-                    continue
-                }
-                if (ch == quote) {
-                    if (quote == '\'' && convertSingleQuotes && i + 1 < raw.length) {
-                        val next = raw[i + 1]
-                        if (next.isLetterOrDigit() || next == ' ') {
-                            out.append('\'')
-                            i++
-                            continue
-                        }
-                    }
-                    out.append(if (convertSingleQuotes) '"' else ch)
-                    quote = null
-                    i++
-                    continue
-                }
-                if (convertSingleQuotes && quote == '\'' && ch == '"') {
-                    out.append("\\\"")
-                    i++
-                    continue
-                }
-                out.append(ch)
-                i++
-                continue
-            }
-            if (ch == '"' || (convertSingleQuotes && ch == '\'')) {
-                quote = ch
-                out.append(if (convertSingleQuotes) '"' else ch)
-                i++
-                continue
-            }
-            out.append(ch)
-            i++
-        }
-        // Strip trailing commas before } or ]
-        return out.toString().replace(Regex(""",(\s*[}\]])"""), "$1")
-    }
+    private fun extractToolCallJson(text: String): JSONObject? =
+        PaiosModelHelper.extractToolCallJson(text)?.toJsonObject()
 
     private fun isShareLocaleEnabled(): Boolean {
         return try {

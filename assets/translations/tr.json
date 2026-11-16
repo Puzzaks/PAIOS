@@ -393,5 +393,13 @@
     "onboarding_download_required": "Devam etmek için varsayılan Gemini Nano modelini indirin.",
     "onboarding_download_model": "Varsayılan modeli indir",
     "model_download_remaining": "{remaining} kaldı",
-    "model_download_speed_remaining": "{speed} • {remaining} kaldı"
+    "model_download_speed_remaining": "{speed} • {remaining} kaldı",
+    "intro_gemini_nano_ready_title": "Gemini Nano Hazır",
+    "intro_gemini_nano_ready_desc": "Cihaz içi yapay zeka ağırlıkları zaten yüklü ve kullanıma hazır.",
+    "intro_gemini_nano_ready_status": "Model kullanılabilir",
+    "intro_gemini_nano_downloadable_title": "Gemini Nano'yu İndir",
+    "intro_gemini_nano_downloadable_desc": "Gemini Nano destekleniyor ve cihazınıza indirilmeye hazır.",
+    "intro_gemini_nano_checking_title": "Model Durumu Kontrol Ediliyor",
+    "intro_gemini_nano_checking_desc": "Cihaz içi AICore model kullanılabilirliği inceleniyor...",
+    "checking_model_status": "Model durumu kontrol ediliyor..."
 }

@@ -250,6 +250,7 @@ class AIEngine with md.ChangeNotifier {
   );
   String responseText = "";
   String currentThoughtChunk = "";
+  String _rawThoughtChunk = "";
   DateTime? streamingMessageTime;
   DateTime? streamingUserMessageTime;
   bool isLoading = false;
@@ -292,6 +293,7 @@ class AIEngine with md.ChangeNotifier {
   static const int maxContinuationChars = 12000;
   static const int maxNullReasonContinuations = 2;
   static const int maxStopCutoffContinuations = 1;
+  static const int maxEmptyStreamRetries = 1;
 
   String _lastFinishReason = ""; // captured from streaming events, read at done
   String _combinedResponse = ""; // accumulates across continuation calls
@@ -299,6 +301,7 @@ class AIEngine with md.ChangeNotifier {
   int _continuationCount = 0;    // how many continuations fired (for logging)
   int _nullReasonContinuationCount = 0;
   int _stopCutoffContinuationCount = 0;
+  int _emptyStreamRetryCount = 0;
   int _streamGenerationId = 0;   // invalidates stale onDone/onError callbacks across streams
   bool _activeToolHandling = false;
   bool _forcedFinalSynthesis = false;
@@ -465,6 +468,7 @@ class AIEngine with md.ChangeNotifier {
       final box = Hive.box('paios_storage');
       await box.put('mesh_extension_${canon}_enabled', enabled);
     }
+    _syncInternalToolRegistrations();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('mesh_extension_${canon}_enabled', enabled);
@@ -472,6 +476,7 @@ class AIEngine with md.ChangeNotifier {
         await prefs.setBool('mesh_extension_${appPackage}_enabled', enabled);
       }
     } catch (_) {}
+    await _syncLocalToolRegistrations();
     notifyListeners();
   }
 
@@ -1175,14 +1180,55 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
+  static final RegExp _ctrlToolCallPrefixRegex = RegExp(
+    r'<ctrl\d+>\s*call:([a-zA-Z0-9_.:-]+)\s*\{',
+    caseSensitive: false,
+  );
+  static final RegExp _strayCtrlTagRegex = RegExp(
+    r'<ctrl\d+>',
+    caseSensitive: false,
+  );
+
+  static String _sanitizeThoughtChunk(String input) {
+    if (input.isEmpty) return '';
+    final out = StringBuffer();
+    int cursor = 0;
+    for (final match in _ctrlToolCallPrefixRegex.allMatches(input)) {
+      if (match.start < cursor) continue;
+      final openBrace = match.end - 1;
+      final closeBrace = _findBalancedBraceEnd(input, openBrace);
+      if (closeBrace == -1) continue;
+      out.write(input.substring(cursor, match.start));
+      int after = closeBrace + 1;
+      final tailMatch = RegExp(r'^\s*<ctrl\d+>', caseSensitive: false)
+          .firstMatch(input.substring(after));
+      if (tailMatch != null) {
+        after += tailMatch.end;
+      }
+      cursor = after;
+    }
+    out.write(input.substring(cursor));
+    return out
+        .toString()
+        .replaceAll(_strayCtrlTagRegex, '')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
+  }
+
+  void _clearThoughtChunk() {
+    _rawThoughtChunk = "";
+    currentThoughtChunk = "";
+  }
+
   void _appendThoughtChunk(String? incoming) {
     final trimmed = incoming?.trim();
     if (trimmed == null || trimmed.isEmpty) return;
-    if (currentThoughtChunk.isEmpty || trimmed.startsWith(currentThoughtChunk)) {
-      currentThoughtChunk = trimmed;
-    } else if (!currentThoughtChunk.endsWith(trimmed)) {
-      currentThoughtChunk = "$currentThoughtChunk\n\n$trimmed";
+    if (_rawThoughtChunk.isEmpty || trimmed.startsWith(_rawThoughtChunk)) {
+      _rawThoughtChunk = trimmed;
+    } else if (!_rawThoughtChunk.endsWith(trimmed)) {
+      _rawThoughtChunk = "$_rawThoughtChunk\n\n$trimmed";
     }
+    currentThoughtChunk = _sanitizeThoughtChunk(_rawThoughtChunk);
   }
 
   Map get chats => chatData.chats;
@@ -1434,14 +1480,28 @@ class AIEngine with md.ChangeNotifier {
       ),
     );
 
+    await _syncLocalToolRegistrations(startListener: true);
+  }
+
+  void _syncInternalToolRegistrations() {
     for (final mod in InternalToolsService.modules) {
+      if (!isExtensionEnabled(mod.id)) {
+        for (final spec in mod.tools) {
+          toolRegistry.unregister(spec.name);
+        }
+        continue;
+      }
       for (final spec in mod.tools) {
+        if (!isToolModuleEnabled(spec.name)) {
+          toolRegistry.unregister(spec.name);
+          continue;
+        }
         if (spec.name == 'query_aicore_documentation') {
           docService.registerMeshTool(toolRegistry);
           continue;
         }
         if (spec.name == 'get_battery_status') {
-          meshClient.registerLocalTool(
+          toolRegistry.register(
             M3xTool(
               name: spec.name,
               app: spec.app,
@@ -1475,7 +1535,7 @@ class AIEngine with md.ChangeNotifier {
           );
           continue;
         }
-        meshClient.registerLocalTool(
+        toolRegistry.register(
           M3xTool(
             name: spec.name,
             app: spec.app,
@@ -1499,9 +1559,15 @@ class AIEngine with md.ChangeNotifier {
         );
       }
     }
-    try {
-      await meshClient.startListening().timeout(const Duration(seconds: 2));
-    } catch (_) {}
+  }
+
+  Future<void> _syncLocalToolRegistrations({bool startListener = false}) async {
+    _syncInternalToolRegistrations();
+    if (startListener) {
+      try {
+        await meshClient.startListening().timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
     try {
       await meshClient.syncDeclaredTools().timeout(const Duration(seconds: 2));
     } catch (_) {}
@@ -2103,6 +2169,7 @@ class AIEngine with md.ChangeNotifier {
     final activeKey = '$activeReleaseStage:$activePreference';
     switch (parts[0]) {
       case "Available":
+      case "available":
         modelInfo = await gemini
             .getModelInfo(
               releaseStage: config.modelReleaseStage,
@@ -2113,7 +2180,31 @@ class AIEngine with md.ChangeNotifier {
               onTimeout: () => <String, dynamic>{},
             );
         if (_disposed) return;
-        if (modelInfo["version"] == null) {
+        final bool reportedAvailable = _modelBool("available") ||
+            hasAnyAvailableModel ||
+            modelFeatureStatus == "available";
+        if (reportedAvailable) {
+          isAvailable = true;
+          _downloadErrorRetryCount = 0;
+          _unavailableToastShown = false;
+          _downloadSpeedSamples.remove(activeKey);
+          final prev = variantDownloads[activeKey];
+          if (prev != null && (prev.isDownloading || prev.isFailed)) {
+            final total = prev.totalBytes > 0 ? prev.totalBytes : usualModelSize;
+            variantDownloads[activeKey] = prev.copyWith(
+              status: 'completed',
+              bytesDownloaded: total,
+              totalBytes: total,
+              bytesPerSec: 0.0,
+              clearError: true,
+            );
+          }
+          isDownloadingModel =
+              variantDownloads.values.any((s) => s.isDownloading);
+          addDownloadLog("Available=Available=0");
+          await log("model", "info", "Model is ready");
+          notifyListeners();
+        } else if (modelInfo["version"] == null) {
           if (_downloadErrorRetryCount < maxDownloadErrorRetries) {
             _downloadErrorRetryCount++;
             await log(
@@ -2130,36 +2221,15 @@ class AIEngine with md.ChangeNotifier {
             notifyListeners();
           }
         } else {
-          if (_modelBool("available") || modelFeatureStatus == "available") {
-            _downloadErrorRetryCount = 0;
-            _unavailableToastShown = false;
-            final prev = variantDownloads[activeKey];
-            if (prev != null && prev.isDownloading) {
-              _downloadSpeedSamples.remove(activeKey);
-              final total = prev.totalBytes > 0 ? prev.totalBytes : usualModelSize;
-              variantDownloads[activeKey] = prev.copyWith(
-                status: 'completed',
-                bytesDownloaded: total,
-                totalBytes: total,
-                bytesPerSec: 0.0,
-                clearError: true,
-              );
-              isDownloadingModel =
-                  variantDownloads.values.any((s) => s.isDownloading);
+          final subState = parts.length > 1 ? parts[1] : "";
+          if (subState == "Download") {
+            if (modelDownloadLog.isEmpty ||
+                modelDownloadLog.last["info"] != "waiting_network") {
+              addDownloadLog("Download=downloading_model=0");
+              await log("model", "info", "Downloading model");
             }
-            addDownloadLog("Available=Available=0");
-            await log("model", "info", "Model is ready");
           } else {
-            final subState = parts.length > 1 ? parts[1] : "";
-            if (subState == "Download") {
-              if (modelDownloadLog.isEmpty ||
-                  modelDownloadLog.last["info"] != "waiting_network") {
-                addDownloadLog("Download=downloading_model=0");
-                await log("model", "info", "Downloading model");
-              }
-            } else {
-              addDownloadLog(downloadStatus);
-            }
+            addDownloadLog(downloadStatus);
           }
         }
         break;
@@ -2260,11 +2330,11 @@ class AIEngine with md.ChangeNotifier {
   /// The response text lives on the engine; the repository handles everything else.
   Future<void> addToContext() async {
     final committedResponse = responseText;
-    final trimmedThought = currentThoughtChunk.trim();
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
     final aiTime = streamingMessageTime ?? DateTime.now();
     final userTime = streamingUserMessageTime ?? aiTime;
     responseText = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     streamingMessageTime = null;
     streamingUserMessageTime = null;
     await chatData.addToContext(
@@ -2414,11 +2484,33 @@ class AIEngine with md.ChangeNotifier {
   }
 
 
+  void startNewChat() {
+    currentChat = "0";
+    context.clear();
+    contextSize = 0;
+    if (!isLoading && !isGenerating && !isContinuing && !_isSynthesizing) {
+      _clearTurnVisualMemory();
+      prompt.clear();
+      responseText = "";
+      _clearThoughtChunk();
+      lastPrompt = "";
+      pendingImageBytes = null;
+      pendingImageName = null;
+      chatData.lastImagePath = null;
+      chatData.lastImageDescription = null;
+      streamingMessageTime = null;
+      streamingUserMessageTime = null;
+      isError = false;
+      status = "";
+    }
+    notifyListeners();
+  }
+
   Future<void> clearContext() async {
     _clearTurnVisualMemory();
     await chatData.clearContext();
     responseText = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     streamingMessageTime = null;
     streamingUserMessageTime = null;
   }
@@ -2693,6 +2785,7 @@ class AIEngine with md.ChangeNotifier {
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
     _stopCutoffContinuationCount = 0;
+    _emptyStreamRetryCount = 0;
     _toolTurnCount = 0;
     _lastToolCallSignature = "";
     _recoverableErrorRetries = 0;
@@ -2701,7 +2794,7 @@ class AIEngine with md.ChangeNotifier {
     _lastToolErrorText = "";
     _lastToolResultPayload = "";
     _lastToolCall = null;
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     responseText = "";
     lastPrompt = "";
     chatData.lastImagePath = null;
@@ -2726,7 +2819,7 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  Future<void> generateStream() async {
+  Future<void> generateStream({bool isEmptyStreamRetry = false}) async {
     if (prompt.text.isEmpty && pendingImageBytes == null) {
       status = "Please enter your prompt";
       isError = true;
@@ -2773,8 +2866,11 @@ class AIEngine with md.ChangeNotifier {
     _lastToolResultPayload = "";
     _lastToolCall = null;
     _recoverableErrorRetries = 0;
+    if (!isEmptyStreamRetry) {
+      _emptyStreamRetryCount = 0;
+    }
     responseText = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     _lastFinishReason = ""; // reset for new generation
     _combinedResponse = ""; // reset accumulator
     _currentSynthesisPrompt = "";
@@ -2981,10 +3077,42 @@ class AIEngine with md.ChangeNotifier {
             );
             if (myGenId != _streamGenerationId || _disposed) return;
             // ─────────────────────────────────────────────────────────────────
-            if (responseText == "") {
+            final String rawThoughtForPromotion = _rawThoughtChunk.trim().isNotEmpty
+                ? _rawThoughtChunk
+                : currentThoughtChunk;
+            if (responseText.trim().isEmpty &&
+                rawThoughtForPromotion.trim().isNotEmpty) {
+              final thoughtToolMap = _extractToolCall(
+                rawThoughtForPromotion,
+                userPrompt: effectiveUserPrompt,
+                mutateResponseOnGreeting: false,
+              );
+              if (thoughtToolMap != null) {
+                currentThoughtChunk =
+                    _sanitizeThoughtChunk(rawThoughtForPromotion);
+                responseText = jsonEncode(thoughtToolMap);
+                _combinedResponse = responseText;
+                _emptyStreamRetryCount = 0;
+                _activeToolHandling = true;
+                try {
+                  await _handleToolCall(
+                    thoughtToolMap,
+                    originalPrompt: effectiveUserPrompt,
+                  );
+                } finally {
+                  _activeToolHandling = false;
+                }
+                break;
+              }
+            }
+            if (responseText.trim().isEmpty) {
               if (errorRetry) {
-                if (event.response?.text == null) {
+                if (event.response?.text == null ||
+                    _emptyStreamRetryCount >= maxEmptyStreamRetries) {
+                  _emptyStreamRetryCount = 0;
                   _resetTurnLifecycleFlags();
+                  _clearThoughtChunk();
+                  responseText = "";
                   streamingMessageTime = null;
                   streamingUserMessageTime = null;
                   await _showToast("Unable to generate response.");
@@ -2999,14 +3127,17 @@ class AIEngine with md.ChangeNotifier {
                     isMultimodal: _isCurrentSessionMultimodal,
                   );
                 } else {
+                  _emptyStreamRetryCount++;
                   _resetTurnLifecycleFlags();
                   await Future.delayed(Duration(milliseconds: 500));
                   if (myGenId != _streamGenerationId || _disposed) return;
-                  unawaited(generateStream());
+                  unawaited(generateStream(isEmptyStreamRetry: true));
                   return;
                 }
               } else {
+                _emptyStreamRetryCount = 0;
                 _resetTurnLifecycleFlags();
+                _clearThoughtChunk();
                 isError = true;
                 streamingMessageTime = null;
                 streamingUserMessageTime = null;
@@ -3025,6 +3156,7 @@ class AIEngine with md.ChangeNotifier {
                 );
               }
             } else {
+              _emptyStreamRetryCount = 0;
               if (_isPureGreeting(effectiveUserPrompt)) {
                 final stripped = _stripGreetingAccidentalToolBlock(responseText);
                 if (stripped != null) {
@@ -3135,7 +3267,7 @@ class AIEngine with md.ChangeNotifier {
               streamingMessageTime = null;
               streamingUserMessageTime = null;
               status = "Error";
-              currentThoughtChunk = "";
+              _clearThoughtChunk();
               responseText = event.error ?? "Unknown stream error";
               await log("model", "error", responseText, sendRemote: false);
               await logger.logAiGeneration(
@@ -3163,7 +3295,7 @@ class AIEngine with md.ChangeNotifier {
           unawaited(generateStream());
           return;
         } else {
-          currentThoughtChunk = "";
+          _clearThoughtChunk();
           streamingMessageTime = null;
           streamingUserMessageTime = null;
           await log("model", "error", e.toString(), sendRemote: false);
@@ -3528,6 +3660,61 @@ class AIEngine with md.ChangeNotifier {
     'was', 'were', 'can', 'will', 'would', 'should', 'could', 'may', 'might',
   };
 
+  static const Set<String> _transitiveIngTailWords = {
+    'ensuring', 'including', 'providing', 'creating', 'making', 'requiring',
+    'involving', 'preventing', 'maintaining', 'developing', 'building',
+    'allowing', 'enabling', 'reducing', 'increasing', 'supporting',
+    'addressing', 'protecting', 'achieving', 'aligning', 'explaining',
+    'illustrating', 'highlighting', 'leading', 'showing', 'demonstrating',
+    'offering', 'using', 'trying', 'seeking', 'getting', 'taking', 'giving',
+    'finding', 'keeping', 'holding', 'leaving', 'bringing',
+  };
+
+  static const Set<String> _ingLeadInWords = {
+    'and', 'or', 'while', 'by', 'for', 'of', 'without', 'to', 'before',
+    'after',
+  };
+
+  static const Set<String> _nonCutoffIngWords = {
+    'morning', 'evening', 'nothing', 'something', 'anything', 'everything',
+    'thing', 'being', 'feeling', 'meaning', 'missing', 'helping', 'asking',
+    'waiting', 'listening', 'coming', 'going', 'working', 'happening',
+    'existing', 'remaining', 'pending', 'lasting', 'willing', 'sharing',
+    'caring', 'understanding', 'looking', 'talking', 'speaking', 'playing',
+    'sleeping', 'running', 'walking', 'living', 'dying', 'ending', 'starting',
+    'beginning', 'changing', 'growing', 'moving', 'standing', 'sitting',
+    'falling', 'rising', 'raining', 'snowing', 'driving', 'traveling',
+    'learning', 'studying', 'relaxing', 'resting', 'celebrating', 'improving',
+    'recovering',
+  };
+
+  static bool _isLikelyTrailingIngParticiple(
+    String lastWord,
+    String penultWord,
+  ) {
+    if (!lastWord.endsWith('ing') || !RegExp(r'^[a-z]+$').hasMatch(lastWord)) {
+      return false;
+    }
+    if (_nonCutoffIngWords.contains(lastWord)) return false;
+    if (_transitiveIngTailWords.contains(lastWord)) return true;
+    return lastWord.length >= 6 && _ingLeadInWords.contains(penultWord);
+  }
+
+  static const Set<String> _danglingPrepositionOrConjunctionWords = {
+    'to', 'and', 'or', 'but', 'of', 'with', 'for', 'in', 'on', 'at', 'by',
+    'from', 'into', 'about', 'as',
+  };
+
+  static bool _endsWithDanglingPrepositionOrConjunction(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return false;
+    final rawWords =
+        trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (rawWords.isEmpty) return false;
+    final lastWord = _normalizeCutoffToken(rawWords.last);
+    return _danglingPrepositionOrConjunctionWords.contains(lastWord);
+  }
+
   static const Set<String> _prepositionsBeforeDemonstrative = {
     'with', 'for', 'of', 'in', 'on', 'at', 'by', 'from', 'into', 'about',
     'to', 'like', 'after', 'before', 'without', 'under', 'over', 'between',
@@ -3681,7 +3868,7 @@ class AIEngine with md.ChangeNotifier {
         ? _normalizeCutoffToken(rawWords[rawWords.length - 2])
         : '';
 
-    if (_danglingTailWords.contains(lastWord)) {
+    if (rawWords.length >= 2 && _danglingTailWords.contains(lastWord)) {
       final isDemonstrativeObject =
           (lastWord == 'that' ||
               lastWord == 'this' ||
@@ -3696,6 +3883,11 @@ class AIEngine with md.ChangeNotifier {
     if (rawWords.length >= 4 &&
         _modifierLeadInWords.contains(penultWord) &&
         _isLikelyTrailingModifier(lastWord)) {
+      return true;
+    }
+
+    if (rawWords.length >= 4 &&
+        _isLikelyTrailingIngParticiple(lastWord, penultWord)) {
       return true;
     }
 
@@ -3735,7 +3927,6 @@ class AIEngine with md.ChangeNotifier {
     final effectiveNullCount = nullReasonCountOverride ?? _nullReasonContinuationCount;
     final effectiveStopCutoffCount =
         stopCutoffCountOverride ?? _stopCutoffContinuationCount;
-    final effectiveIsSynthesis = isSynthesisOverride ?? _isSynthesizing;
     if (text.trim().isEmpty) return false;
     if (text.length >= maxContinuationChars) return false;
     if (lastRoundAddedNonWs != null && lastRoundAddedNonWs <= 0) return false;
@@ -3773,14 +3964,23 @@ class AIEngine with md.ChangeNotifier {
       }
       if (_isStopFinishReason(norm)) {
         if (!isNanoV4Active &&
-            !effectiveIsSynthesis &&
             !insideCodeBlock &&
             !isToolDraft &&
             effectiveStopCutoffCount < maxStopCutoffContinuations &&
-            text.length < maxProseSoftStopChars &&
-            _countWords(text) >= 4 &&
-            isLikelyMidClauseCutoff(text)) {
-          return true;
+            text.length < maxProseSoftStopChars) {
+          final trimmed = text.trimRight();
+          final hasHardTokenCut =
+              _contractionApostropheTailRegex.hasMatch(trimmed) ||
+                  _openMidClauseTailRegex.hasMatch(trimmed);
+          if (hasHardTokenCut) {
+            return true;
+          }
+          final int minWords =
+              _endsWithDanglingPrepositionOrConjunction(text) ? 2 : 4;
+          if (_countWords(text) >= minWords &&
+              isLikelyMidClauseCutoff(text)) {
+            return true;
+          }
         }
         return false;
       }
@@ -3824,7 +4024,7 @@ class AIEngine with md.ChangeNotifier {
     return _pureGreetings.contains(normalized);
   }
 
-  int _findBalancedBraceEnd(String text, int startIdx) {
+  static int _findBalancedBraceEnd(String text, int startIdx) {
     int depth = 0;
     bool inString = false;
     int stringQuote = 0;
@@ -3906,19 +4106,144 @@ class AIEngine with md.ChangeNotifier {
     return null;
   }
 
+  static String _normalizeCtrlObjectToJson(String rawObj) {
+    final out = StringBuffer();
+    int i = 0;
+    while (i < rawObj.length) {
+      final ch = rawObj[i];
+      if (ch == '"' || ch == "'") {
+        final quote = ch;
+        out.write('"');
+        i++;
+        bool escaped = false;
+        while (i < rawObj.length) {
+          final c = rawObj[i];
+          if (escaped) {
+            out.write(c);
+            escaped = false;
+          } else if (c == r'\') {
+            out.write(c);
+            escaped = true;
+          } else if (c == quote) {
+            out.write('"');
+            i++;
+            break;
+          } else if (quote == "'" && c == '"') {
+            out.write(r'\"');
+          } else {
+            out.write(c);
+          }
+          i++;
+        }
+        continue;
+      }
+      if (RegExp(r'[A-Za-z_]').hasMatch(ch)) {
+        final prevNonWs = _lastNonWhitespaceChar(out);
+        if (prevNonWs == '{' || prevNonWs == ',') {
+          int end = i + 1;
+          while (end < rawObj.length &&
+              RegExp(r'[A-Za-z0-9_]').hasMatch(rawObj[end])) {
+            end++;
+          }
+          int afterWs = end;
+          while (afterWs < rawObj.length &&
+              (rawObj[afterWs] == ' ' ||
+                  rawObj[afterWs] == '\t' ||
+                  rawObj[afterWs] == '\n' ||
+                  rawObj[afterWs] == '\r')) {
+            afterWs++;
+          }
+          if (afterWs < rawObj.length && rawObj[afterWs] == ':') {
+            out.write('"');
+            out.write(rawObj.substring(i, end));
+            out.write('"');
+            i = end;
+            continue;
+          }
+        }
+      }
+      out.write(ch);
+      i++;
+    }
+    return out.toString().replaceAll(RegExp(r',\s*([}\]])'), r'$1');
+  }
+
+  static String? _lastNonWhitespaceChar(StringBuffer buf) {
+    final s = buf.toString();
+    for (int i = s.length - 1; i >= 0; i--) {
+      final c = s[i];
+      if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _extractCtrlToolCall(String text) {
+    for (final match in _ctrlToolCallPrefixRegex.allMatches(text)) {
+      final rawName = match.group(1)?.trim() ?? '';
+      if (rawName.isEmpty) continue;
+      final openBrace = match.end - 1;
+      final closeBrace = _findBalancedBraceEnd(text, openBrace);
+      if (closeBrace == -1) continue;
+      final rawArgs = text.substring(openBrace, closeBrace + 1);
+      Map<String, dynamic>? argsMap;
+      try {
+        final decoded = jsonDecode(rawArgs);
+        if (decoded is Map) {
+          argsMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+      if (argsMap == null) {
+        try {
+          final normalized = _normalizeCtrlObjectToJson(rawArgs);
+          final decoded = jsonDecode(normalized);
+          if (decoded is Map) {
+            argsMap = Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {}
+      }
+      if (argsMap == null) continue;
+
+      String toolName =
+          rawName.contains(':') ? rawName.split(':').last.trim() : rawName;
+      String? appName;
+      if (toolName.contains('.') &&
+          toolRegistry.get(toolName) == null &&
+          InternalToolsService.moduleForTool(toolName) == null) {
+        final parts = toolName.split('.');
+        if (parts.length == 2 &&
+            (toolRegistry.get(parts[1]) != null ||
+                InternalToolsService.moduleForTool(parts[1]) != null)) {
+          appName = parts[0];
+          toolName = parts[1];
+        }
+      }
+      return <String, dynamic>{
+        'tool': toolName,
+        if (appName != null && appName.isNotEmpty) 'app': appName,
+        'arguments': argsMap,
+      };
+    }
+    return null;
+  }
+
   Map<String, dynamic>? _extractToolCall(
     String text, {
     required String userPrompt,
+    bool mutateResponseOnGreeting = true,
   }) {
     if (_isPureGreeting(userPrompt)) {
       final sanitized = _stripGreetingAccidentalToolBlock(text);
       if (sanitized != null) {
-        responseText = sanitized;
-        _combinedResponse = sanitized;
+        if (mutateResponseOnGreeting) {
+          responseText = sanitized;
+          _combinedResponse = sanitized;
+        }
         return null;
       }
     }
-    return M3xToolCallParser.extract(text);
+    return M3xToolCallParser.extract(text) ?? _extractCtrlToolCall(text);
   }
 
   bool _isInfrastructureToolError(String message) {
@@ -4069,7 +4394,7 @@ class AIEngine with md.ChangeNotifier {
 
     responseText = "";
     lastPrompt = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     _combinedResponse = "";
     _currentSynthesisPrompt = "";
     streamingMessageTime = null;
@@ -4093,7 +4418,7 @@ class AIEngine with md.ChangeNotifier {
     isGenerating = true;
     isError = false;
     responseText = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     _lastFinishReason = "";
     _combinedResponse = "";
     _continuationCount = 0;
@@ -4195,6 +4520,7 @@ class AIEngine with md.ChangeNotifier {
                 : event.reason;
 
             final bool emittedTool = M3xToolCallParser.extract(responseText) != null ||
+                _extractCtrlToolCall(responseText) != null ||
                 M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
                 _looksLikeInvalidToolJson(responseText);
             if (emittedTool || responseText.trim().isEmpty) {
@@ -4406,7 +4732,8 @@ class AIEngine with md.ChangeNotifier {
               await continueGenerating(isSynthesis: _isSynthesizing);
             } else {
               final completedToolMap = _isSynthesizing
-                  ? M3xToolCallParser.extract(responseText)
+                  ? (M3xToolCallParser.extract(responseText) ??
+                      _extractCtrlToolCall(responseText))
                   : _extractToolCall(responseText, userPrompt: lastPrompt);
               if (completedToolMap != null) {
                 isContinuing = false;
@@ -4454,10 +4781,10 @@ class AIEngine with md.ChangeNotifier {
 
               if (wasSynthesizing) {
                 final committedText = responseText;
-                final trimmedThought = currentThoughtChunk.trim();
+                final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
                 final commitTime = streamingMessageTime ?? DateTime.now();
                 responseText = "";
-                currentThoughtChunk = "";
+                _clearThoughtChunk();
                 streamingMessageTime = null;
                 streamingUserMessageTime = null;
                 prompt.clear();
@@ -4510,7 +4837,7 @@ class AIEngine with md.ChangeNotifier {
                   !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
                 final committedText = _combinedResponse;
                 responseText = "";
-                final trimmedThought = currentThoughtChunk.trim();
+                final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
                 final commitTime = streamingMessageTime ?? DateTime.now();
                 await chatData.appendMessage(
                   user: "Gemini",
@@ -4522,7 +4849,7 @@ class AIEngine with md.ChangeNotifier {
                 prompt.clear();
                 lastPrompt = "";
               }
-              currentThoughtChunk = "";
+              _clearThoughtChunk();
               streamingMessageTime = null;
               streamingUserMessageTime = null;
               await log("mesh", "error", "Error during tool synthesis continuation");
@@ -4546,7 +4873,7 @@ class AIEngine with md.ChangeNotifier {
                 isMultimodal: _isCurrentSessionMultimodal,
               );
             } else {
-              currentThoughtChunk = "";
+              _clearThoughtChunk();
               streamingMessageTime = null;
               streamingUserMessageTime = null;
               responseText = event.error ?? "Continuation failed";
@@ -4576,7 +4903,7 @@ class AIEngine with md.ChangeNotifier {
               !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
             final committedText = _combinedResponse;
             responseText = "";
-            final trimmedThought = currentThoughtChunk.trim();
+            final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
             final commitTime = streamingMessageTime ?? DateTime.now();
             await chatData.appendMessage(
               user: "Gemini",
@@ -4588,7 +4915,7 @@ class AIEngine with md.ChangeNotifier {
             prompt.clear();
             lastPrompt = "";
           }
-          currentThoughtChunk = "";
+          _clearThoughtChunk();
           streamingMessageTime = null;
           streamingUserMessageTime = null;
           await log("mesh", "error", "Synthesis continuation error: $e");
@@ -4615,7 +4942,7 @@ class AIEngine with md.ChangeNotifier {
               isMultimodal: _isCurrentSessionMultimodal,
             );
           } else {
-            currentThoughtChunk = "";
+            _clearThoughtChunk();
             streamingMessageTime = null;
             streamingUserMessageTime = null;
             analyzeError("Continuation", e);
@@ -4648,9 +4975,9 @@ class AIEngine with md.ChangeNotifier {
     _isSynthesizing = false;
     status = "Done";
     responseText = "";
-    final trimmedThought = currentThoughtChunk.trim();
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
     final commitTime = streamingMessageTime ?? DateTime.now();
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     streamingMessageTime = null;
     streamingUserMessageTime = null;
     prompt.clear();
@@ -4834,7 +5161,7 @@ class AIEngine with md.ChangeNotifier {
       lastPrompt = ""; // Clear lastPrompt / mark pending turn committed so it doesn't duplicate in the UI
     }
 
-    final trimmedThought = currentThoughtChunk.trim();
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
     await chatData.appendMessage(
       user: "Gemini",
       author: assistantAuthorLabel,
@@ -4843,7 +5170,7 @@ class AIEngine with md.ChangeNotifier {
       thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
     );
     if (myGenId != _streamGenerationId || _disposed) return;
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     streamingMessageTime = null;
     await chatData.appendMessage(user: "System", message: toolResultEntry);
     if (myGenId != _streamGenerationId || _disposed) return;
@@ -4879,7 +5206,7 @@ class AIEngine with md.ChangeNotifier {
     isContinuing = false;
     _isSynthesizing = true;
     responseText = "";
-    currentThoughtChunk = "";
+    _clearThoughtChunk();
     _lastFinishReason = "";
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
@@ -5004,7 +5331,22 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.done:
             receivedTerminalEvent = true;
             _appendThoughtChunk(event.thought);
-            final nextToolMap = M3xToolCallParser.extract(responseText);
+            var nextToolMap =
+                M3xToolCallParser.extract(responseText) ??
+                    _extractCtrlToolCall(responseText);
+            if (nextToolMap == null && responseText.trim().isEmpty) {
+              final rawThought = _rawThoughtChunk.trim().isNotEmpty
+                  ? _rawThoughtChunk
+                  : currentThoughtChunk;
+              if (rawThought.trim().isNotEmpty) {
+                nextToolMap = _extractCtrlToolCall(rawThought) ??
+                    M3xToolCallParser.extract(rawThought);
+                if (nextToolMap != null) {
+                  currentThoughtChunk = _sanitizeThoughtChunk(rawThought);
+                  responseText = jsonEncode(nextToolMap);
+                }
+              }
+            }
             if (nextToolMap != null) {
               _activeToolHandling = true;
               try {
@@ -5086,7 +5428,7 @@ class AIEngine with md.ChangeNotifier {
             _resetTurnLifecycleFlags();
             isError = true;
             status = "Error";
-            currentThoughtChunk = "";
+            _clearThoughtChunk();
             streamingMessageTime = null;
             streamingUserMessageTime = null;
             responseText = event.error ?? "Error during tool synthesis";
@@ -5099,7 +5441,7 @@ class AIEngine with md.ChangeNotifier {
         if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
         _resetTurnLifecycleFlags();
-        currentThoughtChunk = "";
+        _clearThoughtChunk();
         streamingMessageTime = null;
         streamingUserMessageTime = null;
         await log("mesh", "error", "Synthesis error: $e");

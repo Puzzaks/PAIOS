@@ -221,8 +221,42 @@ object InternalToolsHelper {
      * passive screen context is available in the overlay.
      */
     fun getInspectScreenPromptSpec(): String = buildString {
-        append("\n - $TOOL_INSPECT_SCREEN (app: \"paios\"): Inspect the user's current Android screen (screenshot + visible UI text). Call ONLY when the user asks about what is currently on their screen, 'this page', 'this app', or visible content. Do NOT call for general knowledge or unrelated questions.")
-        append("""\n   arguments schema: {"type":"object","properties":{"question":{"type":"string","description":"Optional specific question about what is visible on the screen"}}}""")
+        append("\n - $TOOL_INSPECT_SCREEN (app: \"paios\"): Inspect current screen (screenshot + UI text) when asked what is on screen, 'this page', or 'this app'.")
+        append("\n   args: {} or {question?: string} (prefer {} for concise calls)")
+    }
+
+    private fun formatCompactToolArgs(parametersJson: String): String {
+        val obj = runCatching { JSONObject(parametersJson) }.getOrNull() ?: return "{}"
+        val props = obj.optJSONObject("properties") ?: return "{}"
+        if (props.length() == 0) return "{}"
+
+        val requiredKeys = HashSet<String>()
+        val reqArr = obj.optJSONArray("required")
+        if (reqArr != null) {
+            for (i in 0 until reqArr.length()) {
+                val key = reqArr.optString(i, "").trim()
+                if (key.isNotEmpty()) requiredKeys.add(key)
+            }
+        }
+
+        val parts = mutableListOf<String>()
+        val keys = props.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val propObj = props.optJSONObject(key)
+            val baseType = propObj?.optString("type", "")?.trim()?.takeIf { it.isNotEmpty() } ?: "any"
+            val enumArr = propObj?.optJSONArray("enum")
+            val typeSpec = if (enumArr != null && enumArr.length() > 0) {
+                val enums = (0 until enumArr.length())
+                    .mapNotNull { idx -> enumArr.opt(idx)?.toString()?.trim()?.takeIf { it.isNotEmpty() } }
+                if (enums.isNotEmpty()) "$baseType(${enums.joinToString("|")})" else baseType
+            } else {
+                baseType
+            }
+            val suffix = if (requiredKeys.contains(key)) "" else "?"
+            parts.add("$key$suffix: $typeSpec")
+        }
+        return "{${parts.joinToString(", ")}}"
     }
 
     /**
@@ -241,7 +275,7 @@ object InternalToolsHelper {
                 if (!isInternalModuleEnabled(context, module.id)) continue
                 for (tool in module.tools) {
                     append("\n - ${tool.name} (app: \"paios\"): ${tool.description}")
-                    append("\n   arguments schema: ${tool.parametersJson}")
+                    append("\n   args: ${formatCompactToolArgs(tool.parametersJson)}")
                 }
             }
         }
@@ -290,7 +324,7 @@ object InternalToolsHelper {
             "duckduckgo_search" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
                 val query = argsJson.optString("query", "").trim()
-                executeDuckDuckGoSearch(query)
+                executeDuckDuckGoSearch(context, query)
             }
             "weather_forecast" -> withContext(Dispatchers.IO) {
                 if (!checkOnline(context)) return@withContext offlineErrorJson()
@@ -616,7 +650,7 @@ object InternalToolsHelper {
         return selected.sortedBy { it.order }.joinToString("\n\n") { it.text }
     }
 
-    private fun executeDuckDuckGoSearch(query: String): String {
+    private fun executeDuckDuckGoSearch(context: Context, query: String): String {
         if (query.isEmpty()) return invalidArgsJson("Query must not be empty.")
         return try {
             val url = "https://api.duckduckgo.com/?q=${encodeUrlParam(query)}&format=json&no_html=1&skip_disambig=1"
@@ -653,10 +687,15 @@ object InternalToolsHelper {
             collectRelated(obj.optJSONArray("RelatedTopics"))
 
             if (abstractText.isEmpty() && answer.isEmpty() && definition.isEmpty() && related.isEmpty()) {
+                val hintMsg = if (isInternalModuleEnabled(context, MODULE_WIKIPEDIA)) {
+                    "No instant answer found; try wikipedia_summary or rephrase query."
+                } else {
+                    "No instant answer found; try rephrasing the query."
+                }
                 return JSONObject().apply {
                     put("found", false)
                     put("query", query)
-                    put("message", "No instant answer found; try wikipedia_summary or rephrase query.")
+                    put("message", hintMsg)
                 }.toString()
             }
 

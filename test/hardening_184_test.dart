@@ -1089,6 +1089,7 @@ void main() {
 
       // Complete short/non-punctuated answers and punctuated answers must return false
       expect(AIEngine.isLikelyMidClauseCutoff('Hi'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('For'), isFalse);
       expect(AIEngine.isLikelyMidClauseCutoff('Yes, I can help with that'), isFalse);
       expect(AIEngine.isLikelyMidClauseCutoff('Everything looks great'), isFalse);
       expect(AIEngine.isLikelyMidClauseCutoff('Sure, I can help with that today.'), isFalse);
@@ -1096,9 +1097,27 @@ void main() {
       expect(AIEngine.isLikelyMidClauseCutoff('Everything is set for dinner'), isFalse);
       expect(AIEngine.isLikelyMidClauseCutoff('Everything is ready for tomorrow'), isFalse);
       expect(AIEngine.isLikelyMidClauseCutoff('Yes, all good'), isFalse);
+
+      // Trailing transitive -ing participle cutoffs vs complete -ing replies
+      expect(
+        AIEngine.isLikelyMidClauseCutoff(
+          'It focuses on aligning AI goals with human values and ensuring',
+        ),
+        isTrue,
+      );
+      expect(
+        AIEngine.isLikelyMidClauseCutoff(
+          'This reduces risk without compromising',
+        ),
+        isTrue,
+      );
+      expect(AIEngine.isLikelyMidClauseCutoff('Nothing is missing.'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Good morning'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Thanks for helping'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Thanks for asking'), isFalse);
     });
 
-    test('shouldContinueOnDone rescues STOP/0 once on v3 prose mid-clause cutoffs and respects all guards', () {
+    test('shouldContinueOnDone rescues STOP/0 once on v3 prose and synthesis mid-clause cutoffs and respects all guards', () {
       final engine = AIEngine();
       addTearDown(engine.dispose);
       engine.modelInfo = {'isNanoV4': false};
@@ -1117,8 +1136,25 @@ void main() {
         ),
         isFalse,
       );
+      // v1.8.7: tool-synthesis responses (e.g. "The forecast for") also get 1 bounded STOP mid-clause rescue
       expect(
         engine.shouldContinueOnDoneForTest('STOP', truncated, isSynthesis: true),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The forecast for',
+          isSynthesis: true,
+        ),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The forecast for today is sunny with a high of 18°C.',
+          isSynthesis: true,
+        ),
         isFalse,
       );
       expect(
@@ -1132,6 +1168,12 @@ void main() {
         ),
         isFalse,
       );
+      // Single-word dangling tails stay false (< 2 words), short 3-word possessive stays false,
+      // while short preposition cutoffs ("The forecast for") rescue on STOP
+      expect(
+        engine.shouldContinueOnDoneForTest('STOP', 'For'),
+        isFalse,
+      );
       expect(
         engine.shouldContinueOnDoneForTest('STOP', 'I prioritize your'),
         isFalse,
@@ -1143,6 +1185,14 @@ void main() {
 
       engine.modelInfo = {'isNanoV4': true};
       expect(engine.shouldContinueOnDoneForTest('STOP', truncated), isFalse);
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The forecast for',
+          isSynthesis: true,
+        ),
+        isFalse,
+      );
     });
 
     test('generateStream rescues a single STOP mid-clause cutoff via continueGenerating and halts after maxStopCutoffContinuations=1', () async {
@@ -1230,6 +1280,329 @@ void main() {
         engine.context.last['message'],
         '$truncatedHead $continuationTail',
       );
+    });
+
+    test('disabled paios.wikipedia is absent from toolRegistry.tools and Prompt.generate omits Wikipedia guidance for non-Wikipedia tools', () async {
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+
+      await engine.setExtensionEnabled('paios.wikipedia', true);
+      expect(
+        engine.toolRegistry.tools.any((t) => t.name == 'wikipedia_summary'),
+        isTrue,
+      );
+      expect(
+        engine.toolRegistry.tools.any((t) => t.name == 'wikipedia_details'),
+        isTrue,
+      );
+
+      await engine.setExtensionEnabled('paios.wikipedia', false);
+      expect(
+        engine.toolRegistry.tools.any((t) => t.name == 'wikipedia_summary'),
+        isFalse,
+      );
+      expect(
+        engine.toolRegistry.tools.any((t) => t.name == 'wikipedia_details'),
+        isFalse,
+      );
+
+      final prompt = Prompt(ghUrl: 'https://github.com/Puzzaks/PAIOS');
+      final generated = await prompt.generate(
+        'Help',
+        const [],
+        const {'version': 'nano-v3'},
+        tools: const [
+          M3xTool(
+            name: 'get_battery_status',
+            app: 'paios',
+            description: 'Battery',
+            parameters: {'type': 'object', 'properties': {}},
+          ),
+        ],
+      );
+      expect(generated, contains('### [AVAILABLE TOOLS]'));
+      expect(
+        generated,
+        isNot(contains('Prefer wikipedia_summary for general "What is X?" explanations')),
+      );
+      expect(generated, isNot(contains('wikipedia_details')));
+    });
+
+    test('shouldContinueOnDone rescues hard contraction/delimiter and mid-clause cutoffs on STOP during synthesis with cap=1', () {
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.modelInfo = {'isNanoV4': false};
+
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          "Right now, I can'",
+          isSynthesis: true,
+        ),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The temperature today is 12°C,',
+          isSynthesis: true,
+        ),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The forecast for',
+          isSynthesis: true,
+        ),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          "Right now, I can'",
+          isSynthesis: true,
+          stopCutoffCount: AIEngine.maxStopCutoffContinuations,
+        ),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The concept highlights a potential risk with advanced',
+          isSynthesis: true,
+        ),
+        isTrue,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The concept highlights a potential risk with advanced',
+          isSynthesis: true,
+          stopCutoffCount: AIEngine.maxStopCutoffContinuations,
+        ),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          'The forecast for Kyiv today is 18°C and sunny.',
+          isSynthesis: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('Nano v4 thought <ctrl42>call:... with empty responseText promotes and executes tool cleanly without leaking prompt or raw ctrl tags', () async {
+      int streamRound = 0;
+      String? executedQuery;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+        eventsChannel,
+        MockStreamHandler.inline(
+          onListen: (arguments, events) {
+            final promptArg = _extractPromptArg(arguments);
+            if (promptArg.contains('Task: Create a short')) {
+              scheduleMicrotask(() {
+                events.success({'status': 'Streaming', 'response': {'text': 'Paperclip Maximizer', 'reason': 'STOP'}});
+                events.success({'status': 'Done', 'reason': 'STOP', 'response': {'text': 'Paperclip Maximizer', 'reason': 'STOP'}});
+              });
+              return;
+            }
+            final r = streamRound++;
+            scheduleMicrotask(() {
+              if (r == 0) {
+                const ctrlThought =
+                    'Checking Wikipedia first.\n<ctrl42>call:wikipedia_summary{query: "paperclip maximizer"}<ctrl43>';
+                events.success({
+                  'status': 'Streaming',
+                  'thought': ctrlThought,
+                  'response': {'text': '', 'reason': 'STOP'},
+                });
+                events.success({
+                  'status': 'Done',
+                  'reason': 'STOP',
+                  'thought': ctrlThought,
+                  'response': {'text': '', 'reason': 'STOP'},
+                });
+              } else {
+                const answer =
+                    'A paperclip maximizer is a thought experiment by Nick Bostrom about an AI optimizing paperclips.';
+                events.success({
+                  'status': 'Streaming',
+                  'response': {'text': answer, 'reason': 'STOP'},
+                });
+                events.success({
+                  'status': 'Done',
+                  'reason': 'STOP',
+                  'response': {'text': answer, 'reason': 'STOP'},
+                });
+              }
+            });
+          },
+        ),
+      );
+
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.isAvailable = true;
+      engine.isInitialized = true;
+      engine.modelInfo = {'version': 'nano-v4', 'isNanoV4': true};
+      final wikiTool = M3xTool(
+        name: 'wikipedia_summary',
+        app: 'paios',
+        description: 'Search Wikipedia',
+        parameters: {
+          'type': 'object',
+          'required': ['query'],
+          'properties': {'query': {'type': 'string'}},
+        },
+        handler: (args) async {
+          executedQuery = args['query']?.toString();
+          return {
+            'found': true,
+            'title': 'Paperclip maximizer',
+            'extract': 'A thought experiment described by Nick Bostrom.',
+          };
+        },
+      );
+      await engine.setExtensionEnabled('paios.wikipedia', true);
+      engine.toolRegistry.register(wikiTool);
+      engine.meshClient.registerLocalTool(wikiTool);
+      engine.prompt.text = 'Explain the paperclip maximizer';
+
+      await engine.generateStream();
+      for (int i = 0;
+          i < 80 &&
+              (engine.isLoading ||
+                  engine.isGenerating ||
+                  engine.isSynthesizing ||
+                  engine.context.length < 4);
+          i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(executedQuery, 'paperclip maximizer');
+      expect(streamRound, 2);
+      expect(engine.prompt.text, isEmpty);
+      expect(engine.lastPrompt, isEmpty);
+      expect(engine.context.last['message'], contains('Nick Bostrom'));
+      final geminiToolTurn = engine.context[1];
+      expect(geminiToolTurn['thoughtProcess'], 'Checking Wikipedia first.');
+      expect(geminiToolTurn['thoughtProcess'], isNot(contains('<ctrl')));
+    });
+
+    test('empty stream responseText="" with errorRetry=true caps at 1 retry instead of looping forever', () async {
+      int streamCalls = 0;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+        eventsChannel,
+        MockStreamHandler.inline(
+          onListen: (arguments, events) {
+            streamCalls++;
+            scheduleMicrotask(() {
+              events.success({
+                'status': 'Streaming',
+                'response': {'text': '', 'reason': 'STOP'},
+              });
+              events.success({
+                'status': 'Done',
+                'reason': 'STOP',
+                'response': {'text': '', 'reason': 'STOP'},
+              });
+            });
+          },
+        ),
+      );
+
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.isAvailable = true;
+      engine.isInitialized = true;
+      engine.errorRetry = true;
+      engine.modelInfo = {'version': 'nano-v4', 'isNanoV4': true};
+      engine.prompt.text = 'Hello';
+
+      await engine.generateStream();
+      for (int i = 0; i < 60 && (engine.isLoading || engine.isGenerating || streamCalls < 2); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+
+      // Initial attempt + maxEmptyStreamRetries (1) = 2 total stream calls
+      expect(streamCalls, 2);
+      expect(engine.isLoading, isFalse);
+      expect(engine.isGenerating, isFalse);
+    });
+
+    test('startNewChat resets draft, response, attachment, currentChat, and context when idle', () {
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+
+      engine.currentChat = '12345';
+      engine.context.add({'user': 'User', 'message': 'Old turn'});
+      engine.contextSize = 42;
+      engine.prompt.text = 'Unfinished draft';
+      engine.responseText = 'Partial response';
+      engine.currentThoughtChunk = 'Thought';
+      engine.lastPrompt = 'Old prompt';
+      engine.pendingImageBytes = Uint8List.fromList([1, 2, 3]);
+      engine.pendingImageName = 'photo.jpg';
+      engine.chatData.lastImagePath = '/tmp/photo.jpg';
+      engine.isError = true;
+      engine.status = 'Error';
+
+      engine.startNewChat();
+
+      expect(engine.currentChat, '0');
+      expect(engine.context, isEmpty);
+      expect(engine.contextSize, 0);
+      expect(engine.prompt.text, isEmpty);
+      expect(engine.responseText, isEmpty);
+      expect(engine.currentThoughtChunk, isEmpty);
+      expect(engine.lastPrompt, isEmpty);
+      expect(engine.pendingImageBytes, isNull);
+      expect(engine.pendingImageName, isNull);
+      expect(engine.chatData.lastImagePath, isNull);
+      expect(engine.isError, isFalse);
+      expect(engine.status, isEmpty);
+    });
+
+    test('handleDownloadStatus sets isAvailable = true when Available=Available=0 reports available without version', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(localAiChannel, (call) async {
+        if (call.method == 'getModelInfo') {
+          return {
+            'status': 'available',
+            'available': true,
+            'statusCode': 3,
+            'version': null,
+          };
+        }
+        return null;
+      });
+
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.isAvailable = false;
+      engine.variantDownloads['stable:full'] = const PaiosVariantDownloadState(
+        releaseStage: 'stable',
+        preference: 'full',
+        status: 'downloading',
+        bytesDownloaded: 512,
+        totalBytes: 1024,
+      );
+      engine.isDownloadingModel = true;
+
+      await engine.handleDownloadStatus('Available=Available=0');
+
+      expect(engine.isAvailable, isTrue);
+      expect(engine.isDownloadingModel, isFalse);
+      expect(engine.variantDownloads['stable:full']?.isCompleted, isTrue);
+      expect(engine.downloadErrorRetryCount, 0);
     });
   });
 }

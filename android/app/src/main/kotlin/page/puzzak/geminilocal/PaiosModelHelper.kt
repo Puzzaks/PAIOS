@@ -21,6 +21,8 @@ import com.google.mlkit.genai.prompt.modelConfig
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Shared AICore / MLKit GenAI Prompt helper for PAIOS.
@@ -36,6 +38,7 @@ object PaiosModelHelper {
     const val PREF_FULL = "full"
     const val MAX_SYSTEM_INSTRUCTION_WORDS = 140
     const val MAX_OVERLAY_CONTINUATIONS = 6
+    const val MAX_TOOL_JSON_CONTINUATIONS = 2
     const val MAX_OVERLAY_ACCUMULATED_CHARS = 12000
     const val MAX_CONTINUATION_TAIL_CHARS = 450
     const val MAX_CONTINUATION_OVERLAP_CHARS = 240
@@ -52,6 +55,51 @@ object PaiosModelHelper {
     private val TRAILING_MARKDOWN_WITH_TERMINAL_REGEX = Regex("""[.!?…"\x27”’`\)\]。！？][*_]+$""")
     private val OPEN_MID_CLAUSE_TAIL_REGEX = Regex("""[,;:\-—(\[\{]$""")
     private val WHITESPACE_SPLIT_REGEX = Regex("""\s+""")
+    private val MARKDOWN_JSON_BLOCK_REGEX = Regex("""```(?:json)?\s*([\s\S]*?)\s*(?:```|$)""", RegexOption.IGNORE_CASE)
+    private val JSON_FENCE_OPEN_BRACE_REGEX = Regex("""```json\s*\{""", RegexOption.IGNORE_CASE)
+    private val TOOL_DRAFT_HINT_REGEX = Regex(
+        """(?:["']action["']\s*:\s*["']tool(?:\\?_)?call["']|["'](?:tool|method)["']\s*:|\{\s*["'](?:action|tool|method)["'])""",
+        RegexOption.IGNORE_CASE
+    )
+    private val NAME_DRAFT_KEY_REGEX = Regex("""["']name["']\s*:""", RegexOption.IGNORE_CASE)
+    private val TOOL_ARGS_OR_APP_HINT_REGEX = Regex(
+        """["'](?:args|arguments|parameters|params|app)["']\s*:|["']name["']\s*:\s*["']?[a-z][a-z0-9]*(?:_[a-z0-9]+)+""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TOOL_KEY_PRESENT_REGEX = Regex("""["'](?:tool|name|method|action)["']\s*:""", RegexOption.IGNORE_CASE)
+    private val TOOL_SECONDARY_KEY_PRESENT_REGEX = Regex(
+        """["'](?:args|arguments|parameters|params|app|description)["']\s*:""",
+        RegexOption.IGNORE_CASE
+    )
+    private val EMPTY_OBJECT_FALLBACK_KEYS = setOf("args", "arguments", "parameters", "params")
+    private val CONTROL_TOOL_CALL_OPEN_REGEX = Regex(
+        """<ctrl\d+>call:([a-zA-Z0-9_.:-]+)\s*\{"""
+    )
+    private val CONTROL_TOOL_STRIP_FULL_REGEX = Regex(
+        """<ctrl\d+>call:[a-zA-Z0-9_.:-]+\s*\{[\s\S]*?\}(?:<ctrl\d+>)?"""
+    )
+    private val CONTROL_TOOL_STRIP_TAIL_REGEX = Regex("""<ctrl\d+>call:[\s\S]*$""")
+    private val CONTROL_TAG_REGEX = Regex("""<ctrl\d+>""")
+    private val LEADING_PAIOS_PREFIX_REGEX = Regex("""^\s*PAIOS:\s*""", RegexOption.IGNORE_CASE)
+    private val JSON_DRAFT_TOOL_START_REGEX = Regex(
+        """^\{\s*["'](?:tool|name|method|action)["']\s*:""",
+        RegexOption.IGNORE_CASE
+    )
+    private val JSON_DRAFT_PROSE_BEFORE_TOOL_REGEX = Regex(
+        """^[\s\S]{1,120}?(\{\s*["'](?:tool|name|method|action)["']\s*:)""",
+        RegexOption.IGNORE_CASE
+    )
+    private val CLOSED_TOOL_VALUE_REGEX = Regex(
+        """["'](?:tool|name|method)["']\s*:\s*["'][^"']+["']""",
+        RegexOption.IGNORE_CASE
+    )
+    private val REQUIRED_TOOL_ARGS = mapOf(
+        "wikipedia_summary" to listOf("query"),
+        "wikipedia_details" to listOf("query", "question"),
+        "duckduckgo_search" to listOf("query"),
+        "query_aicore_documentation" to listOf("query"),
+        "weather_forecast" to listOf("location")
+    )
 
     private val DANGLING_TAIL_WORDS = setOf(
         "to", "and", "or", "but", "of", "the", "a", "an", "with", "for",
@@ -63,6 +111,32 @@ object PaiosModelHelper {
 
     private val STRICT_TRAILING_DETERMINERS = setOf(
         "the", "a", "an", "your", "its", "their", "my", "our"
+    )
+
+    private val SHORT_DANGLING_PREPOSITIONS_CONJUNCTIONS = setOf(
+        "for", "to", "with", "of", "in", "on", "at", "by", "from", "into",
+        "and", "or", "but"
+    )
+
+    private val TRANSITIVE_TRAILING_PARTICIPLES = setOf(
+        "ensuring", "including", "providing", "creating", "making",
+        "requiring", "involving", "preventing", "maintaining", "developing",
+        "building", "allowing", "enabling", "using"
+    )
+
+    private val PARTICIPLE_PRECEDING_TRIGGERS = setOf(
+        "and", "or", "while", "by", "for", "of", "without", "to"
+    )
+
+    private val NON_PARTICIPLE_ING_WORDS = setOf(
+        "thing", "something", "anything", "nothing", "everything",
+        "morning", "evening", "spring", "string", "ceiling",
+        "feeling", "meaning", "meeting", "during"
+    )
+
+    private val NEGATION_AUXILIARIES = setOf(
+        "do", "does", "did", "will", "would", "can", "could", "should",
+        "may", "might", "must", "is", "are", "was", "were", "have", "has", "had"
     )
 
     private val PRE_MODIFIER_TRIGGERS = setOf(
@@ -743,13 +817,34 @@ object PaiosModelHelper {
         val lastWord = tokens.last().trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
         if (lastWord.isEmpty()) return false
 
+        val prevWord = if (tokens.size >= 2) {
+            tokens[tokens.size - 2].trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
+        } else {
+            ""
+        }
+
+        if (TRANSITIVE_TRAILING_PARTICIPLES.contains(lastWord)) {
+            return true
+        }
+        if (tokens.size >= 2 &&
+            lastWord.length >= 5 &&
+            lastWord.endsWith("ing") &&
+            !NON_PARTICIPLE_ING_WORDS.contains(lastWord) &&
+            PARTICIPLE_PRECEDING_TRIGGERS.contains(prevWord)
+        ) {
+            return true
+        }
+        if (tokens.size >= 2 && lastWord == "not" && NEGATION_AUXILIARIES.contains(prevWord)) {
+            return true
+        }
+
         if (tokens.size <= 3) {
-            return STRICT_TRAILING_DETERMINERS.contains(lastWord)
+            return STRICT_TRAILING_DETERMINERS.contains(lastWord) ||
+                (tokens.size >= 2 && SHORT_DANGLING_PREPOSITIONS_CONJUNCTIONS.contains(lastWord))
         }
         if (DANGLING_TAIL_WORDS.contains(lastWord)) {
             return true
         }
-        val prevWord = tokens[tokens.size - 2].trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
         return PRE_MODIFIER_TRIGGERS.contains(prevWord) && isLikelyTrailingModifier(lastWord)
     }
 
@@ -821,7 +916,8 @@ object PaiosModelHelper {
         maxContinuations: Int = MAX_OVERLAY_CONTINUATIONS,
         maxAccumulatedChars: Int = MAX_OVERLAY_ACCUMULATED_CHARS,
         nullReasonRetryCount: Int = 0,
-        stopCutoffRetryCount: Int = 0
+        stopCutoffRetryCount: Int = 0,
+        isToolDraft: Boolean = false
     ): Boolean {
         if (continuationCount >= maxContinuations) return false
         if (partialText.isBlank()) return false
@@ -830,6 +926,19 @@ object PaiosModelHelper {
         if (hasContinuationStutter(partialText)) return false
 
         val normalized = normalizeFinishReason(finishReason)?.uppercase(Locale.ROOT)
+        if (isToolDraft) {
+            if (continuationCount >= MAX_TOOL_JSON_CONTINUATIONS) return false
+            if (normalized == null) return true
+            if (normalized == "0" || normalized == "STOP") return false
+            return normalized == "1" ||
+                normalized == "-100" ||
+                normalized == "MAX_TOKENS" ||
+                normalized == "LIMIT" ||
+                normalized == "OTHER" ||
+                normalized.contains("MAX_TOKENS") ||
+                normalized.contains("LIMIT")
+        }
+
         if (normalized != null) {
             if (normalized == "1" ||
                 normalized == "-100" ||
@@ -895,6 +1004,38 @@ object PaiosModelHelper {
         return text.replaceFirst(LEADING_CONTINUATION_ELLIPSIS_REGEX, "")
     }
 
+    fun stripLeadingAssistantLabel(text: String): String {
+        if (text.isEmpty()) return text
+        return text.replaceFirst(LEADING_PAIOS_PREFIX_REGEX, "")
+    }
+
+    fun stripControlToolTags(text: String): String {
+        if (text.isEmpty() || !text.contains("<ctrl", ignoreCase = true)) return text
+        var cleaned = text.replace(CONTROL_TOOL_STRIP_FULL_REGEX, "")
+        cleaned = cleaned.replace(CONTROL_TOOL_STRIP_TAIL_REGEX, "")
+        cleaned = cleaned.replace(CONTROL_TAG_REGEX, "")
+        return cleaned.trim()
+    }
+
+    private fun hasUnclosedJsonString(text: String): Boolean {
+        var inDoubleQuote = false
+        var escaped = false
+        for (ch in text) {
+            if (escaped) {
+                escaped = false
+            } else if (inDoubleQuote) {
+                if (ch == '\\') {
+                    escaped = true
+                } else if (ch == '"') {
+                    inDoubleQuote = false
+                }
+            } else if (ch == '"') {
+                inDoubleQuote = true
+            }
+        }
+        return inDoubleQuote
+    }
+
     fun buildOverlayContinuationPrompt(
         originalQuestion: String,
         partialText: String,
@@ -904,10 +1045,25 @@ object PaiosModelHelper {
         isJsonDraft: Boolean = false,
         maxQuestionChars: Int = 220
     ): ContinuationPrompt {
+        val boundedTail = boundTailAtBoundary(partialText, maxTailChars)
+        if (isJsonDraft) {
+            val openString = hasUnclosedJsonString(boundedTail)
+            val sysBlock = buildString {
+                append("## [CONTINUATION]\n")
+                append("Partial JSON tail:\n")
+                append(boundedTail)
+                if (openString) {
+                    append("\nComplete ONLY the remaining JSON characters from the exact end (close the open string quote and braces). Do not restart or add markdown.")
+                } else {
+                    append("\nComplete ONLY the remaining JSON characters from the exact end to close the JSON object. Do not restart or add markdown.")
+                }
+            }
+            return ContinuationPrompt(instructions = sysBlock, userPrompt = "Continue.")
+        }
+
         val boundedPersona = personaAnchor?.let { boundHeadAtBoundary(it, 240) }.orEmpty()
         val boundedQuestion = boundHeadAtBoundary(originalQuestion, maxQuestionChars)
-        val boundedTail = boundTailAtBoundary(partialText, maxTailChars)
-        val trailingWordToken = if (!isJsonDraft && boundedTail.isNotEmpty() && boundedTail.last().isLetterOrDigit()) {
+        val trailingWordToken = if (boundedTail.isNotEmpty() && boundedTail.last().isLetterOrDigit()) {
             var start = boundedTail.length
             while (start > 0 && !boundedTail[start - 1].isWhitespace()) {
                 start--
@@ -935,16 +1091,42 @@ object PaiosModelHelper {
             if (trailingWordToken != null) {
                 append(" If '$trailingWordToken' was cut mid-word, complete or rewrite it cleanly without spaces.")
             }
-            if (isJsonDraft) {
-                append(" Output ONLY the remaining valid JSON characters to complete the tool call.")
-            } else {
-                append(" Do NOT prepend an ellipsis (...) or repeat words. Complete the answer concisely without starting new unrelated topics.")
-            }
+            append(" Do NOT prepend an ellipsis (...) or repeat words. Complete the answer concisely without starting new unrelated topics.")
         }
         return ContinuationPrompt(instructions = sysBlock, userPrompt = "Continue.")
     }
 
-    private fun findSuffixPrefixOverlap(base: String, next: String): Int {
+    private fun countUnclosedJsonBraces(text: String): Int {
+        var depth = 0
+        var quote: Char? = null
+        var escaped = false
+        for (ch in text) {
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (quote != null) {
+                if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                }
+                continue
+            }
+            when (ch) {
+                '"', '\'' -> quote = ch
+                '{' -> depth++
+                '}' -> if (depth > 0) depth--
+            }
+        }
+        return depth
+    }
+
+    private fun findSuffixPrefixOverlap(
+        base: String,
+        next: String,
+        allowSingleClosingOverlap: Boolean = false
+    ): Int {
         val maxOverlap = minOf(MAX_CONTINUATION_OVERLAP_CHARS, base.length, next.length)
         for (len in maxOverlap downTo 2) {
             val ignoreCase = len >= 8
@@ -961,6 +1143,21 @@ object PaiosModelHelper {
                 }
             }
         }
+        if (allowSingleClosingOverlap && base.isNotEmpty() && next.isNotEmpty()) {
+            if (base.last() == '"' && next.first() == '"' && !base.endsWith("\\\"")) {
+                return 1
+            }
+            if (base.last() == '}' && next.first() == '}') {
+                var leadingCloses = 0
+                while (leadingCloses < next.length && next[leadingCloses] == '}') {
+                    leadingCloses++
+                }
+                val unclosed = countUnclosedJsonBraces(base)
+                if (unclosed == 0 || leadingCloses > unclosed) {
+                    return 1
+                }
+            }
+        }
         return 0
     }
 
@@ -972,9 +1169,24 @@ object PaiosModelHelper {
         if (next.isEmpty()) return existing
 
         val trimmedExistingLeft = existing.trimStart()
-        val isJsonDraft = trimmedExistingLeft.startsWith("{") ||
-            trimmedExistingLeft.startsWith("```json") ||
-            (trimmedExistingLeft.contains("\"tool\"") && trimmedExistingLeft.contains("\"args\""))
+        val isJsonDraft = looksLikeIncompleteToolCall(existing) ||
+            trimmedExistingLeft.startsWith("{") ||
+            trimmedExistingLeft.startsWith("```json", ignoreCase = true) ||
+            (TOOL_KEY_PRESENT_REGEX.containsMatchIn(trimmedExistingLeft) &&
+                TOOL_SECONDARY_KEY_PRESENT_REGEX.containsMatchIn(trimmedExistingLeft))
+
+        if (isJsonDraft) {
+            next = stripLeadingAssistantLabel(next)
+            next = next.replaceFirst(CONTINUATION_DUPLICATE_FENCE_REGEX, "")
+            val proseBeforeTool = JSON_DRAFT_PROSE_BEFORE_TOOL_REGEX.find(next)
+            if (proseBeforeTool != null) {
+                val braceIdx = proseBeforeTool.groups[1]?.range?.first ?: -1
+                if (braceIdx > 0) {
+                    next = next.substring(braceIdx)
+                }
+            }
+            if (next.isEmpty()) return existing
+        }
 
         val base = if (isJsonDraft) {
             existing
@@ -989,13 +1201,41 @@ object PaiosModelHelper {
             if (next.isEmpty()) return existing
         }
 
-        // Trim exact suffix-prefix overlap (up to 240 chars) if the model echoed the tail
         var stitchedBase = base
-        var overlapLen = findSuffixPrefixOverlap(stitchedBase, next)
+        if (isJsonDraft) {
+            val trimmedNextStart = next.trimStart()
+            if (JSON_DRAFT_TOOL_START_REGEX.containsMatchIn(trimmedNextStart)) {
+                val restartOverlap = findSuffixPrefixOverlap(
+                    stitchedBase,
+                    trimmedNextStart,
+                    allowSingleClosingOverlap = true
+                )
+                if (restartOverlap > 0) {
+                    val remainder = trimmedNextStart.substring(restartOverlap)
+                    return if (remainder.isEmpty()) existing else stitchedBase + remainder
+                }
+                if (extractToolCallJson(trimmedNextStart, allowTruncatedRepair = false) != null ||
+                    trimmedNextStart.length > stitchedBase.length
+                ) {
+                    return trimmedNextStart
+                }
+            }
+        }
+
+        // Trim exact suffix-prefix overlap (up to 240 chars) if the model echoed the tail
+        var overlapLen = findSuffixPrefixOverlap(
+            stitchedBase,
+            next,
+            allowSingleClosingOverlap = isJsonDraft
+        )
         if (overlapLen == 0 && stitchedBase.last().isWhitespace()) {
             val trimmedBase = stitchedBase.trimEnd()
             if (trimmedBase.isNotEmpty()) {
-                val trimmedOverlap = findSuffixPrefixOverlap(trimmedBase, next)
+                val trimmedOverlap = findSuffixPrefixOverlap(
+                    trimmedBase,
+                    next,
+                    allowSingleClosingOverlap = isJsonDraft
+                )
                 if (trimmedOverlap > 0) {
                     stitchedBase = trimmedBase
                     overlapLen = trimmedOverlap
@@ -1046,5 +1286,974 @@ object PaiosModelHelper {
         }
 
         return stitchedBase + separator + next
+    }
+
+    data class ParsedToolCall(
+        val tool: String,
+        val app: String,
+        val description: String,
+        val args: Map<String, Any?>,
+        val raw: Map<String, Any?>
+    ) {
+        fun toJsonObject(): JSONObject = mapToJsonObject(raw)
+    }
+
+    fun looksLikeIncompleteToolCall(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        if (extractToolCallJson(trimmed, allowTruncatedRepair = false) != null) return false
+
+        if (CONTROL_TOOL_CALL_OPEN_REGEX.containsMatchIn(trimmed)) {
+            return true
+        }
+
+        for (match in JSON_FENCE_OPEN_BRACE_REGEX.findAll(text)) {
+            val braceStart = text.indexOf('{', match.range.first)
+            if (braceStart != -1 && findMatchingBrace(text, braceStart) == -1) {
+                return true
+            }
+        }
+        if (trimmed.startsWith("```json", ignoreCase = true) && !trimmed.contains("```", ignoreCase = false).let {
+                trimmed.indexOf("```", startIndex = 3) != -1
+            } && !trimmed.contains('{')
+        ) {
+            return true
+        }
+
+        val firstNonWs = text.indexOfFirst { !it.isWhitespace() }
+        var i = 0
+        while (i < text.length) {
+            if (text[i] != '{') {
+                i++
+                continue
+            }
+            val end = findMatchingBrace(text, i)
+            if (end != -1) {
+                i = end + 1
+                continue
+            }
+            val tail = text.substring(i)
+            if (i == firstNonWs && tail.trim() == "{") {
+                return true
+            }
+            if (TOOL_DRAFT_HINT_REGEX.containsMatchIn(tail)) {
+                return true
+            }
+            if (NAME_DRAFT_KEY_REGEX.containsMatchIn(tail) &&
+                TOOL_ARGS_OR_APP_HINT_REGEX.containsMatchIn(tail)
+            ) {
+                return true
+            }
+            i++
+        }
+        return false
+    }
+
+    fun extractToolCallJson(text: String, allowTruncatedRepair: Boolean = true): ParsedToolCall? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+
+        for (match in MARKDOWN_JSON_BLOCK_REGEX.findAll(trimmed)) {
+            val block = match.groupValues[1].trim()
+            val parsed = scanBalancedToolObjects(block)
+            if (parsed != null) return parsed
+        }
+        val balanced = scanBalancedToolObjects(trimmed)
+        if (balanced != null) return balanced
+
+        val controlCall = parseControlToolCalls(trimmed, allowTruncatedRepair)
+        if (controlCall != null) return controlCall
+
+        if (allowTruncatedRepair) {
+            return repairTruncatedToolJson(trimmed)
+        }
+        return null
+    }
+
+    private fun parseControlToolCalls(source: String, allowTruncatedRepair: Boolean): ParsedToolCall? {
+        if (!source.contains("<ctrl", ignoreCase = true)) return null
+        for (match in CONTROL_TOOL_CALL_OPEN_REGEX.findAll(source)) {
+            val rawTarget = match.groupValues[1].trim()
+            if (rawTarget.isEmpty()) continue
+            val braceStart = match.range.last
+            val braceEnd = findMatchingBrace(source, braceStart)
+            val isRepaired: Boolean
+            val candidateArgs = if (braceEnd != -1) {
+                isRepaired = false
+                source.substring(braceStart, braceEnd + 1)
+            } else if (allowTruncatedRepair) {
+                isRepaired = true
+                val rawTail = source.substring(braceStart)
+                val nextCtrl = CONTROL_TAG_REGEX.find(rawTail)?.range?.first ?: rawTail.length
+                closeTruncatedJsonObject(rawTail.substring(0, nextCtrl)) ?: continue
+            } else {
+                continue
+            }
+
+            val argsMap = parseJsonLikeObject(candidateArgs) ?: continue
+            val (resolvedApp, resolvedTool) = if (rawTarget.contains(':')) {
+                val parts = rawTarget.split(':', limit = 2)
+                parts[0].trim().ifEmpty { "paios" } to parts[1].trim()
+            } else {
+                "paios" to rawTarget
+            }
+            if (resolvedTool.isEmpty()) continue
+
+            val rawMap = LinkedHashMap<String, Any?>().apply {
+                put("tool", resolvedTool)
+                put("app", resolvedApp)
+                put("args", argsMap)
+            }
+            val parsed = normalizeToolCall(rawMap)
+            if (!isRepaired || hasSatisfiedRequiredArgs(parsed)) {
+                return parsed
+            }
+        }
+        return null
+    }
+
+    fun repairTruncatedToolJson(text: String): ParsedToolCall? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+
+        for (match in MARKDOWN_JSON_BLOCK_REGEX.findAll(trimmed)) {
+            val block = match.groupValues[1].trim()
+            val repaired = scanAndRepairTruncatedToolObjects(block)
+            if (repaired != null) return repaired
+        }
+        return scanAndRepairTruncatedToolObjects(trimmed)
+    }
+
+    private fun scanAndRepairTruncatedToolObjects(source: String): ParsedToolCall? {
+        var i = 0
+        while (i < source.length) {
+            if (source[i] != '{') {
+                i++
+                continue
+            }
+            val end = findMatchingBrace(source, i)
+            if (end != -1) {
+                i = end + 1
+                continue
+            }
+            val tail = source.substring(i)
+            if (CLOSED_TOOL_VALUE_REGEX.containsMatchIn(tail)) {
+                val closedJson = closeTruncatedJsonObject(tail)
+                if (closedJson != null) {
+                    val parsed = tryParseToolObject(closedJson)
+                    if (parsed != null && hasSatisfiedRequiredArgs(parsed)) {
+                        return parsed
+                    }
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    private fun closeTruncatedJsonObject(raw: String): String? {
+        if (!raw.startsWith("{")) return null
+        val stack = ArrayList<Char>()
+        var quote: Char? = null
+        var escaped = false
+
+        for (ch in raw) {
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (quote != null) {
+                if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                }
+                continue
+            }
+            when (ch) {
+                '"', '\'' -> quote = ch
+                '{' -> stack.add('{')
+                '[' -> stack.add('[')
+                '}' -> {
+                    if (stack.lastOrNull() == '{') {
+                        stack.removeAt(stack.lastIndex)
+                    } else {
+                        return null
+                    }
+                }
+                ']' -> {
+                    if (stack.lastOrNull() == '[') {
+                        stack.removeAt(stack.lastIndex)
+                    } else {
+                        return null
+                    }
+                }
+            }
+        }
+        if (stack.isEmpty()) return raw
+
+        val sb = StringBuilder(raw.length + stack.size + 4)
+        sb.append(raw)
+        if (escaped && sb.isNotEmpty() && sb[sb.length - 1] == '\\') {
+            sb.setLength(sb.length - 1)
+        }
+        if (quote != null) {
+            sb.append(quote)
+        }
+
+        while (sb.isNotEmpty() && sb[sb.length - 1].isWhitespace()) {
+            sb.setLength(sb.length - 1)
+        }
+        while (sb.isNotEmpty()) {
+            val last = sb[sb.length - 1]
+            if (last == ',') {
+                sb.setLength(sb.length - 1)
+                while (sb.isNotEmpty() && sb[sb.length - 1].isWhitespace()) {
+                    sb.setLength(sb.length - 1)
+                }
+                continue
+            }
+            if (last == ':') {
+                val prefixBeforeColon = sb.substring(0, sb.length - 1).trimEnd()
+                val endsWithEmptyObjKey = EMPTY_OBJECT_FALLBACK_KEYS.any { key ->
+                    prefixBeforeColon.endsWith("\"$key\"") || prefixBeforeColon.endsWith("'$key'")
+                }
+                if (endsWithEmptyObjKey) {
+                    sb.append("{}")
+                } else {
+                    sb.setLength(sb.length - 1)
+                    while (sb.isNotEmpty() && sb[sb.length - 1].isWhitespace()) {
+                        sb.setLength(sb.length - 1)
+                    }
+                }
+                break
+            }
+            break
+        }
+
+        for (idx in stack.lastIndex downTo 0) {
+            sb.append(if (stack[idx] == '[') ']' else '}')
+        }
+        return sb.toString()
+    }
+
+    private fun hasSatisfiedRequiredArgs(parsed: ParsedToolCall): Boolean {
+        val toolKey = parsed.tool.trim().lowercase(Locale.ROOT)
+        if (toolKey.isEmpty()) return false
+        val required = REQUIRED_TOOL_ARGS[toolKey] ?: return true
+        return required.all { reqKey ->
+            val value = parsed.args[reqKey] ?: return@all false
+            when (value) {
+                is String -> value.trim().isNotEmpty()
+                else -> true
+            }
+        }
+    }
+
+    private fun parseJsonLikeObject(candidate: String): Map<String, Any?>? {
+        val attempts = listOf(
+            candidate,
+            sanitizeJsonLikeString(candidate, convertSingleQuotes = false),
+            sanitizeJsonLikeString(candidate, convertSingleQuotes = true)
+        )
+        for (attempt in attempts) {
+            val parsedMap = runCatching { SimpleJsonParser(attempt).parseObjectRoot() }.getOrNull()
+            if (parsedMap != null) return parsedMap
+        }
+        return null
+    }
+
+    fun scanBalancedToolObjects(source: String): ParsedToolCall? {
+        var i = 0
+        while (i < source.length) {
+            if (source[i] != '{') {
+                i++
+                continue
+            }
+            val end = findMatchingBrace(source, i)
+            if (end == -1) {
+                i++
+                continue
+            }
+            val candidate = source.substring(i, end + 1)
+            val parsed = tryParseToolObject(candidate)
+            if (parsed != null) return parsed
+            i = end + 1
+        }
+        return null
+    }
+
+    fun findMatchingBrace(source: String, start: Int): Int {
+        var depth = 0
+        var quote: Char? = null
+        var escaped = false
+        for (i in start until source.length) {
+            val ch = source[i]
+            if (escaped) {
+                escaped = false
+                continue
+            }
+            if (quote != null) {
+                if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                }
+                continue
+            }
+            when (ch) {
+                '"', '\'' -> quote = ch
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return i
+                }
+            }
+        }
+        return -1
+    }
+
+    fun tryParseToolObject(candidate: String): ParsedToolCall? {
+        val attempts = listOf(
+            candidate,
+            sanitizeJsonLikeString(candidate, convertSingleQuotes = false),
+            sanitizeJsonLikeString(candidate, convertSingleQuotes = true)
+        )
+        for (attempt in attempts) {
+            val parsedMap = runCatching { SimpleJsonParser(attempt).parseObjectRoot() }.getOrNull()
+                ?: continue
+            if (isToolCallObject(parsedMap)) {
+                return normalizeToolCall(parsedMap)
+            }
+        }
+        return null
+    }
+
+    fun isToolCallObject(obj: Map<String, Any?>): Boolean {
+        val action = (obj["action"] as? String)?.trim()?.lowercase(Locale.ROOT)
+        if (action == "tool_call" || action == "tool\\_call") return true
+
+        val tool = (obj["tool"] as? String)?.trim()
+        if (!tool.isNullOrEmpty()) return true
+
+        val hasContainerOrMeta = obj.containsKey("args") ||
+            obj.containsKey("arguments") ||
+            obj.containsKey("parameters") ||
+            obj.containsKey("params") ||
+            obj.containsKey("app")
+
+        val method = (obj["method"] as? String)?.trim()
+        if (!method.isNullOrEmpty() && (hasContainerOrMeta || obj.containsKey("description"))) {
+            return true
+        }
+
+        val name = (obj["name"] as? String)?.trim()
+        if (!name.isNullOrEmpty() && hasContainerOrMeta) {
+            return true
+        }
+
+        return false
+    }
+
+    private fun normalizeToolCall(rawMap: Map<String, Any?>): ParsedToolCall {
+        val normalized = LinkedHashMap(rawMap)
+        val resolvedTool = listOf("tool", "name", "method")
+            .firstNotNullOfOrNull { key ->
+                (normalized[key] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            } ?: ""
+        if (resolvedTool.isNotEmpty() &&
+            (normalized["tool"] as? String)?.trim().isNullOrEmpty()
+        ) {
+            normalized["tool"] = resolvedTool
+        }
+
+        val resolvedApp = (normalized["app"] as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "paios"
+        val resolvedDesc = (normalized["description"] as? String)?.trim() ?: ""
+
+        @Suppress("UNCHECKED_CAST")
+        val resolvedArgs: Map<String, Any?> = listOf("args", "arguments", "parameters", "params")
+            .firstNotNullOfOrNull { key ->
+                normalized[key] as? Map<String, Any?>
+            } ?: emptyMap()
+
+        if (normalized["args"] !is Map<*, *> &&
+            listOf("arguments", "parameters", "params").any { normalized[it] is Map<*, *> }
+        ) {
+            normalized["args"] = resolvedArgs
+        }
+
+        return ParsedToolCall(
+            tool = resolvedTool,
+            app = resolvedApp,
+            description = resolvedDesc,
+            args = resolvedArgs,
+            raw = normalized
+        )
+    }
+
+    fun sanitizeJsonLikeString(raw: String, convertSingleQuotes: Boolean = false): String {
+        val normalizedEscapes = raw.replace("\\_", "_")
+        val quotedKeys = quoteUnquotedObjectKeys(normalizedEscapes)
+        val escaped = escapeControlCharsAndQuotes(quotedKeys, convertSingleQuotes)
+        val withValues = repairMissingPropertyValues(escaped)
+        val withoutTrailingCommas = stripTrailingCommasOutsideStrings(withValues)
+        return stripDanglingObjectKeys(withoutTrailingCommas)
+    }
+
+    private fun quoteUnquotedObjectKeys(raw: String): String {
+        val out = StringBuilder(raw.length + 16)
+        val containerStack = ArrayList<Char>()
+        var quote: Char? = null
+        var escaped = false
+        var expectingKey = false
+        var i = 0
+
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (quote != null) {
+                out.append(ch)
+                if (escaped) {
+                    escaped = false
+                } else if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                    expectingKey = false
+                }
+                i++
+                continue
+            }
+            if (ch == '"' || ch == '\'') {
+                quote = ch
+                out.append(ch)
+                i++
+                continue
+            }
+            if (ch == '{') {
+                containerStack.add('{')
+                expectingKey = true
+                out.append(ch)
+                i++
+                continue
+            }
+            if (ch == '[') {
+                containerStack.add('[')
+                expectingKey = false
+                out.append(ch)
+                i++
+                continue
+            }
+            if (ch == '}' || ch == ']') {
+                if (containerStack.isNotEmpty()) {
+                    containerStack.removeAt(containerStack.lastIndex)
+                }
+                expectingKey = false
+                out.append(ch)
+                i++
+                continue
+            }
+            if (ch == ',') {
+                expectingKey = containerStack.lastOrNull() == '{'
+                out.append(ch)
+                i++
+                continue
+            }
+            if (expectingKey && (ch.isLetter() || ch == '_')) {
+                var j = i + 1
+                while (j < raw.length && (raw[j].isLetterOrDigit() || raw[j] == '_')) {
+                    j++
+                }
+                var k = j
+                while (k < raw.length && raw[k].isWhitespace()) {
+                    k++
+                }
+                if (k < raw.length && raw[k] == ':') {
+                    out.append('"').append(raw, i, j).append('"')
+                    expectingKey = false
+                    i = j
+                    continue
+                }
+            }
+            if (!ch.isWhitespace()) {
+                expectingKey = false
+            }
+            out.append(ch)
+            i++
+        }
+        return out.toString()
+    }
+
+    private fun escapeControlCharsAndQuotes(raw: String, convertSingleQuotes: Boolean): String {
+        val out = StringBuilder(raw.length)
+        var quote: Char? = null
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (quote != null) {
+                if (ch == '\\' && i + 1 < raw.length) {
+                    val next = raw[i + 1]
+                    if (convertSingleQuotes && quote == '\'' && next == '\'') {
+                        out.append('\'')
+                        i += 2
+                        continue
+                    }
+                    out.append(ch).append(next)
+                    i += 2
+                    continue
+                }
+                if (ch == '\r') {
+                    if (i + 1 < raw.length && raw[i + 1] == '\n') {
+                        i++
+                    }
+                    out.append("\\n")
+                    i++
+                    continue
+                }
+                if (ch == '\n') {
+                    out.append("\\n")
+                    i++
+                    continue
+                }
+                if (ch == '\t') {
+                    out.append("\\t")
+                    i++
+                    continue
+                }
+                if (ch == quote) {
+                    if (quote == '\'' && convertSingleQuotes && i + 1 < raw.length) {
+                        val next = raw[i + 1]
+                        if (next.isLetterOrDigit() || next == ' ') {
+                            out.append('\'')
+                            i++
+                            continue
+                        }
+                    }
+                    out.append(if (convertSingleQuotes) '"' else ch)
+                    quote = null
+                    i++
+                    continue
+                }
+                if (convertSingleQuotes && quote == '\'' && ch == '"') {
+                    out.append("\\\"")
+                    i++
+                    continue
+                }
+                out.append(ch)
+                i++
+                continue
+            }
+            if (ch == '"' || (convertSingleQuotes && ch == '\'')) {
+                quote = ch
+                out.append(if (convertSingleQuotes) '"' else ch)
+                i++
+                continue
+            }
+            out.append(ch)
+            i++
+        }
+        return out.toString()
+    }
+
+    private fun repairMissingPropertyValues(input: String): String {
+        val out = StringBuilder(input.length)
+        var quote: Char? = null
+        var escaped = false
+        var currentStringStart = -1
+        var lastKey: String? = null
+
+        for (i in input.indices) {
+            val ch = input[i]
+            if (quote != null) {
+                out.append(ch)
+                if (escaped) {
+                    escaped = false
+                } else if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    if (currentStringStart >= 0) {
+                        lastKey = input.substring(currentStringStart + 1, i)
+                        currentStringStart = -1
+                    }
+                    quote = null
+                }
+                continue
+            }
+            if (ch == '"' || ch == '\'') {
+                quote = ch
+                currentStringStart = i
+                out.append(ch)
+                continue
+            }
+            if (ch == ':') {
+                out.append(ch)
+                var j = i + 1
+                while (j < input.length && input[j].isWhitespace()) {
+                    j++
+                }
+                if (j < input.length && (input[j] == ',' || input[j] == '}' || input[j] == ']')) {
+                    val fallback = if (lastKey != null && EMPTY_OBJECT_FALLBACK_KEYS.contains(lastKey)) {
+                        "{}"
+                    } else {
+                        "null"
+                    }
+                    out.append(fallback)
+                }
+                lastKey = null
+                continue
+            }
+            if (!ch.isWhitespace()) {
+                lastKey = null
+            }
+            out.append(ch)
+        }
+        return out.toString()
+    }
+
+    private fun stripTrailingCommasOutsideStrings(input: String): String {
+        val out = StringBuilder(input.length)
+        var quote: Char? = null
+        var escaped = false
+
+        for (i in input.indices) {
+            val ch = input[i]
+            if (quote != null) {
+                out.append(ch)
+                if (escaped) {
+                    escaped = false
+                } else if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                }
+                continue
+            }
+            if (ch == '"' || ch == '\'') {
+                quote = ch
+                out.append(ch)
+                continue
+            }
+            if (ch == ',') {
+                var j = i + 1
+                while (j < input.length && input[j].isWhitespace()) {
+                    j++
+                }
+                if (j < input.length && (input[j] == '}' || input[j] == ']')) {
+                    continue
+                }
+            }
+            out.append(ch)
+        }
+        return out.toString()
+    }
+
+    private fun stripDanglingObjectKeys(input: String): String {
+        val out = StringBuilder(input.length)
+        val containerStack = ArrayList<Char>()
+        var lastSignificant = '\u0000'
+        var quote: Char? = null
+        var escaped = false
+        var i = 0
+
+        while (i < input.length) {
+            val ch = input[i]
+            if (quote != null) {
+                out.append(ch)
+                if (escaped) {
+                    escaped = false
+                } else if (ch == '\\') {
+                    escaped = true
+                } else if (ch == quote) {
+                    quote = null
+                    lastSignificant = 's'
+                }
+                i++
+                continue
+            }
+
+            if (ch == ',') {
+                if (containerStack.lastOrNull() == '{') {
+                    val afterDangling = findDanglingObjectKeyEnd(input, i + 1)
+                    if (afterDangling != null) {
+                        i = afterDangling
+                        continue
+                    }
+                }
+                lastSignificant = ','
+                out.append(ch)
+                i++
+                continue
+            }
+
+            if (ch == '"' || ch == '\'') {
+                if (containerStack.lastOrNull() == '{' && lastSignificant == '{') {
+                    val afterDangling = findDanglingObjectKeyEnd(input, i)
+                    if (afterDangling != null) {
+                        i = afterDangling
+                        continue
+                    }
+                }
+                quote = ch
+                out.append(ch)
+                i++
+                continue
+            }
+
+            if (ch == '{' || ch == '[') {
+                containerStack.add(ch)
+                lastSignificant = ch
+                out.append(ch)
+                i++
+                continue
+            }
+
+            if (ch == '}' || ch == ']') {
+                if (containerStack.isNotEmpty()) {
+                    containerStack.removeAt(containerStack.lastIndex)
+                }
+                lastSignificant = ch
+                out.append(ch)
+                i++
+                continue
+            }
+
+            if (!ch.isWhitespace()) {
+                lastSignificant = ch
+            }
+            out.append(ch)
+            i++
+        }
+        return out.toString()
+    }
+
+    private fun findDanglingObjectKeyEnd(input: String, startIndex: Int): Int? {
+        var j = startIndex
+        while (j < input.length && input[j].isWhitespace()) {
+            j++
+        }
+        if (j >= input.length) return null
+        val quote = input[j]
+        if (quote != '"' && quote != '\'') return null
+
+        j++
+        var escaped = false
+        while (j < input.length) {
+            val ch = input[j]
+            if (escaped) {
+                escaped = false
+            } else if (ch == '\\') {
+                escaped = true
+            } else if (ch == quote) {
+                break
+            }
+            j++
+        }
+        if (j >= input.length || input[j] != quote) return null
+
+        j++
+        while (j < input.length && input[j].isWhitespace()) {
+            j++
+        }
+        return if (j < input.length && input[j] == '}') j else null
+    }
+
+    private fun toJsonValue(value: Any?): Any = when (value) {
+        null -> JSONObject.NULL
+        is Map<*, *> -> {
+            val obj = JSONObject()
+            for ((k, v) in value) {
+                if (k != null) {
+                    obj.put(k.toString(), toJsonValue(v))
+                }
+            }
+            obj
+        }
+        is List<*> -> {
+            val arr = JSONArray()
+            for (item in value) {
+                arr.put(toJsonValue(item))
+            }
+            arr
+        }
+        else -> value
+    }
+
+    fun mapToJsonObject(map: Map<String, Any?>): JSONObject {
+        val obj = JSONObject()
+        for ((k, v) in map) {
+            obj.put(k, toJsonValue(v))
+        }
+        return obj
+    }
+
+    private class SimpleJsonParser(private val input: String) {
+        private var pos = 0
+
+        fun parseObjectRoot(): Map<String, Any?>? {
+            skipWhitespace()
+            if (pos >= input.length || input[pos] != '{') return null
+            val obj = parseObject() ?: return null
+            skipWhitespace()
+            if (pos != input.length) return null
+            return obj
+        }
+
+        private fun parseValue(): Any? {
+            skipWhitespace()
+            if (pos >= input.length) throw IllegalArgumentException("Unexpected end of JSON")
+            return when (val ch = input[pos]) {
+                '{' -> parseObject() ?: throw IllegalArgumentException("Invalid object")
+                '[' -> parseArray()
+                '"' -> parseString()
+                't' -> parseLiteral("true", true)
+                'f' -> parseLiteral("false", false)
+                'n' -> parseLiteral("null", null)
+                '-', in '0'..'9' -> parseNumber()
+                else -> throw IllegalArgumentException("Unexpected char '$ch' at $pos")
+            }
+        }
+
+        private fun parseObject(): Map<String, Any?>? {
+            if (pos >= input.length || input[pos] != '{') return null
+            pos++
+            skipWhitespace()
+            val result = LinkedHashMap<String, Any?>()
+            if (pos < input.length && input[pos] == '}') {
+                pos++
+                return result
+            }
+            while (true) {
+                skipWhitespace()
+                if (pos >= input.length || input[pos] != '"') {
+                    throw IllegalArgumentException("Expected object key at $pos")
+                }
+                val key = parseString()
+                skipWhitespace()
+                if (pos >= input.length || input[pos] != ':') {
+                    throw IllegalArgumentException("Expected ':' after key at $pos")
+                }
+                pos++
+                val value = parseValue()
+                result[key] = value
+                skipWhitespace()
+                if (pos >= input.length) throw IllegalArgumentException("Unterminated object")
+                when (input[pos]) {
+                    ',' -> pos++
+                    '}' -> {
+                        pos++
+                        return result
+                    }
+                    else -> throw IllegalArgumentException("Expected ',' or '}' at $pos")
+                }
+            }
+        }
+
+        private fun parseArray(): List<Any?> {
+            pos++
+            skipWhitespace()
+            val result = ArrayList<Any?>()
+            if (pos < input.length && input[pos] == ']') {
+                pos++
+                return result
+            }
+            while (true) {
+                result.add(parseValue())
+                skipWhitespace()
+                if (pos >= input.length) throw IllegalArgumentException("Unterminated array")
+                when (input[pos]) {
+                    ',' -> pos++
+                    ']' -> {
+                        pos++
+                        return result
+                    }
+                    else -> throw IllegalArgumentException("Expected ',' or ']' at $pos")
+                }
+            }
+        }
+
+        private fun parseString(): String {
+            pos++
+            val sb = StringBuilder()
+            while (pos < input.length) {
+                val ch = input[pos++]
+                if (ch == '"') return sb.toString()
+                if (ch == '\\') {
+                    if (pos >= input.length) throw IllegalArgumentException("Unterminated escape")
+                    when (val esc = input[pos++]) {
+                        '"' -> sb.append('"')
+                        '\\' -> sb.append('\\')
+                        '/' -> sb.append('/')
+                        'b' -> sb.append('\b')
+                        'f' -> sb.append('\u000C')
+                        'n' -> sb.append('\n')
+                        'r' -> sb.append('\r')
+                        't' -> sb.append('\t')
+                        'u' -> {
+                            if (pos + 4 > input.length) throw IllegalArgumentException("Invalid unicode escape")
+                            val hex = input.substring(pos, pos + 4)
+                            sb.append(hex.toInt(16).toChar())
+                            pos += 4
+                        }
+                        else -> sb.append(esc)
+                    }
+                } else {
+                    if (ch.code < 0x20) throw IllegalArgumentException("Unescaped control char in string")
+                    sb.append(ch)
+                }
+            }
+            throw IllegalArgumentException("Unterminated string")
+        }
+
+        private fun parseLiteral(literal: String, value: Any?): Any? {
+            if (!input.startsWith(literal, pos)) {
+                throw IllegalArgumentException("Expected '$literal' at $pos")
+            }
+            pos += literal.length
+            return value
+        }
+
+        private fun parseNumber(): Number {
+            val start = pos
+            if (input[pos] == '-') pos++
+            if (pos >= input.length || !input[pos].isDigit()) {
+                throw IllegalArgumentException("Invalid number at $start")
+            }
+            if (input[pos] == '0') {
+                pos++
+            } else {
+                while (pos < input.length && input[pos].isDigit()) pos++
+            }
+            var isFloat = false
+            if (pos < input.length && input[pos] == '.') {
+                isFloat = true
+                pos++
+                if (pos >= input.length || !input[pos].isDigit()) {
+                    throw IllegalArgumentException("Invalid fraction at $pos")
+                }
+                while (pos < input.length && input[pos].isDigit()) pos++
+            }
+            if (pos < input.length && (input[pos] == 'e' || input[pos] == 'E')) {
+                isFloat = true
+                pos++
+                if (pos < input.length && (input[pos] == '+' || input[pos] == '-')) pos++
+                if (pos >= input.length || !input[pos].isDigit()) {
+                    throw IllegalArgumentException("Invalid exponent at $pos")
+                }
+                while (pos < input.length && input[pos].isDigit()) pos++
+            }
+            val raw = input.substring(start, pos)
+            return if (isFloat) {
+                raw.toDouble()
+            } else {
+                raw.toLongOrNull()?.let { l ->
+                    if (l in Int.MIN_VALUE..Int.MAX_VALUE) l.toInt() else l
+                } ?: raw.toDouble()
+            }
+        }
+
+        private fun skipWhitespace() {
+            while (pos < input.length && input[pos].isWhitespace()) {
+                pos++
+            }
+        }
     }
 }

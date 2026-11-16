@@ -5,7 +5,7 @@
   - `version` Downstream version of this change
 
 ---
-## Phase 1 `AI Core - Basic` 11/15
+## Phase 1 `AI Core - Basic` 12/16
  - [x] **Release** `1.0.0`
     - Text-only interface for the AI Core API (Gemini Nano / Flan T-5) implementation, Play Store and source release
  - [x] **UI and UX** `1.0.1`
@@ -14,24 +14,24 @@
     - Multichat, chat pinning, basic per-chat settings
  - [x] **Hotfixes and monitoring** `~1.1.1`, `~1.1.2`, `1.1.5`
     - Optional analytics and crash reporting, logging, issue fixes in UI and backend
- - [x] **Additional features** `~1.1.6`, `1.1.7`
-    - Per-chat personas, temperature and token limit settings, etc. 
+ - [x] **Additional features** `~1.1.6`, `~1.1.7`
+    - Per-chat personas, temperature and token limit settings, etc.
  - [x] **Generation extension** `~1.1.7`, `1.1.8`
     - Workaround for 25s response generation time that ends answers prematurely
- - [x] **AICore controls** `1.2.0`
-    - Ability to select test Nano versions and update track, maybe remove 25s limit entirely
+ - [x] **AICore controls** `1.2.0`, `1.8.0`, `1.8.3`
+    - Shipped Stable (`gemini-nano-v3`) & Preview/Beta (`gemini-nano-v4-full` / `fast`) switching, unified Multi-Model Manager & parallel background downloader, live capability badges, and auto-continuation with mid-clause/contraction `STOP` cutoff rescue
  - [x] **Documentation in-app & 3-Tier SWR Multi-Page Explorer** `1.5.3`, `1.5.4`, `1.5.5`
     - In-app Google ML Kit GenAI & AICore 23-page comprehensive offline & SWR documentation hub (`DocExplorerPage`), authentic Google developer specifications (`com.google.mlkit:genai-prompt:1.0.0-beta4`), live Google DevSite HTML-to-Markdown SWR synchronization engine with fallback fetching, canonical Google developer URL routing, cross-page term-frequency search engine, and `query_aicore_documentation` on-device RAG mesh tool
  - [x] **Dual-Branch Onboarding & SWR Remote Slides** `1.5.0`
     - PTK-style Material 3 onboarding wizard with animated pill indicators, device hardware validation, SWR remote slides from GitHub, assistant setup, and troubleshooting dashboard
  - [ ] **Contributions and open-source licenses**
-    - Show some respect to developers who made this possible
+    - *Partial (`1.5.0`)*: Dependency & license viewer shipped in Settings; dedicated contributor attribution credits still planned
  - [x] **Change in storage and updates** `~1.1.6`, `~1.1.8`
     - Use Firebase Remote Config for delivering data updates and storage instead of GitHub, move to a real DB instead of shared prefs
     - It would look like Remote Config would not work for collaboration (prompts and translations) so only the *config* part will move there
  - [x] **GitHub issue and update browser** `1.2.0`
     - A neat dashboard of contributions and issue list from this repo, in-app
- - [x] **Master Prompt selector and editor** `~1.1.6`, `1.1.7`, `1.1.8`
+ - [x] **Master Prompt selector and editor** `~1.1.6`, `~1.1.7`, `~1.1.8`
     - Collection of different Master Prompts and ability to create own ones
  - [ ] **Master Prompt fixes**
     - Finalizing the master prompt so it delivers more consistency
@@ -41,7 +41,7 @@
     - Polishing and fixing issues, supporting users and optimisations
 
 
-## Phase 2 `AI Core - Improved` 6/7
+## Phase 2 `AI Core - Improved` 11/13
  - [x] **Agentism** `1.2.0`
     - Add agentic and RAG capabilities to the model with tool use loops, tool usage protocol
  - [ ] **Context expansion**
@@ -56,6 +56,16 @@
     - Hardware-aware dual-branch onboarding (`IntroPage`), unskewed atomic Google Analytics generation telemetry (`generation_count: 1`), and Default Assistant system integration.
  - [x] **Assistant Overlay Expansion, Mesh Tool Loop & Synthesis Recovery** `1.5.4`
     - Full-screen fill drag physics, autonomous mesh tool execution and synthesis loop, bubble UX polish, Chat ID "0" persistence race resolution, and onboarding & settings refinements.
+ - [x] **Modular Extensions & Built-in/Online Tools** `1.5.7`, `1.7.0`, `1.8.6`
+    - Dedicated Extensions Settings (`Allow all new extensions`, per-app & per-module toggles, live schema inspector), 6-turn tool chaining, built-in offline modules (**AICore Docs**, **Device & Battery**), opt-in online modules (**Wikipedia**, **DuckDuckGo**, **Open-Meteo Weather**), and synchronized `toolRegistry` filtering.
+ - [x] **Nano v4, Thinking Mode & Multi-Model Downloader** `1.8.0`, `1.8.3`
+    - `Stable` (`gemini-nano-v3`) & `Preview` (`gemini-nano-v4-full` / `fast`) model switcher, live capability badges, collapsible streaming `ChatThoughtsBlock`, and decoupled parallel background downloader with speed (`B/s`–`GB/s`) & remaining-bytes progress.
+ - [x] **Overlay Camera & On-Demand `inspect_screen` (3-Turn TTL)** `1.6.0`, `1.8.5`, `1.8.6`
+    - Assistant overlay `Take Photo` camera capture with EXIF orientation fix, 768px fast vision downsampling + background visual memory, and lazy `inspect_screen` tool (`3`-turn TTL) replacing passive auto-attached screenshots.
+ - [x] **`m3x_chat` UI, Cutoff Rescue & Cancel Hardening** `1.8.3`, `1.8.4`, `1.8.5`, `1.8.6`
+    - Standardized `m3x_chat` shrink-wrap bubbles with author attribution & tap-to-reveal timestamps, auto-continuation + mid-clause/contraction `STOP` rescue, 240-char overlap deduplication, stutter guard, tool JSON repair/fallback, and stream cancel lifecycle hardening.
+ - [x] **Nightly CI/CD & Release Automation** `1.8.3`
+    - Hardened `build_releases.ps1` (`-ApkOnly` / `-AabOnly`) and `publish_nightly.ps1` (`dev` branch push, GitHub Nightly Prereleases, Google Play Internal Testing upload).
  - [ ] **Ephemeral Context**
     - Implementing a "Short-Term Memory" buffer for heavy data (files/logs) that doesn't pollute the long-term chat history.
 
@@ -73,7 +83,7 @@
     - Read access to files on the device, in the network or online for more capabilities
  - [ ] **Scripting**
     - Allow the AI to use scripts to interact with other devices and use better tools like smart home integration
- - [ ] **Extenstions "market"**
+ - [ ] **Extensions "market"**
     - Create a way for users to create extensions and publish them for other users to use
  - [ ] **Voice chat**
     - Real-time, low-latency voice interaction (running locally). Possibly, ability to join chats on social media apps or act on behalf of user
@@ -91,7 +101,7 @@
  - [ ] **On-Device Neural Text-to-Speech (TTS)**
     - Expressive, low-latency spoken conversational assistant audio responses synthesized entirely on-device.
  - [ ] **Feature Support Dashboard**
-    - Live capability matrix dashboard showing real-time NPU, TPU, AICore version, and hardware feature flags across device models and Android OS versions.
+    - *Partial (`1.5.0`, `1.8.0`, `1.8.3`)*: Device hardware validation & live Nano v3/v4 capability badges (`System Prompt`, `Thinking Mode`, `Prefix Caching`) shipped in Onboarding & Model Parameters; full NPU/TPU matrix dashboard across devices and Android versions still planned.
 
 ## Phase 4.7 `Cloud Model Escalation & Handoff` 0/1
  - [ ] **Google Gemini Cloud Handoff ("I know a guy...") via `ACTION_SEND` intent**

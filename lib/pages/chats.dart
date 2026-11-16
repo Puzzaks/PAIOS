@@ -180,9 +180,7 @@ class ChatsPageState extends State<ChatsPage> {
                     enableFeedback: true,
                     tooltip: engine.dict.value("new_chat"),
                     onPressed: engine.isLoading ? () {} : () {
-                      engine.currentChat = "0";
-                      engine.context.clear();
-                      engine.contextSize = 0;
+                      engine.startNewChat();
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -390,9 +388,7 @@ class ChatsPageState extends State<ChatsPage> {
                                   title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
                                   subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
                                   action: engine.chats.isNotEmpty?(){}:engine.isLoading?(){}:(){
-                                    engine.currentChat = "0";
-                                    engine.context.clear();
-                                    engine.contextSize = 0;
+                                    engine.startNewChat();
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(

@@ -4,6 +4,7 @@ import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.GenAiException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -713,5 +714,412 @@ class PaiosModelHelperTest {
         )
         assertTrue(oneAvailable.hasAnySupportedModel)
         assertTrue(oneAvailable.hasAnyAvailableModel)
+    }
+
+    @Test
+    fun extractToolCallJson_parsesCleanInspectScreenAndKeyAliases() {
+        val clean = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "inspect_screen", "app": "paios", "args": {"question": "What is on screen?"}}"""
+        )
+        assertNotNull(clean)
+        assertEquals("inspect_screen", clean!!.tool)
+        assertEquals("paios", clean.app)
+        assertEquals("What is on screen?", clean.args["question"])
+
+        val parametersAlias = PaiosModelHelper.extractToolCallJson(
+            """```json
+{"tool": "inspect_screen", "parameters": {"question": "Summarize this page"}}
+```"""
+        )
+        assertNotNull(parametersAlias)
+        assertEquals("inspect_screen", parametersAlias!!.tool)
+        assertEquals("paios", parametersAlias.app)
+        assertEquals("Summarize this page", parametersAlias.args["question"])
+
+        val nameAlias = PaiosModelHelper.extractToolCallJson(
+            """{"name": "inspect_screen", "parameters": {"question": "Read text"}}"""
+        )
+        assertNotNull(nameAlias)
+        assertEquals("inspect_screen", nameAlias!!.tool)
+        assertEquals("Read text", nameAlias.args["question"])
+        assertEquals("inspect_screen", nameAlias.raw["tool"])
+
+        val methodAlias = PaiosModelHelper.extractToolCallJson(
+            """{"method": "inspect_screen", "arguments": {"question": "Check error"}}"""
+        )
+        assertNotNull(methodAlias)
+        assertEquals("inspect_screen", methodAlias!!.tool)
+        assertEquals("Check error", methodAlias.args["question"])
+
+        assertNull(
+            PaiosModelHelper.extractToolCallJson("""{"name": "Alice", "age": 30}""")
+        )
+    }
+
+    @Test
+    fun extractToolCallJson_repairsMissingValuesAndDanglingKeys() {
+        val missingArgsValue = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "inspect_screen", "app": "paios", "args":}"""
+        )
+        assertNotNull(missingArgsValue)
+        assertEquals("inspect_screen", missingArgsValue!!.tool)
+        assertEquals(emptyMap<String, Any?>(), missingArgsValue.args)
+
+        val missingArgumentsValue = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "inspect_screen", "arguments":}"""
+        )
+        assertNotNull(missingArgumentsValue)
+        assertEquals("inspect_screen", missingArgumentsValue!!.tool)
+        assertEquals(emptyMap<String, Any?>(), missingArgumentsValue.args)
+
+        val danglingNamedKey = PaiosModelHelper.extractToolCallJson(
+            """{"tool":"inspect_screen","foo"}"""
+        )
+        assertNotNull(danglingNamedKey)
+        assertEquals("inspect_screen", danglingNamedKey!!.tool)
+        assertEquals(emptyMap<String, Any?>(), danglingNamedKey.args)
+
+        val danglingEmptyKeyAfterArgs = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "inspect_screen", "app": "paios", "args": {"question": "keep :} inside"}, ""}"""
+        )
+        assertNotNull(danglingEmptyKeyAfterArgs)
+        assertEquals("inspect_screen", danglingEmptyKeyAfterArgs!!.tool)
+        assertEquals("keep :} inside", danglingEmptyKeyAfterArgs.args["question"])
+    }
+
+    @Test
+    fun looksLikeIncompleteToolCall_detectsDraftsAndRejectsCompleteOrNonToolText() {
+        assertTrue(
+            PaiosModelHelper.looksLikeIncompleteToolCall(
+                """{"tool": "inspect_screen", "args": {"""
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.looksLikeIncompleteToolCall(
+                """Sure! {"tool": "inspect_screen", "parameters": {"ques"""
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.looksLikeIncompleteToolCall(
+                "```json\n{\"tool\": \"inspect_screen\""
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.looksLikeIncompleteToolCall(
+                """{"tool": "inspect_screen", "app": "paios", "args": {}}"""
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.looksLikeIncompleteToolCall(
+                """Here is a partial non-tool object: {"name": "Alice", "age": 30"""
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.looksLikeIncompleteToolCall("Hello! How can I help?")
+        )
+    }
+
+    @Test
+    fun shouldContinuePartialResponse_stopsToolDraftsOnStopAndCapsAtTwo() {
+        assertEquals(2, PaiosModelHelper.MAX_TOOL_JSON_CONTINUATIONS)
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = """{"tool": "inspect_screen", "args": {""",
+                continuationCount = 0,
+                lastRoundAddedChars = 35,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "STOP",
+                partialText = """{"tool": "inspect_screen", "args": {""",
+                continuationCount = 0,
+                lastRoundAddedChars = 35,
+                isNanoV4 = true,
+                isToolDraft = true
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = """{"tool": "inspect_screen", "args": {""",
+                continuationCount = 0,
+                lastRoundAddedChars = 35,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "-100",
+                partialText = """{"tool": "inspect_screen", "args": {""",
+                continuationCount = 0,
+                lastRoundAddedChars = 35,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = null,
+                partialText = """{"tool": "inspect_screen", "args": {""",
+                continuationCount = 0,
+                lastRoundAddedChars = 35,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = """{"tool": "inspect_screen", "args": {"question": "still open""",
+                continuationCount = 1,
+                lastRoundAddedChars = 20,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = null,
+                partialText = """{"tool": "inspect_screen", "args": {"question": "still open""",
+                continuationCount = 1,
+                lastRoundAddedChars = 20,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = """{"tool": "inspect_screen", "args": {"question": "still open""",
+                continuationCount = 1,
+                lastRoundAddedChars = 0,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = """{"tool": "inspect_screen", "args": {"question": "still open""",
+                continuationCount = 2,
+                lastRoundAddedChars = 20,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = null,
+                partialText = """{"tool": "inspect_screen", "args": {"question": "still open""",
+                continuationCount = 2,
+                lastRoundAddedChars = 20,
+                isNanoV4 = false,
+                isToolDraft = true
+            )
+        )
+    }
+
+    @Test
+    fun buildOverlayContinuationPrompt_jsonDraftOmitsPersonaLanguageQuestionBloat() {
+        val openStringSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "What is on my screen right now?",
+            partialText = """{"tool": "inspect_screen", "args": {"question": "What""",
+            personaAnchor = "You are a witty pirate assistant who always says ahoy.",
+            languageCode = "uk",
+            isJsonDraft = true
+        )
+        val openSys = openStringSpec.instructions!!
+        assertEquals("Continue.", openStringSpec.userPrompt)
+        assertFalse(openSys.contains("Persona:"))
+        assertFalse(openSys.contains("Language:"))
+        assertFalse(openSys.contains("Question:"))
+        assertFalse(openSys.contains("pirate"))
+        assertFalse(openSys.contains("What is on my screen right now?"))
+        assertTrue(openSys.contains("""{"tool": "inspect_screen", "args": {"question": "What"""))
+        assertTrue(
+            openSys.endsWith(
+                "Complete ONLY the remaining JSON characters from the exact end (close the open string quote and braces). Do not restart or add markdown."
+            )
+        )
+
+        val closedStringSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "What is on my screen right now?",
+            partialText = """{"tool": "inspect_screen", "args": {"question": "What is on screen?"""",
+            personaAnchor = "You are a witty pirate assistant who always says ahoy.",
+            languageCode = "uk",
+            isJsonDraft = true
+        )
+        assertTrue(
+            closedStringSpec.instructions!!.endsWith(
+                "Complete ONLY the remaining JSON characters from the exact end to close the JSON object. Do not restart or add markdown."
+            )
+        )
+    }
+
+    @Test
+    fun stitchOverlayContinuation_handlesJsonDraftsWithAliasesAndBriefTextPrefix() {
+        assertEquals(
+            """{"tool": "inspect_screen", "arguments": {"question": "x"}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "arguments": """,
+                """{"question": "x"}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "parameters": {"question": "What is this?"}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "parameters": {"question": "What""",
+                """ is this?"}}"""
+            )
+        )
+        assertEquals(
+            """Sure! {"tool": "inspect_screen", "app": "paios", "args": {}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """Sure! {"tool": "inspect_screen", "app": "paios",""",
+                """ "args": {}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "args": {"question": "what is this?"}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "args": {"question": "what """,
+                """PAIOS: is this?"}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "args": {"question": "what is this?"}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "args": {"question": "what""",
+                """{"tool": "inspect_screen", "args": {"question": "what is this?"}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "args": {"question": "what is on screen?"}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "args": {"question": "what is on screen?"""",
+                """"}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "args": {}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "args": {}""",
+                """}}"""
+            )
+        )
+        assertEquals(
+            """{"tool": "inspect_screen", "args": {}}""",
+            PaiosModelHelper.stitchOverlayContinuation(
+                """{"tool": "inspect_screen", "args": {}""",
+                """}"""
+            )
+        )
+    }
+
+    @Test
+    fun extractToolCallJson_repairsTruncatedInspectScreen109CharsAndRespectsSafetyChecks() {
+        val truncated109 =
+            """{"tool": "inspect_screen", "app": "paios", "args": {"question": "what app or icons are on my screen right now"""
+        assertEquals(109, truncated109.length)
+        val repaired = PaiosModelHelper.extractToolCallJson(truncated109)
+        assertNotNull(repaired)
+        assertEquals("inspect_screen", repaired!!.tool)
+        assertEquals("paios", repaired.app)
+        assertEquals("what app or icons are on my screen right now", repaired.args["question"])
+
+        val truncatedWithQuestionMark = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "inspect_screen", "app": "paios", "args": {"question": "what app or icons are on my screen right now?"""
+        )
+        assertNotNull(truncatedWithQuestionMark)
+        assertEquals("what app or icons are on my screen right now?", truncatedWithQuestionMark!!.args["question"])
+
+        val batteryTruncated = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "get_battery_status", "app": "paios", "args": {"""
+        )
+        assertNotNull(batteryTruncated)
+        assertEquals("get_battery_status", batteryTruncated!!.tool)
+        assertEquals(emptyMap<String, Any?>(), batteryTruncated.args)
+
+        assertNull(
+            PaiosModelHelper.extractToolCallJson(
+                """{"tool": "wikipedia_summary", "app": "paios", "args": {"""
+            )
+        )
+        assertNull(
+            PaiosModelHelper.extractToolCallJson(
+                """{"tool": "duckduckgo_search", "args": {"query": """"
+            )
+        )
+        assertNull(
+            PaiosModelHelper.extractToolCallJson(
+                """{"tool": "inspect_"""
+            )
+        )
+        val wikiWithQuery = PaiosModelHelper.extractToolCallJson(
+            """{"tool": "wikipedia_summary", "args": {"query": "Paperclip maximizer"""
+        )
+        assertNotNull(wikiWithQuery)
+        assertEquals("wikipedia_summary", wikiWithQuery!!.tool)
+        assertEquals("Paperclip maximizer", wikiWithQuery.args["query"])
+    }
+
+    @Test
+    fun extractToolCallJson_parsesNanoV4ControlToolTagsAndStripsControlTags() {
+        val parsed = PaiosModelHelper.extractToolCallJson(
+            """<ctrl42>call:wikipedia_summary{query: "paperclip maximizer"}<ctrl43>"""
+        )
+        assertNotNull(parsed)
+        assertEquals("wikipedia_summary", parsed!!.tool)
+        assertEquals("paios", parsed.app)
+        assertEquals("paperclip maximizer", parsed.args["query"])
+
+        val appPrefixed = PaiosModelHelper.extractToolCallJson(
+            """<ctrl42>call:ptk:get_alerts{region: "Kyiv"}<ctrl43>"""
+        )
+        assertNotNull(appPrefixed)
+        assertEquals("get_alerts", appPrefixed!!.tool)
+        assertEquals("ptk", appPrefixed.app)
+        assertEquals("Kyiv", appPrefixed.args["region"])
+
+        assertEquals(
+            "Thinking carefully.",
+            PaiosModelHelper.stripControlToolTags(
+                """Thinking carefully.<ctrl42>call:wikipedia_summary{query: "paperclip maximizer"}<ctrl43>"""
+            )
+        )
+        assertEquals(
+            "",
+            PaiosModelHelper.stripControlToolTags(
+                """<ctrl42>call:wikipedia_summary{query: "paperclip maximizer"}<ctrl43>"""
+            )
+        )
+        assertEquals(
+            "Partial",
+            PaiosModelHelper.stripControlToolTags(
+                """Partial <ctrl42>call:inspect_screen{ques"""
+            )
+        )
+    }
+
+    @Test
+    fun isTruncationHeuristic_rescuesShortPrepositionsParticiplesAndNegations() {
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("The forecast for"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("and ensuring"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("The model works by providing"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("and do not"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Why not"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Thanks for everything"))
+    }
+
+    @Test
+    fun stripLeadingAssistantLabel_stripsCaseInsensitivePaiosPrefix() {
+        assertEquals("Hello!", PaiosModelHelper.stripLeadingAssistantLabel("PAIOS: Hello!"))
+        assertEquals("The forecast", PaiosModelHelper.stripLeadingAssistantLabel("  paios:  The forecast"))
+        assertEquals("PAIOS is ready", PaiosModelHelper.stripLeadingAssistantLabel("PAIOS is ready"))
     }
 }

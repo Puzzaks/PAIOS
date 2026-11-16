@@ -81,7 +81,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                               subtitle: engine.dict.value("gh_repo"),
                               action: () async {
                                 await launchUrl(
-                                    Uri.parse('https://github.com/Puzzaks/geminilocal'),
+                                    Uri.parse('https://github.com/Puzzaks/PAIOS'),
                                     mode: LaunchMode.externalApplication
                                 );
                               }

@@ -21,10 +21,24 @@ class ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
   }
+
+  void _cleanupDraftOnExit(AIEngine engine) {
+    if (!engine.isLoading && !engine.isGenerating && !engine.isContinuing) {
+      engine.prompt.clear();
+      engine.pendingImageBytes = null;
+      engine.pendingImageName = null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop || !mounted) return;
+        final engine = Provider.of<AIEngine>(context, listen: false);
+        _cleanupDraftOnExit(engine);
+      },
       child: LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             double scaffoldWidth = constraints.maxWidth;
@@ -50,6 +64,7 @@ class ChatPageState extends State<ChatPage> {
                     padding: EdgeInsetsGeometry.only(left: 5),
                     child: IconButton(
                         onPressed: (){
+                          _cleanupDraftOnExit(engine);
                           if (engine.currentChat == "testing") {
                             engine.chats.remove("testing");
                           }
