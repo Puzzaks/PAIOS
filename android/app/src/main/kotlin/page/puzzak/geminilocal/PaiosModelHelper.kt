@@ -40,6 +40,9 @@ object PaiosModelHelper {
     const val MAX_CONTINUATION_TAIL_CHARS = 450
     const val MAX_CONTINUATION_OVERLAP_CHARS = 240
     const val MID_WORD_BACKOFF_MAX_CHARS = 28
+    const val SCREEN_CONTEXT_TTL_TURNS = 3
+    const val MAX_STOP_CUTOFF_RETRIES = 1
+    const val MAX_STOP_CUTOFF_RESCUE_CHARS = 1800
 
     private val CONTINUATION_DUPLICATE_FENCE_REGEX = Regex("""^```[a-zA-Z0-9]*\r?\n?""")
     private val LEADING_CONTINUATION_ELLIPSIS_REGEX = Regex("""^(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*""")
@@ -49,6 +52,42 @@ object PaiosModelHelper {
     private val TRAILING_MARKDOWN_WITH_TERMINAL_REGEX = Regex("""[.!?…"\x27”’`\)\]。！？][*_]+$""")
     private val OPEN_MID_CLAUSE_TAIL_REGEX = Regex("""[,;:\-—(\[\{]$""")
     private val WHITESPACE_SPLIT_REGEX = Regex("""\s+""")
+
+    private val DANGLING_TAIL_WORDS = setOf(
+        "to", "and", "or", "but", "of", "the", "a", "an", "with", "for",
+        "in", "on", "at", "by", "from", "into", "about", "as", "that",
+        "which", "who", "your", "its", "their", "this", "these", "those",
+        "my", "our", "is", "are", "was", "were", "can", "will", "would",
+        "should", "could", "may", "might"
+    )
+
+    private val STRICT_TRAILING_DETERMINERS = setOf(
+        "the", "a", "an", "your", "its", "their", "my", "our"
+    )
+
+    private val PRE_MODIFIER_TRIGGERS = setOf(
+        "a", "an", "the", "of", "with", "for", "in", "on", "at", "by",
+        "from", "into", "about", "as", "to", "your", "its", "their",
+        "my", "our", "this", "these", "those"
+    )
+
+    private val EXPLICIT_MODIFIER_ADJECTIVES = setOf(
+        "new", "old", "major", "minor", "main", "key", "own", "same",
+        "other", "next", "global", "local", "digital", "personal",
+        "general", "special", "complex", "modern", "future", "human",
+        "rapid", "deep", "wide", "broad", "strong", "high", "low",
+        "long", "short", "large", "small", "full", "real", "certain",
+        "severe", "extreme", "likely", "common", "single", "double",
+        "multiple", "entire", "whole", "several", "many", "various",
+        "further", "more", "less", "such"
+    )
+
+    private val MODIFIER_NOUN_EXCLUSIONS = setOf(
+        "student", "parent", "client", "patient", "agent", "event",
+        "moment", "content", "comment", "percent", "library", "factory",
+        "history", "memory", "story", "theory", "category", "territory",
+        "hundred", "united"
+    )
 
     private const val FLUTTER_PREFS = "FlutterSharedPreferences"
     private val NANO_V4_REGEX = Regex("""(?:^|[^a-z0-9])(v4|nano[\s\-_]?4)(?:[^a-z0-9]|$)""", RegexOption.IGNORE_CASE)
@@ -632,6 +671,31 @@ object PaiosModelHelper {
         return CropRect(left = left, top = top, width = cropW, height = cropH)
     }
 
+    data class ScreenContextTurnState(
+        val available: Boolean,
+        val nextTurnsRemaining: Int,
+        val shouldExpire: Boolean
+    )
+
+    fun consumeScreenContextTurn(
+        turnsRemaining: Int,
+        hasContent: Boolean
+    ): ScreenContextTurnState {
+        if (turnsRemaining <= 0 || !hasContent) {
+            return ScreenContextTurnState(
+                available = false,
+                nextTurnsRemaining = 0,
+                shouldExpire = true
+            )
+        }
+        val next = (turnsRemaining - 1).coerceAtLeast(0)
+        return ScreenContextTurnState(
+            available = true,
+            nextTurnsRemaining = next,
+            shouldExpire = next == 0
+        )
+    }
+
     data class ContinuationPrompt(
         val instructions: String?,
         val userPrompt: String
@@ -647,6 +711,25 @@ object PaiosModelHelper {
         return trimmed
     }
 
+    private fun isLikelyTrailingModifier(word: String): Boolean {
+        if (word.length < 3) return false
+        if (EXPLICIT_MODIFIER_ADJECTIVES.contains(word)) return true
+        if (word.endsWith("ment") || MODIFIER_NOUN_EXCLUSIONS.contains(word)) return false
+        return (word.length >= 5 && word.endsWith("ed") && !word.endsWith("eed")) ||
+            word.endsWith("tial") ||
+            word.endsWith("cial") ||
+            word.endsWith("ical") ||
+            word.endsWith("ant") ||
+            word.endsWith("ent") ||
+            word.endsWith("ous") ||
+            word.endsWith("ive") ||
+            word.endsWith("ful") ||
+            word.endsWith("less") ||
+            word.endsWith("ary") ||
+            word.endsWith("ory") ||
+            (word.length >= 7 && (word.endsWith("able") || word.endsWith("ible")))
+    }
+
     fun isTruncationHeuristic(text: String): Boolean {
         val trimmed = text.trimEnd()
         if (trimmed.isEmpty()) return false
@@ -654,8 +737,20 @@ object PaiosModelHelper {
         if (CONTRACTION_TRAILING_APOSTROPHE_REGEX.containsMatchIn(trimmed)) return true
         if (TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(trimmed)) return false
         if (TERMINAL_PUNCTUATION_REGEX.containsMatchIn(trimmed)) return false
-        val wordCount = trimmed.split(WHITESPACE_SPLIT_REGEX).count { it.isNotEmpty() }
-        return wordCount >= 3
+
+        val tokens = trimmed.split(WHITESPACE_SPLIT_REGEX).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return false
+        val lastWord = tokens.last().trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
+        if (lastWord.isEmpty()) return false
+
+        if (tokens.size <= 3) {
+            return STRICT_TRAILING_DETERMINERS.contains(lastWord)
+        }
+        if (DANGLING_TAIL_WORDS.contains(lastWord)) {
+            return true
+        }
+        val prevWord = tokens[tokens.size - 2].trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
+        return PRE_MODIFIER_TRIGGERS.contains(prevWord) && isLikelyTrailingModifier(lastWord)
     }
 
     private fun isMeaningfulClauseForStutter(candidate: String): Boolean {
@@ -725,7 +820,8 @@ object PaiosModelHelper {
         isNanoV4: Boolean,
         maxContinuations: Int = MAX_OVERLAY_CONTINUATIONS,
         maxAccumulatedChars: Int = MAX_OVERLAY_ACCUMULATED_CHARS,
-        nullReasonRetryCount: Int = 0
+        nullReasonRetryCount: Int = 0,
+        stopCutoffRetryCount: Int = 0
     ): Boolean {
         if (continuationCount >= maxContinuations) return false
         if (partialText.isBlank()) return false
@@ -746,7 +842,10 @@ object PaiosModelHelper {
                 return true
             }
             if (normalized == "0" || normalized == "STOP") {
-                return false
+                return !isNanoV4 &&
+                    stopCutoffRetryCount < MAX_STOP_CUTOFF_RETRIES &&
+                    partialText.length < MAX_STOP_CUTOFF_RESCUE_CHARS &&
+                    isTruncationHeuristic(partialText)
             }
         }
 
@@ -807,22 +906,15 @@ object PaiosModelHelper {
     ): ContinuationPrompt {
         val boundedPersona = personaAnchor?.let { boundHeadAtBoundary(it, 240) }.orEmpty()
         val boundedQuestion = boundHeadAtBoundary(originalQuestion, maxQuestionChars)
-        var boundedTail = boundTailAtBoundary(partialText, maxTailChars)
-        if (!isJsonDraft && boundedTail.isNotEmpty() && boundedTail.last().isLetterOrDigit()) {
-            val minIdx = (boundedTail.length - MID_WORD_BACKOFF_MAX_CHARS).coerceAtLeast(0)
-            var lastWs = -1
-            for (i in boundedTail.length - 1 downTo minIdx) {
-                if (boundedTail[i].isWhitespace()) {
-                    lastWs = i
-                    break
-                }
+        val boundedTail = boundTailAtBoundary(partialText, maxTailChars)
+        val trailingWordToken = if (!isJsonDraft && boundedTail.isNotEmpty() && boundedTail.last().isLetterOrDigit()) {
+            var start = boundedTail.length
+            while (start > 0 && !boundedTail[start - 1].isWhitespace()) {
+                start--
             }
-            if (lastWs > 0) {
-                val backedOff = boundedTail.substring(0, lastWs).trimEnd()
-                if (backedOff.isNotEmpty()) {
-                    boundedTail = backedOff
-                }
-            }
+            boundedTail.substring(start).takeIf { it.isNotEmpty() && it.length <= MID_WORD_BACKOFF_MAX_CHARS }
+        } else {
+            null
         }
         val trimmedLang = languageCode?.trim().orEmpty()
 
@@ -840,6 +932,9 @@ object PaiosModelHelper {
             append("Partial answer tail:\n")
             append(boundedTail)
             append("\nContinue seamlessly from the exact end without repeating.")
+            if (trailingWordToken != null) {
+                append(" If '$trailingWordToken' was cut mid-word, complete or rewrite it cleanly without spaces.")
+            }
             if (isJsonDraft) {
                 append(" Output ONLY the remaining valid JSON characters to complete the tool call.")
             } else {

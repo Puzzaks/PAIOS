@@ -1035,4 +1035,201 @@ void main() {
       expect(res['message'], isNot(contains('wikipedia_summary')));
     });
   });
+
+  group('Mid-clause cutoff detection & bounded STOP rescue', () {
+    late Directory tempDir;
+    const localAiChannel = MethodChannel('flutter_local_ai');
+    const eventsChannel = EventChannel('flutter_local_ai_events');
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      tempDir = await Directory.systemTemp.createTemp('paios_stop_cutoff_');
+      Hive.init(tempDir.path);
+      await Hive.openBox('paios_storage');
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(localAiChannel, (call) async {
+        if (call.method == 'initAiCore' || call.method == 'init') {
+          return {'status': 'available', 'available': true, 'statusCode': 3, 'version': 'nano-v3'};
+        }
+        if (call.method == 'getModelInfo') {
+          return {'status': 'available', 'available': true, 'statusCode': 3, 'version': 'nano-v3'};
+        }
+        return null;
+      });
+    });
+
+    tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(eventsChannel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(localAiChannel, null);
+      if (Hive.isBoxOpen('paios_storage')) {
+        await Hive.box('paios_storage').close();
+      }
+      await Hive.deleteFromDisk();
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    test('isLikelyMidClauseCutoff catches preposition/determiner + modifier tails without false positives', () {
+      expect(
+        AIEngine.isLikelyMidClauseCutoff(
+          'The concept of a "paperclip maximizer" is a thought experiment that highlights a potential risk with advanced',
+        ),
+        isTrue,
+      );
+      expect(AIEngine.isLikelyMidClauseCutoff('It raises concerns with extreme'), isTrue);
+      expect(AIEngine.isLikelyMidClauseCutoff('This can lead to unintended'), isTrue);
+      expect(AIEngine.isLikelyMidClauseCutoff('Understanding the field of artificial'), isTrue);
+      expect(AIEngine.isLikelyMidClauseCutoff('Here is an example of a potential'), isTrue);
+      expect(AIEngine.isLikelyMidClauseCutoff('We need to adapt to the new'), isTrue);
+      expect(AIEngine.isLikelyMidClauseCutoff('I prioritize your'), isTrue);
+
+      // Complete short/non-punctuated answers and punctuated answers must return false
+      expect(AIEngine.isLikelyMidClauseCutoff('Hi'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Yes, I can help with that'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Everything looks great'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Sure, I can help with that today.'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Back in 5 minutes'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Everything is set for dinner'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Everything is ready for tomorrow'), isFalse);
+      expect(AIEngine.isLikelyMidClauseCutoff('Yes, all good'), isFalse);
+    });
+
+    test('shouldContinueOnDone rescues STOP/0 once on v3 prose mid-clause cutoffs and respects all guards', () {
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.modelInfo = {'isNanoV4': false};
+
+      const truncated =
+          'The concept of a "paperclip maximizer" is a thought experiment that highlights a potential risk with advanced';
+
+      expect(AIEngine.maxStopCutoffContinuations, 1);
+      expect(engine.shouldContinueOnDoneForTest('STOP', truncated), isTrue);
+      expect(engine.shouldContinueOnDoneForTest('0', truncated), isTrue);
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          truncated,
+          stopCutoffCount: AIEngine.maxStopCutoffContinuations,
+        ),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest('STOP', truncated, isSynthesis: true),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest('STOP', '```dart\nprint(1);\n```'),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest(
+          'STOP',
+          '{"tool": "wikipedia_summary", "args": {"query": "Alpha',
+        ),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest('STOP', 'I prioritize your'),
+        isFalse,
+      );
+      expect(
+        engine.shouldContinueOnDoneForTest('STOP', 'Everything is set for dinner'),
+        isFalse,
+      );
+
+      engine.modelInfo = {'isNanoV4': true};
+      expect(engine.shouldContinueOnDoneForTest('STOP', truncated), isFalse);
+    });
+
+    test('generateStream rescues a single STOP mid-clause cutoff via continueGenerating and halts after maxStopCutoffContinuations=1', () async {
+      int streamRound = 0;
+      const truncatedHead =
+          'The concept of a "paperclip maximizer" is a thought experiment that highlights a potential risk with advanced';
+      const continuationTail = 'AI systems with unintended';
+      const thirdTail = 'consequences.';
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+        eventsChannel,
+        MockStreamHandler.inline(
+          onListen: (arguments, events) {
+            final promptArg = _extractPromptArg(arguments);
+            if (promptArg.contains('Task: Create a short')) {
+              scheduleMicrotask(() {
+                events.success({'status': 'Streaming', 'response': {'text': 'Paperclip Maximizer', 'reason': 'STOP'}});
+                events.success({'status': 'Done', 'reason': 'STOP', 'response': {'text': 'Paperclip Maximizer', 'reason': 'STOP'}});
+              });
+              return;
+            }
+            final r = streamRound++;
+            scheduleMicrotask(() {
+              if (r == 0) {
+                events.success({
+                  'status': 'Streaming',
+                  'response': {'text': truncatedHead, 'reason': 'STOP'},
+                });
+                events.success({
+                  'status': 'Done',
+                  'reason': 'STOP',
+                  'response': {'text': truncatedHead, 'reason': 'STOP'},
+                });
+              } else if (r == 1) {
+                // Even if the continuation also ends mid-clause with STOP, cap=1 halts here
+                events.success({
+                  'status': 'Streaming',
+                  'response': {'text': continuationTail, 'reason': 'STOP'},
+                });
+                events.success({
+                  'status': 'Done',
+                  'reason': 'STOP',
+                  'response': {'text': continuationTail, 'reason': 'STOP'},
+                });
+              } else {
+                events.success({
+                  'status': 'Streaming',
+                  'response': {'text': thirdTail, 'reason': 'STOP'},
+                });
+                events.success({
+                  'status': 'Done',
+                  'reason': 'STOP',
+                  'response': {'text': thirdTail, 'reason': 'STOP'},
+                });
+              }
+            });
+          },
+        ),
+      );
+
+      final engine = AIEngine();
+      addTearDown(engine.dispose);
+      engine.isAvailable = true;
+      engine.isInitialized = true;
+      engine.modelInfo = {'version': 'nano-v3', 'isNanoV4': false};
+      engine.prompt.text = 'Explain the paperclip maximizer';
+
+      await engine.generateStream();
+      for (int i = 0;
+          i < 80 &&
+              (engine.isLoading ||
+                  engine.isGenerating ||
+                  engine.isContinuing ||
+                  engine.context.length < 2 ||
+                  !engine.chats.containsKey(engine.currentChat));
+          i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 25));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(streamRound, 2);
+      expect(engine.context.length, 2);
+      expect(
+        engine.context.last['message'],
+        '$truncatedHead $continuationTail',
+      );
+    });
+  });
 }

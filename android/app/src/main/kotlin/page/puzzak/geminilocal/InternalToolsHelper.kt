@@ -35,6 +35,7 @@ object InternalToolsHelper {
     const val MODULE_WIKIPEDIA = "paios.wikipedia"
     const val MODULE_SEARCH = "paios.search"
     const val MODULE_WEATHER = "paios.weather"
+    const val TOOL_INSPECT_SCREEN = "inspect_screen"
 
     data class InternalToolSpec(
         val name: String,
@@ -216,11 +217,26 @@ object InternalToolsHelper {
     }
 
     /**
+     * Returns the on-demand schema entry for [TOOL_INSPECT_SCREEN] when active
+     * passive screen context is available in the overlay.
+     */
+    fun getInspectScreenPromptSpec(): String = buildString {
+        append("\n - $TOOL_INSPECT_SCREEN (app: \"paios\"): Inspect the user's current Android screen (screenshot + visible UI text). Call ONLY when the user asks about what is currently on their screen, 'this page', 'this app', or visible content. Do NOT call for general knowledge or unrelated questions.")
+        append("""\n   arguments schema: {"type":"object","properties":{"question":{"type":"string","description":"Optional specific question about what is visible on the screen"}}}""")
+    }
+
+    /**
      * Returns formatted schema lines for all enabled internal PAIOS tools
      * for inclusion in the assistant's [AVAILABLE TOOLS] prompt block.
      */
-    fun getMeshToolPromptSpecs(context: Context): String {
+    fun getMeshToolPromptSpecs(
+        context: Context,
+        includeInspectScreen: Boolean = false
+    ): String {
         return buildString {
+            if (includeInspectScreen) {
+                append(getInspectScreenPromptSpec())
+            }
             for (module in INTERNAL_MODULES) {
                 if (!isInternalModuleEnabled(context, module.id)) continue
                 for (tool in module.tools) {

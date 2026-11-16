@@ -1,3 +1,10 @@
+## Update 1.8.5 ([1.8.5] - 2026-11-16)
+#### Changes
+- **On-Demand Assistant Screen Context Tool (`inspect_screen`)**: Replaced passive force-attached screenshots and `[BACKGROUND SCREEN CONTEXT]` system bloat in the Assistant Overlay with a lazy `inspect_screen` (`app: "paios"`) tool held for a `3`-turn TTL (`SCREEN_CONTEXT_TTL_TURNS = 3`) and silently dropped/recycled if irrelevant, preventing unrelated prompts (e.g. general questions while on the home screen) from misinterpreting the current screen image while still enabling VLM + `AssistStructure` inspection whenever asked about the screen.
+#### Fixes
+- **Mid-Clause `STOP` Cutoff Rescue & Prompt Coherence (Dart + Kotlin)**: Added preposition/determiner + trailing modifier mid-phrase detection (`isLikelyMidClauseCutoff` / `isTruncationHeuristic` catching cutoffs like `"with advanced"`), bounded 1-shot `STOP` / `"0"` rescue (`maxStopCutoffContinuations = 1` / `MAX_STOP_CUTOFF_RETRIES = 1`), and aligned `buildOverlayContinuationPrompt` to preserve trailing tokens in `Partial answer tail:` rather than deleting whole words from the prompt context.
+- **Verification**: Added unit tests covering `isLikelyMidClauseCutoff` / `STOP` rescue (`test/hardening_184_test.dart`) and `inspect_screen` 3-turn TTL + Kotlin cutoff rescue (`PaiosModelHelperTest.kt`).
+
 ## Update 1.8.4 ([1.8.4] - 2026-11-16)
 #### Fixes
 - **Cancel & Stream Lifecycle Hardening (`AIEngine.cancelGeneration()`)**: Bumps `_streamGenerationId++` on cancel, nulls `_aiSubscription`, resets all active turn flags (`isLoading`, `isGenerating`, `isContinuing`, `_isSynthesizing`, `_activeToolHandling`, `_forcedFinalSynthesis`), clears pending turn buffers, prevents double-entry before `initEngine`, fixes `errorRetry` backoff deadlocks, and cleanly unlocks unexpected stream closures (`onDone`).

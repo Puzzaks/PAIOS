@@ -345,14 +345,14 @@ class Prompt{
     } else if (partialSplit != null) {
       final completeTailCue = boundTailAtBoundary(
         partialSplit.completeTail,
-        maxChars: 36,
+        maxChars: 28,
       );
       buffer.write(
-        ' No "..." or repeats. If "${partialSplit.partialToken}" was cut off, rewrite the full word after "$completeTailCue" cleanly.',
+        ' No "...", repeats, or duplicate summary. If "${partialSplit.partialToken}" was cut off, finish cleanly after "$completeTailCue".',
       );
     } else {
       buffer.write(
-        " Do NOT prepend an ellipsis (...) or repeat words. Complete the trailing thought concisely without starting unrelated new sections.",
+        ' Finish the unfinished sentence naturally from the exact tail word without "...", repeating earlier sentences, or starting a duplicate summary paragraph.',
       );
     }
     return buffer.toString();

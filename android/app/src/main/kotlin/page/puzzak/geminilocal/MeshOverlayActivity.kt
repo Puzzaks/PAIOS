@@ -109,6 +109,7 @@ class MeshOverlayActivity : Activity() {
         private const val REQUEST_CODE_BUBBLE_CAMERA = 0x424A
         private const val MAX_DOWNSAMPLE_DIMENSION = 768
         private const val ASSIST_CACHE_TTL_MS = 1500L
+        private const val SCREEN_CONTEXT_TTL_TURNS = PaiosModelHelper.SCREEN_CONTEXT_TTL_TURNS
         private const val MAX_EXTERNAL_TOOL_SCHEMA_CHARS = 3500
         private const val MESH_TOOL_QUERY_TIMEOUT_MS = 1500L
 
@@ -309,7 +310,15 @@ class MeshOverlayActivity : Activity() {
     private val attachedBitmaps = mutableListOf<Bitmap>()
     private val userBitmaps = mutableListOf<Bitmap>()
     private var activeSessionBitmap: Bitmap? = null
-    private var screenContextBitmap: Bitmap? = null
+    private var pendingScreenBitmap: Bitmap? = null
+    private var pendingScreenAssistText: String? = null
+    private var pendingScreenMeshText: String? = null
+    private var pendingScreenCallerName: String = ""
+    private var pendingScreenTurnsRemaining: Int = 0
+    private var pendingScreenAnalyzedSummary: String? = null
+    @Volatile
+    private var activeInspectScreenBitmap: Bitmap? = null
+    private var activeTurnIdPendingTtlConsume: Long = -1L
     private var pendingCameraPhotoFile: File? = null
     private var downsampleSetting: Boolean = true
     private val maxImagesAllowed: Int
@@ -599,7 +608,8 @@ class MeshOverlayActivity : Activity() {
         attachedBitmaps.clear()
         userBitmaps.clear()
         activeSessionBitmap = null
-        screenContextBitmap = null
+        activeTurnIdPendingTtlConsume = -1L
+        clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
             try { if (file.exists()) file.delete() } catch (_: Exception) {}
         }
@@ -821,8 +831,17 @@ class MeshOverlayActivity : Activity() {
                 }
             }
             withContext(Dispatchers.Main) {
-                if (!rawCallerPackage.equals(packageName, ignoreCase = true)) {
-                    attachScreenContext(processed)
+                val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+                if (isInteractiveMode && !isDismissing && !isSelfCaller && isSystemAssistScreenshotEnabled()) {
+                    replacePendingScreenBitmap(processed)
+                    if (callerName.isNotBlank()) {
+                        pendingScreenCallerName = callerName
+                    }
+                    pendingScreenAnalyzedSummary = null
+                    pendingScreenTurnsRemaining = SCREEN_CONTEXT_TTL_TURNS
+                    updateContextBadgeUI()
+                } else if (processed !== bitmap && processed !== latestAssistBitmap) {
+                    recycleBitmapSafely(processed)
                 }
             }
         }
@@ -844,33 +863,91 @@ class MeshOverlayActivity : Activity() {
                 callerName = formatShortCaller(callerPkg)
             }
         }
-        if (rawCallerPackage.equals(packageName, ignoreCase = true)) {
-            screenContextBitmap?.let { existingScreenBmp ->
-                attachedBitmaps.remove(existingScreenBmp)
-                if (currentBitmap === existingScreenBmp) {
-                    currentBitmap = userBitmaps.firstOrNull()
-                }
-                screenContextBitmap = null
-                renderAttachedImagesPreview()
+        val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+        if (isSelfCaller) {
+            clearPendingScreenContext(recycleBitmap = true)
+        } else if (structureEnabled && screenText.isNotBlank()) {
+            pendingScreenAssistText = screenText
+            if (callerName.isNotBlank()) {
+                pendingScreenCallerName = callerName
             }
-        }
-        if (structureEnabled && screenText.isNotBlank() && !contextData.contains(screenText.take(60))) {
-            contextData = if (contextData.isBlank()) {
-                "Screen Content ($callerName):\n$screenText"
-            } else {
-                "$contextData\n\nScreen Content ($callerName):\n$screenText"
-            }
+            pendingScreenAnalyzedSummary = null
+            pendingScreenTurnsRemaining = SCREEN_CONTEXT_TTL_TURNS
         }
         updateContextBadgeUI()
     }
 
+    private fun hasAnyPendingScreenContent(): Boolean {
+        return pendingScreenBitmap != null ||
+            !pendingScreenAssistText.isNullOrBlank() ||
+            !pendingScreenMeshText.isNullOrBlank()
+    }
+
+    private fun hasActivePendingScreenContext(): Boolean {
+        return pendingScreenTurnsRemaining > 0 && hasAnyPendingScreenContent()
+    }
+
+    private fun recycleBitmapSafely(bitmap: Bitmap?) {
+        if (bitmap == null) return
+        if (bitmap === activeInspectScreenBitmap ||
+            bitmap === pendingScreenBitmap ||
+            bitmap === activeSessionBitmap ||
+            bitmap === currentBitmap ||
+            bitmap === latestAssistBitmap ||
+            userBitmaps.contains(bitmap) ||
+            attachedBitmaps.contains(bitmap)
+        ) {
+            return
+        }
+        if (!bitmap.isRecycled) {
+            runCatching { bitmap.recycle() }
+        }
+    }
+
+    private fun replacePendingScreenBitmap(newBitmap: Bitmap?) {
+        val oldBitmap = pendingScreenBitmap
+        pendingScreenBitmap = newBitmap
+        if (oldBitmap !== newBitmap) {
+            recycleBitmapSafely(oldBitmap)
+        }
+    }
+
+    private fun clearPendingScreenContext(recycleBitmap: Boolean = true) {
+        val oldBitmap = pendingScreenBitmap
+        pendingScreenBitmap = null
+        pendingScreenAssistText = null
+        pendingScreenMeshText = null
+        pendingScreenCallerName = ""
+        pendingScreenTurnsRemaining = 0
+        pendingScreenAnalyzedSummary = null
+        if (recycleBitmap) {
+            recycleBitmapSafely(oldBitmap)
+        }
+    }
+
+    private fun consumePendingScreenTurnIfNeeded(turnId: Long) {
+        if (activeTurnIdPendingTtlConsume != turnId) return
+        activeTurnIdPendingTtlConsume = -1L
+        val state = PaiosModelHelper.consumeScreenContextTurn(
+            turnsRemaining = pendingScreenTurnsRemaining,
+            hasContent = hasAnyPendingScreenContent()
+        )
+        pendingScreenTurnsRemaining = state.nextTurnsRemaining
+        if (state.shouldExpire) {
+            clearPendingScreenContext(recycleBitmap = true)
+            updateContextBadgeUI()
+        }
+    }
+
     private fun updateContextBadgeUI() {
         val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+        val hasPending = !isSelfCaller && hasActivePendingScreenContext()
         val hasImage = userBitmaps.isNotEmpty() ||
-            (!isSelfCaller && isSystemAssistScreenshotEnabled() && screenContextBitmap != null) ||
-            (currentBitmap != null && currentBitmap !== screenContextBitmap)
-        val hasContext = contextData.isNotBlank() &&
-            (isSystemAssistStructureEnabled() || contextData.contains("Live Mesh Telemetry:"))
+            currentBitmap != null ||
+            (hasPending && isSystemAssistScreenshotEnabled() && pendingScreenBitmap != null)
+        val hasContext = hasPending &&
+            ((isSystemAssistStructureEnabled() && !pendingScreenAssistText.isNullOrBlank()) ||
+                !pendingScreenMeshText.isNullOrBlank())
         val visionStr = tr("assistant_context_vision")
         val contextStr = tr("assistant_context_data")
         val label = when {
@@ -953,17 +1030,18 @@ class MeshOverlayActivity : Activity() {
                 if (collectedSnippets.isNotEmpty()) {
                     val meshSummary = collectedSnippets.joinToString("\n").take(2500)
                     withContext(Dispatchers.Main) {
+                        val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+                        if (isDismissing || isSelfCaller) return@withContext
                         val defaultAssist = tr("assistant_context_default")
                         if (callerName == defaultAssist && primaryMeshApp != null) {
                             callerName = primaryMeshApp!!
                         }
-                        if (!contextData.contains(meshSummary.take(40))) {
-                            contextData = if (contextData.isBlank()) {
-                                "Live Mesh Telemetry:\n$meshSummary"
-                            } else {
-                                "$contextData\n\nLive Mesh Telemetry:\n$meshSummary"
-                            }
+                        pendingScreenMeshText = meshSummary
+                        if (callerName.isNotBlank()) {
+                            pendingScreenCallerName = callerName
                         }
+                        pendingScreenAnalyzedSummary = null
+                        pendingScreenTurnsRemaining = SCREEN_CONTEXT_TTL_TURNS
                         updateContextBadgeUI()
                     }
                 }
@@ -2277,30 +2355,7 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
-    private fun attachScreenContext(bitmap: Bitmap) {
-        val existingScreenBmp = screenContextBitmap
-        if (existingScreenBmp != null) {
-            attachedBitmaps.remove(existingScreenBmp)
-            screenContextBitmap = null
-        }
-        if (attachedBitmaps.size >= maxImagesAllowed) {
-            (sheetCardView ?: window?.decorView)?.performHapticFeedback(HapticFeedbackConstants.REJECT)
-            Toast.makeText(this, tr("max_images_reached"), Toast.LENGTH_SHORT).show()
-            return
-        }
-        activeSessionBitmap = null
-        screenContextBitmap = bitmap
-        currentBitmap = bitmap
-        attachedBitmaps.add(0, bitmap)
-        renderAttachedImagesPreview()
-    }
-
     private fun attachUserBitmap(bitmap: Bitmap) {
-        val existingScreenBmp = screenContextBitmap
-        if (existingScreenBmp != null) {
-            attachedBitmaps.remove(existingScreenBmp)
-            screenContextBitmap = null
-        }
         if (attachedBitmaps.size >= maxImagesAllowed) {
             (sheetCardView ?: window?.decorView)?.performHapticFeedback(HapticFeedbackConstants.REJECT)
             Toast.makeText(this, tr("max_images_reached"), Toast.LENGTH_SHORT).show()
@@ -2330,9 +2385,7 @@ class MeshOverlayActivity : Activity() {
         sourceLabel: String? = null,
         isScreenContext: Boolean = false
     ) {
-        if (isScreenContext) {
-            attachScreenContext(bitmap)
-        } else {
+        if (!isScreenContext) {
             attachUserBitmap(bitmap)
         }
     }
@@ -2343,7 +2396,7 @@ class MeshOverlayActivity : Activity() {
 
         itemsRow.removeAllViews()
 
-        val visibleUserPhotos = attachedBitmaps.filter { it !== screenContextBitmap }
+        val visibleUserPhotos = attachedBitmaps.toList()
         if (visibleUserPhotos.isEmpty()) {
             container.visibility = View.GONE
             updateContextBadgeUI()
@@ -2917,12 +2970,10 @@ class MeshOverlayActivity : Activity() {
         shareLocale: Boolean,
         appLang: String,
         hasAnySessionImage: Boolean,
-        callerNameSnapshot: String,
-        contextDataSnapshot: String,
         visualMemorySnapshot: String,
         historySnapshot: String,
         meshToolsPrompt: String,
-        includeContextDataBlock: Boolean,
+        includeVisualMemoryBlock: Boolean,
         includeTools: Boolean,
         isCompactBudget: Boolean = false
     ): String = buildString {
@@ -2930,11 +2981,6 @@ class MeshOverlayActivity : Activity() {
             PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt, 120).orEmpty()
         } else {
             personaSystemPrompt
-        }
-        val effectiveContextData = if (isCompactBudget) {
-            boundOverlaySnippet(contextDataSnapshot, 450)
-        } else {
-            contextDataSnapshot
         }
         val effectiveVisualMemory = if (isCompactBudget) {
             boundOverlaySnippet(visualMemorySnapshot, 300)
@@ -2970,9 +3016,6 @@ class MeshOverlayActivity : Activity() {
         if (hasAnySessionImage) {
             append(" - Inspect and answer directly from the attached image.\n")
         }
-        if (includeContextDataBlock) {
-            append(" - Background screen and app context from $callerNameSnapshot is optional; use it only when the user explicitly asks about their screen or open app.\n")
-        }
         if (shareLocale) {
             append(" - Respond in $appLang unless the user asks for another language.\n")
         }
@@ -2985,13 +3028,7 @@ class MeshOverlayActivity : Activity() {
             append(meshToolsPrompt)
         }
 
-        if (includeContextDataBlock && effectiveContextData.isNotBlank()) {
-            append("\n\n### [BACKGROUND SCREEN CONTEXT]\n")
-            append("Optional passive context from $callerNameSnapshot (use only if the user explicitly asks about their screen or open app):\n")
-            append(effectiveContextData)
-        }
-
-        if (includeContextDataBlock && effectiveVisualMemory.isNotBlank()) {
+        if (includeVisualMemoryBlock && effectiveVisualMemory.isNotBlank()) {
             append("\n\n### [VISUAL CONTEXT MEMORY]\n")
             append(effectiveVisualMemory)
         }
@@ -3149,31 +3186,21 @@ class MeshOverlayActivity : Activity() {
     private fun startInteractiveStreaming(userPrompt: String) {
         activeStreamJob?.cancel()
         visualSummaryJob?.cancel()
+        if (activeTurnIdPendingTtlConsume > 0L) {
+            consumePendingScreenTurnIfNeeded(activeTurnIdPendingTtlConsume)
+        }
         val turnId = ++overlayTurnSequence
 
         val userBitmapsSnapshot = userBitmaps.toList()
         val hasUserPhotos = userBitmapsSnapshot.isNotEmpty()
         val isPureGreeting = !hasUserPhotos && PaiosModelHelper.isPureGreetingOrSmallTalk(userPrompt)
-        val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
-        val screenBitmapSnapshot = if (!hasUserPhotos && !isPureGreeting && !isSelfCaller && isSystemAssistScreenshotEnabled()) {
-            screenContextBitmap
-        } else {
-            null
-        }
-        val effectiveBitmaps = when {
-            hasUserPhotos -> userBitmapsSnapshot
-            screenBitmapSnapshot != null -> listOf(screenBitmapSnapshot)
-            else -> emptyList()
-        }
+        val hasScreenToolThisTurn = hasActivePendingScreenContext()
+        activeTurnIdPendingTtlConsume = if (hasScreenToolThisTurn) turnId else -1L
+        val effectiveBitmaps = userBitmapsSnapshot
         addUserMessageBubble(userPrompt, images = effectiveBitmaps)
         currentBitmap = null
         userBitmaps.clear()
-        if (hasUserPhotos || !isPureGreeting) {
-            attachedBitmaps.clear()
-            screenContextBitmap = null
-        } else {
-            attachedBitmaps.retainAll { it === screenContextBitmap }
-        }
+        attachedBitmaps.clear()
         renderAttachedImagesPreview()
 
         // Record user message in session message list
@@ -3188,9 +3215,11 @@ class MeshOverlayActivity : Activity() {
         val aiBubbleView = bubbleViews.answerView
         sheetProgressBar?.visibility = View.VISIBLE
 
-        val contextDataSnapshot = if (!hasUserPhotos && !isPureGreeting) contextData else ""
-        val callerNameSnapshot = callerName
-        val visualMemorySnapshot = if (hasUserPhotos || isPureGreeting) "" else activeVisualNote.ifBlank { visualContextMemory }
+        val visualMemorySnapshot = if (hasUserPhotos || isPureGreeting || activeSessionBitmap == null) {
+            ""
+        } else {
+            activeVisualNote.ifBlank { visualContextMemory }
+        }
         val historySnapshot = conversationHistoryPrompt
 
         activeStreamJob = activityScope.launch(Dispatchers.IO) {
@@ -3198,11 +3227,10 @@ class MeshOverlayActivity : Activity() {
             val addTime = isAddCurrentTimeEnabled()
             val shareLocale = isShareLocaleEnabled()
             val appLang = tr("current_language")
-            val meshToolsPrompt = getMeshToolSchemaPrompt()
+            val meshToolsPrompt = getMeshToolSchemaPrompt(includeInspectScreen = hasScreenToolThisTurn)
             val temperatureValue = resolveTemperatureSetting()
-            val hasPassiveContext = !hasUserPhotos &&
-                (screenBitmapSnapshot != null || contextDataSnapshot.isNotBlank() || visualMemorySnapshot.isNotBlank())
-            val hasAnySessionImage = hasUserPhotos || screenBitmapSnapshot != null || activeSessionBitmap != null
+            val hasUserVisualMemory = !hasUserPhotos && activeSessionBitmap != null && visualMemorySnapshot.isNotBlank()
+            val hasAnySessionImage = hasUserPhotos || activeSessionBitmap != null
 
             fun formatCleanUserTurn(hasImage: Boolean): String = if (hasImage) {
                 "[Image attached to this message]\nUser's request: $userPrompt"
@@ -3219,18 +3247,16 @@ class MeshOverlayActivity : Activity() {
                     shareLocale = shareLocale,
                     appLang = appLang,
                     hasAnySessionImage = hasAnySessionImage,
-                    callerNameSnapshot = callerNameSnapshot,
-                    contextDataSnapshot = contextDataSnapshot,
                     visualMemorySnapshot = visualMemorySnapshot,
                     historySnapshot = historySnapshot,
                     meshToolsPrompt = meshToolsPrompt,
-                    includeContextDataBlock = hasPassiveContext,
+                    includeVisualMemoryBlock = hasUserVisualMemory,
                     includeTools = true,
                     isCompactBudget = isCompactBudget
                 )
                 val useThinking = shouldEnableOverlayThinking(resolved)
                 val newUserCompositeBitmap = if (hasUserPhotos) compositeBitmaps(userBitmapsSnapshot) else null
-                val primaryBitmap = newUserCompositeBitmap ?: screenBitmapSnapshot ?: activeSessionBitmap
+                val primaryBitmap = newUserCompositeBitmap ?: activeSessionBitmap
                 val persistentUserBitmap = newUserCompositeBitmap ?: activeSessionBitmap
 
                 // Primary attempt: matches ChatPage framing (clean TextPart + structured SystemInstruction, maxTokens = null)
@@ -3255,15 +3281,15 @@ class MeshOverlayActivity : Activity() {
                     bubbleViews = bubbleViews
                 )
 
-                // Tier 1 policy fallback: strip passive screen/Assist context & bound SystemInstruction <= 140 words
+                // Tier 1 policy fallback: strip optional visual memory & bound SystemInstruction <= 140 words
                 if (attemptResult is StreamAttemptResult.Failed &&
                     attemptResult.partialText.isBlank() &&
                     PaiosModelHelper.isPolicyCheckException(attemptResult.error) &&
-                    (hasPassiveContext || useThinking || !resolved.capabilities.isSystemPromptAvailable || fullSystemBlock.length > 600)
+                    (hasUserVisualMemory || useThinking || !resolved.capabilities.isSystemPromptAvailable || fullSystemBlock.length > 600)
                 ) {
                     Log.w(
                         TAG,
-                        "[POLICY FALLBACK RETRY] Tier 1: stripping passive screen/assist context & bounding SystemInstruction"
+                        "[POLICY FALLBACK RETRY] Tier 1: stripping passive context & bounding SystemInstruction"
                     )
                     withContext(Dispatchers.Main) {
                         bubbleViews.hideThought()
@@ -3276,12 +3302,10 @@ class MeshOverlayActivity : Activity() {
                             shareLocale = shareLocale,
                             appLang = appLang,
                             hasAnySessionImage = persistentUserBitmap != null,
-                            callerNameSnapshot = callerNameSnapshot,
-                            contextDataSnapshot = "",
                             visualMemorySnapshot = "",
                             historySnapshot = historySnapshot,
                             meshToolsPrompt = meshToolsPrompt,
-                            includeContextDataBlock = false,
+                            includeVisualMemoryBlock = false,
                             includeTools = true,
                             isCompactBudget = isCompactBudget
                         )
@@ -3350,6 +3374,7 @@ class MeshOverlayActivity : Activity() {
                         var currentHandledTool = finalAttempt.handledToolCall
                         var continuationCount = 0
                         var nullReasonRetryCount = 0
+                        var stopCutoffRetryCount = 0
                         var lastRoundAddedNonWs = accumulatedText.count { !it.isWhitespace() }
 
                         while (overlayTurnSequence == turnId &&
@@ -3363,7 +3388,8 @@ class MeshOverlayActivity : Activity() {
                                 continuationCount = continuationCount,
                                 lastRoundAddedChars = lastRoundAddedNonWs,
                                 isNanoV4 = resolved.capabilities.isNanoV4,
-                                nullReasonRetryCount = nullReasonRetryCount
+                                nullReasonRetryCount = nullReasonRetryCount,
+                                stopCutoffRetryCount = stopCutoffRetryCount
                             ) || (incompleteTool &&
                                 !PaiosModelHelper.hasContinuationStutter(accumulatedText) &&
                                 continuationCount < PaiosModelHelper.MAX_OVERLAY_CONTINUATIONS &&
@@ -3372,8 +3398,14 @@ class MeshOverlayActivity : Activity() {
 
                             if (!shouldContinue) break
 
-                            if (PaiosModelHelper.normalizeFinishReason(currentFinishReason) == null && !incompleteTool) {
-                                nullReasonRetryCount++
+                            val normFinishReason = PaiosModelHelper.normalizeFinishReason(currentFinishReason)
+                                ?.uppercase(Locale.ROOT)
+                            if (!incompleteTool) {
+                                if (normFinishReason == null) {
+                                    nullReasonRetryCount++
+                                } else if (normFinishReason == "0" || normFinishReason == "STOP") {
+                                    stopCutoffRetryCount++
+                                }
                             }
                             continuationCount++
                             Log.i(
@@ -3481,6 +3513,7 @@ class MeshOverlayActivity : Activity() {
                             }
                             val errText = if (partial.isBlank()) errMsg else "$partial\n\n*$errMsg*"
                             aiBubbleView.text = formatMarkdownToSpannable(errText)
+                            consumePendingScreenTurnIfNeeded(turnId)
                         }
                     }
                 }
@@ -3503,6 +3536,7 @@ class MeshOverlayActivity : Activity() {
                         e.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
                     }
                     aiBubbleView.text = formatMarkdownToSpannable(errMsg)
+                    consumePendingScreenTurnIfNeeded(turnId)
                 }
             }
         }
@@ -3564,7 +3598,8 @@ class MeshOverlayActivity : Activity() {
                 appName = app,
                 description = desc,
                 arguments = args,
-                personaSystemPrompt = personaSystemPrompt
+                personaSystemPrompt = personaSystemPrompt,
+                turnId = turnId
             )
             return Pair(false, "")
         }
@@ -3575,6 +3610,7 @@ class MeshOverlayActivity : Activity() {
                 sheetProgressBar?.visibility = View.GONE
                 bubbleViews.hideThought()
                 aiBubbleView.text = formatMarkdownToSpannable("Unable to parse completed tool request. Please try again.")
+                consumePendingScreenTurnIfNeeded(turnId)
             }
             return Pair(false, "")
         }
@@ -3590,6 +3626,9 @@ class MeshOverlayActivity : Activity() {
                 temperatureValue = temperatureValue,
                 turnId = turnId
             )
+            withContext(Dispatchers.Main) {
+                consumePendingScreenTurnIfNeeded(turnId)
+            }
             return Pair(false, "")
         }
 
@@ -3611,6 +3650,7 @@ class MeshOverlayActivity : Activity() {
                 put("time", System.currentTimeMillis().toString())
             }
             sessionMessages.add(aiMsg)
+            consumePendingScreenTurnIfNeeded(turnId)
         }
         val shouldSummarize = userBitmapsSnapshot.isNotEmpty() &&
             activeSessionBitmap != null &&
@@ -3807,7 +3847,8 @@ class MeshOverlayActivity : Activity() {
         appName: String,
         description: String,
         arguments: JSONObject,
-        personaSystemPrompt: String
+        personaSystemPrompt: String,
+        turnId: Long = overlayTurnSequence
     ) {
         activityScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) {
@@ -3863,7 +3904,7 @@ class MeshOverlayActivity : Activity() {
                 }
             }
 
-            val synthTurnId = overlayTurnSequence
+            val synthTurnId = turnId
             var synthText = ""
             var synthError: Throwable? = null
             var lastSynthFinishReason: String? = null
@@ -3951,6 +3992,7 @@ class MeshOverlayActivity : Activity() {
                 // Auto-continue tool synthesis on v3 / truncated outputs
                 var synthContinuationCount = 0
                 var synthNullReasonRetries = 0
+                var synthStopCutoffRetries = 0
                 var synthLastAddedNonWs = synthText.count { !it.isWhitespace() }
                 while (synthError == null &&
                     overlayTurnSequence == synthTurnId &&
@@ -3961,11 +4003,16 @@ class MeshOverlayActivity : Activity() {
                         continuationCount = synthContinuationCount,
                         lastRoundAddedChars = synthLastAddedNonWs,
                         isNanoV4 = resolved.capabilities.isNanoV4,
-                        nullReasonRetryCount = synthNullReasonRetries
+                        nullReasonRetryCount = synthNullReasonRetries,
+                        stopCutoffRetryCount = synthStopCutoffRetries
                     )
                 ) {
-                    if (PaiosModelHelper.normalizeFinishReason(lastSynthFinishReason) == null) {
+                    val normSynthReason = PaiosModelHelper.normalizeFinishReason(lastSynthFinishReason)
+                        ?.uppercase(Locale.ROOT)
+                    if (normSynthReason == null) {
                         synthNullReasonRetries++
+                    } else if (normSynthReason == "0" || normSynthReason == "STOP") {
+                        synthStopCutoffRetries++
                     }
                     synthContinuationCount++
                     Log.i(
@@ -4088,6 +4135,10 @@ class MeshOverlayActivity : Activity() {
                     }
                     synthesisBubble.text = formatMarkdownToSpannable(errMsg)
                 }
+            } finally {
+                withContext(Dispatchers.Main + kotlinx.coroutines.NonCancellable) {
+                    consumePendingScreenTurnIfNeeded(turnId)
+                }
             }
         }
     }
@@ -4118,6 +4169,7 @@ class MeshOverlayActivity : Activity() {
         if (trimmed.isEmpty()) return tr("tool_selecting")
         val lower = trimmed.lowercase(Locale.ROOT)
         when (lower) {
+            InternalToolsHelper.TOOL_INSPECT_SCREEN -> return "Inspecting screen"
             "query_aicore_documentation" -> return "Searching documentation"
             "get_battery_status" -> return "Checking battery"
             "wikipedia_summary" -> return "Searching Wikipedia"
@@ -4291,6 +4343,7 @@ class MeshOverlayActivity : Activity() {
                                     val toolObj = arr.optJSONObject(i) ?: continue
                                     val name = toolObj.optString("name", "").trim()
                                     if (name.isEmpty() ||
+                                        name == InternalToolsHelper.TOOL_INSPECT_SCREEN ||
                                         name == "query_aicore_documentation" ||
                                         name == "get_battery_status" ||
                                         name == "query_local_ai" ||
@@ -4383,14 +4436,29 @@ class MeshOverlayActivity : Activity() {
         return "{${parts.joinToString(", ")}}"
     }
 
-    private suspend fun getMeshToolSchemaPrompt(): String {
-        if (!isMeshEnabledInPrefs()) return ""
+    private suspend fun getMeshToolSchemaPrompt(
+        includeInspectScreen: Boolean = hasActivePendingScreenContext()
+    ): String {
+        if (!isMeshEnabledInPrefs() && !includeInspectScreen) return ""
 
-        val internalSpecs = InternalToolsHelper.getMeshToolPromptSpecs(this)
-        val externalEntries = try {
-            fetchExternalMeshToolEntries()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to discover external mesh tools: ${e.message}")
+        val internalSpecs = if (isMeshEnabledInPrefs()) {
+            InternalToolsHelper.getMeshToolPromptSpecs(
+                context = this,
+                includeInspectScreen = includeInspectScreen
+            )
+        } else if (includeInspectScreen) {
+            InternalToolsHelper.getInspectScreenPromptSpec()
+        } else {
+            ""
+        }
+        val externalEntries = if (isMeshEnabledInPrefs()) {
+            try {
+                fetchExternalMeshToolEntries()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to discover external mesh tools: ${e.message}")
+                emptyList()
+            }
+        } else {
             emptyList()
         }
 
@@ -4827,10 +4895,121 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
+    private data class ScreenInspectSnapshot(
+        val bitmap: Bitmap?,
+        val assistText: String?,
+        val meshText: String?,
+        val callerName: String,
+        val cachedSummary: String?
+    )
+
+    private suspend fun executeInspectScreenTool(arguments: JSONObject): String {
+        val snapshot = withContext(Dispatchers.Main) {
+            if (pendingScreenTurnsRemaining <= 0 || !hasAnyPendingScreenContent()) {
+                null
+            } else {
+                val bmp = pendingScreenBitmap?.takeUnless { it.isRecycled }
+                if (bmp != null) {
+                    activeInspectScreenBitmap = bmp
+                }
+                ScreenInspectSnapshot(
+                    bitmap = bmp,
+                    assistText = pendingScreenAssistText,
+                    meshText = pendingScreenMeshText,
+                    callerName = pendingScreenCallerName.ifBlank { callerName },
+                    cachedSummary = pendingScreenAnalyzedSummary
+                )
+            }
+        } ?: return JSONObject().apply {
+            put("found", false)
+            put("message", "No active screen context is available.")
+        }.toString()
+
+        val question = arguments.optString("question", "").trim()
+        val sourceApp = snapshot.callerName.ifBlank { tr("assistant_context_default") }
+        val screenText = snapshot.assistText?.trim()?.take(1800)?.takeIf { it.isNotEmpty() }
+        val meshTelemetry = snapshot.meshText?.trim()?.take(1200)?.takeIf { it.isNotEmpty() }
+
+        var visualSummary = ""
+        if (snapshot.bitmap != null) {
+            try {
+                if (question.isBlank() && !snapshot.cachedSummary.isNullOrBlank()) {
+                    visualSummary = snapshot.cachedSummary
+                } else {
+                    val promptPrefix = if (question.isBlank()) {
+                        "Summarize concisely and factually what app, content, and key UI elements are visible on this Android screen."
+                    } else {
+                        "Answer concisely and factually based only on what is directly visible on this Android screen."
+                    }
+                    val userText = if (question.isBlank()) {
+                        "Describe what is currently shown on the user's screen."
+                    } else {
+                        "User question about the current screen: $question"
+                    }
+                    val rawSummary = try {
+                        runOneShotModelCall(
+                            promptPrefixText = promptPrefix,
+                            userText = userText,
+                            bitmap = snapshot.bitmap,
+                            maxTokens = 200,
+                            temperatureValue = 0.2f,
+                            shouldYield = { isDismissing }
+                        )
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "inspect_screen vision call fell back to text context: ${e.message}")
+                        ""
+                    }
+                    visualSummary = rawSummary.trim()
+                    if (question.isBlank() && visualSummary.isNotBlank()) {
+                        withContext(Dispatchers.Main) {
+                            if (pendingScreenBitmap === snapshot.bitmap && pendingScreenTurnsRemaining > 0) {
+                                pendingScreenAnalyzedSummary = visualSummary
+                            }
+                        }
+                    }
+                }
+            } finally {
+                withContext(Dispatchers.Main + kotlinx.coroutines.NonCancellable) {
+                    activeInspectScreenBitmap = null
+                    if (snapshot.bitmap !== pendingScreenBitmap) {
+                        recycleBitmapSafely(snapshot.bitmap)
+                    }
+                }
+            }
+        }
+
+        if (visualSummary.isBlank() && screenText.isNullOrBlank() && meshTelemetry.isNullOrBlank()) {
+            return JSONObject().apply {
+                put("found", false)
+                put("source_app", sourceApp)
+                put("message", "Visual screen inspection could not be completed and no screen text was captured.")
+            }.toString()
+        }
+
+        return JSONObject().apply {
+            put("found", true)
+            put("source_app", sourceApp)
+            if (visualSummary.isNotBlank()) {
+                put("visual_summary", visualSummary)
+            }
+            if (!screenText.isNullOrBlank()) {
+                put("screen_text", screenText)
+            }
+            if (!meshTelemetry.isNullOrBlank()) {
+                put("mesh_telemetry", meshTelemetry)
+            }
+        }.toString()
+    }
+
     private suspend fun executeMeshToolCall(tool: String, app: String, arguments: JSONObject): String {
         val rawApp = if (app.isNotBlank()) app else "paios"
         val canonApp = canonicalAppId(rawApp)
         val isSelfApp = canonApp == packageName || canonApp == "page.puzzak.paios"
+        if (tool.equals(InternalToolsHelper.TOOL_INSPECT_SCREEN, ignoreCase = true) && (isSelfApp || app.isBlank())) {
+            return executeInspectScreenTool(arguments)
+        }
         if (!isSelfApp && !isExtensionEnabledInPrefs(canonApp)) {
             Log.w(TAG, "Extension '$canonApp' is disabled in PAIOS settings.")
             return JSONObject().apply {
@@ -4967,7 +5146,8 @@ class MeshOverlayActivity : Activity() {
         attachedBitmaps.clear()
         userBitmaps.clear()
         activeSessionBitmap = null
-        screenContextBitmap = null
+        activeTurnIdPendingTtlConsume = -1L
+        clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
             try { if (file.exists()) file.delete() } catch (_: Exception) {}
         }
@@ -5147,7 +5327,8 @@ class MeshOverlayActivity : Activity() {
         attachedBitmaps.clear()
         userBitmaps.clear()
         activeSessionBitmap = null
-        screenContextBitmap = null
+        activeTurnIdPendingTtlConsume = -1L
+        clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
             try { if (file.exists()) file.delete() } catch (_: Exception) {}
         }

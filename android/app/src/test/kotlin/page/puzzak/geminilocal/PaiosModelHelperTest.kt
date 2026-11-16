@@ -169,11 +169,30 @@ class PaiosModelHelperTest {
         assertTrue(PaiosModelHelper.isTruncationHeuristic("Here'"))
         assertTrue(PaiosModelHelper.isTruncationHeuristic("I prioritize your"))
         assertTrue(PaiosModelHelper.isTruncationHeuristic("First point:"))
+        assertTrue(
+            PaiosModelHelper.isTruncationHeuristic(
+                "The concept of a \"paperclip maximizer\" is a thought experiment that highlights a potential risk with advanced"
+            )
+        )
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("This highlights a potential"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("It reveals an important"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("We are testing the new"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("The risks of artificial"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("This leads to unintended"))
 
         assertFalse(PaiosModelHelper.isTruncationHeuristic("Yes"))
         assertFalse(PaiosModelHelper.isTruncationHeuristic("Hello!"))
         assertFalse(PaiosModelHelper.isTruncationHeuristic("Everything is complete."))
         assertFalse(PaiosModelHelper.isTruncationHeuristic("**All done.**"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Thanks! All set."))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Everything looks good"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Yes, happy to help"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Sure, I can help with that today"))
+        assertFalse(
+            PaiosModelHelper.isTruncationHeuristic(
+                "A paperclip maximizer is a thought experiment about AI alignment"
+            )
+        )
     }
 
     @Test
@@ -207,14 +226,77 @@ class PaiosModelHelperTest {
             )
         )
 
-        // STOP / 0 never continues
-        assertFalse(
+        // STOP / 0 rescues bounded mid-clause cutoffs on Nano v3 once, and rejects complete answers
+        assertTrue(
             PaiosModelHelper.shouldContinuePartialResponse(
                 finishReason = "0",
                 partialText = "I prioritize your",
                 continuationCount = 0,
                 lastRoundAddedChars = 17,
-                isNanoV4 = false
+                isNanoV4 = false,
+                stopCutoffRetryCount = 0
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = "I prioritize your",
+                continuationCount = 1,
+                lastRoundAddedChars = 17,
+                isNanoV4 = false,
+                stopCutoffRetryCount = 1
+            )
+        )
+        val paperclipCutoff =
+            "The concept of a \"paperclip maximizer\" is a thought experiment that highlights a potential risk with advanced"
+        assertTrue(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = paperclipCutoff,
+                continuationCount = 0,
+                lastRoundAddedChars = paperclipCutoff.length,
+                isNanoV4 = false,
+                stopCutoffRetryCount = 0
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "STOP",
+                partialText = paperclipCutoff,
+                continuationCount = 1,
+                lastRoundAddedChars = 40,
+                isNanoV4 = false,
+                stopCutoffRetryCount = 1
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = paperclipCutoff,
+                continuationCount = 0,
+                lastRoundAddedChars = paperclipCutoff.length,
+                isNanoV4 = true,
+                stopCutoffRetryCount = 0
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = "Sure, I can help with that today",
+                continuationCount = 0,
+                lastRoundAddedChars = 32,
+                isNanoV4 = false,
+                stopCutoffRetryCount = 0
+            )
+        )
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "0",
+                partialText = "Thanks! All set.",
+                continuationCount = 0,
+                lastRoundAddedChars = 16,
+                isNanoV4 = false,
+                stopCutoffRetryCount = 0
             )
         )
 
@@ -303,33 +385,46 @@ class PaiosModelHelperTest {
         )
         assertFalse(sys.lines().first { it.startsWith("Persona:") }.endsWith("..."))
         assertFalse(sys.lines().first { it.startsWith("Question:") }.endsWith("...\""))
-        assertTrue(sys.contains("and I prioritize"))
-        assertFalse(sys.contains(exactEnd))
-        assertTrue(sys.length < 1300)
+        assertTrue(sys.contains(exactEnd))
+        assertTrue(sys.contains("If 'your' was cut mid-word, complete or rewrite it cleanly without spaces."))
+        assertTrue(sys.length < 1400)
         assertFalse(sys.contains("word0 "))
     }
 
     @Test
-    fun buildOverlayContinuationPrompt_backsOffMidWordTailWithin28CharsAndPreservesPunctuationEnd() {
+    fun buildOverlayContinuationPrompt_preservesTrailingWordIntactAndAddsMidWordHintOnlyWhenNeeded() {
         val midWordSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
             originalQuestion = "Who is Eliezer Yudkowsky?",
             partialText = "The author is Eliezer Yud"
         )
         val midWordSys = midWordSpec.instructions!!
-        assertTrue(midWordSys.contains("Partial answer tail:\nThe author is Eliezer\nContinue seamlessly"))
-        assertFalse(midWordSys.substringAfter("Partial answer tail:\n").contains("Eliezer Yud"))
+        assertTrue(
+            midWordSys.contains(
+                "Partial answer tail:\nThe author is Eliezer Yud\nContinue seamlessly from the exact end without repeating. If 'Yud' was cut mid-word, complete or rewrite it cleanly without spaces."
+            )
+        )
+
+        val advancedCutoffSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+            originalQuestion = "what's a paperclip Maximizer?",
+            partialText = "The concept of a \"paperclip maximizer\" is a thought experiment that highlights a potential risk with advanced"
+        )
+        val advancedSys = advancedCutoffSpec.instructions!!
+        assertTrue(advancedSys.contains("highlights a potential risk with advanced\nContinue seamlessly"))
+        assertTrue(advancedSys.contains("If 'advanced' was cut mid-word, complete or rewrite it cleanly without spaces."))
 
         val punctSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
             originalQuestion = "Tell me more",
             partialText = "The author is older,"
         )
         assertTrue(punctSpec.instructions!!.contains("Partial answer tail:\nThe author is older,\n"))
+        assertFalse(punctSpec.instructions.contains("was cut mid-word"))
 
         val spaceSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
             originalQuestion = "Tell me more",
             partialText = "The author is Eliezer "
         )
         assertTrue(spaceSpec.instructions!!.contains("Partial answer tail:\nThe author is Eliezer \n"))
+        assertFalse(spaceSpec.instructions.contains("was cut mid-word"))
 
         val longWord = "Supercalifragilisticexpialidocious"
         val longWordSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
@@ -337,6 +432,36 @@ class PaiosModelHelperTest {
             partialText = "Word: $longWord"
         )
         assertTrue(longWordSpec.instructions!!.contains("Word: $longWord"))
+    }
+
+    @Test
+    fun consumeScreenContextTurn_tracksThreeTurnTtlAndExpiresSilently() {
+        assertEquals(3, PaiosModelHelper.SCREEN_CONTEXT_TTL_TURNS)
+
+        val turn1 = PaiosModelHelper.consumeScreenContextTurn(turnsRemaining = 3, hasContent = true)
+        assertTrue(turn1.available)
+        assertEquals(2, turn1.nextTurnsRemaining)
+        assertFalse(turn1.shouldExpire)
+
+        val turn2 = PaiosModelHelper.consumeScreenContextTurn(turnsRemaining = turn1.nextTurnsRemaining, hasContent = true)
+        assertTrue(turn2.available)
+        assertEquals(1, turn2.nextTurnsRemaining)
+        assertFalse(turn2.shouldExpire)
+
+        val turn3 = PaiosModelHelper.consumeScreenContextTurn(turnsRemaining = turn2.nextTurnsRemaining, hasContent = true)
+        assertTrue(turn3.available)
+        assertEquals(0, turn3.nextTurnsRemaining)
+        assertTrue(turn3.shouldExpire)
+
+        val turn4 = PaiosModelHelper.consumeScreenContextTurn(turnsRemaining = turn3.nextTurnsRemaining, hasContent = true)
+        assertFalse(turn4.available)
+        assertEquals(0, turn4.nextTurnsRemaining)
+        assertTrue(turn4.shouldExpire)
+
+        val empty = PaiosModelHelper.consumeScreenContextTurn(turnsRemaining = 3, hasContent = false)
+        assertFalse(empty.available)
+        assertEquals(0, empty.nextTurnsRemaining)
+        assertTrue(empty.shouldExpire)
     }
 
     @Test

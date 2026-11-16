@@ -291,12 +291,14 @@ class AIEngine with md.ChangeNotifier {
   static const int maxProseHardStopChars = 2400;
   static const int maxContinuationChars = 12000;
   static const int maxNullReasonContinuations = 2;
+  static const int maxStopCutoffContinuations = 1;
 
   String _lastFinishReason = ""; // captured from streaming events, read at done
   String _combinedResponse = ""; // accumulates across continuation calls
   String get combinedResponse => _combinedResponse; // read-only access for UI
   int _continuationCount = 0;    // how many continuations fired (for logging)
   int _nullReasonContinuationCount = 0;
+  int _stopCutoffContinuationCount = 0;
   int _streamGenerationId = 0;   // invalidates stale onDone/onError callbacks across streams
   bool _activeToolHandling = false;
   bool _forcedFinalSynthesis = false;
@@ -2690,6 +2692,7 @@ class AIEngine with md.ChangeNotifier {
     _lastFinishReason = "";
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     _toolTurnCount = 0;
     _lastToolCallSignature = "";
     _recoverableErrorRetries = 0;
@@ -2778,6 +2781,7 @@ class AIEngine with md.ChangeNotifier {
     _currentUserPromptForSynthesis = "";
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     cumulativeGenerationMs = 0;
     cumulativeTokenCount = 0;
     streamingUserMessageTime = DateTime.now();
@@ -3057,6 +3061,8 @@ class AIEngine with md.ChangeNotifier {
                 if (_isMissingFinishReason(doneReason) &&
                     !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
                   _nullReasonContinuationCount++;
+                } else if (_isStopFinishReason(doneReason)) {
+                  _stopCutoffContinuationCount++;
                 }
                 _continuationCount++;
                 _combinedResponse = responseText;
@@ -3505,6 +3511,159 @@ class AIEngine with md.ChangeNotifier {
     return upper == 'NULL' || upper == 'UNKNOWN' || upper == 'FINISH_REASON_UNSPECIFIED';
   }
 
+  static bool _isStopFinishReason(String? reason) {
+    final norm = reason?.trim() ?? '';
+    if (norm.isEmpty) return false;
+    final upper = norm.toUpperCase();
+    return norm == '0' || upper == 'STOP';
+  }
+
+  static int _countWords(String text) =>
+      text.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+
+  static const Set<String> _danglingTailWords = {
+    'to', 'and', 'or', 'but', 'of', 'the', 'a', 'an', 'with', 'for', 'in',
+    'on', 'at', 'by', 'from', 'into', 'about', 'as', 'that', 'which', 'who',
+    'your', 'its', 'their', 'this', 'these', 'those', 'my', 'our', 'is', 'are',
+    'was', 'were', 'can', 'will', 'would', 'should', 'could', 'may', 'might',
+  };
+
+  static const Set<String> _prepositionsBeforeDemonstrative = {
+    'with', 'for', 'of', 'in', 'on', 'at', 'by', 'from', 'into', 'about',
+    'to', 'like', 'after', 'before', 'without', 'under', 'over', 'between',
+    'through',
+  };
+
+  static const Set<String> _modifierLeadInWords = {
+    'with', 'for', 'in', 'on', 'at', 'by', 'from', 'into', 'of', 'to',
+    'the', 'a', 'an', 'their', 'its', 'our', 'your', 'some', 'such',
+  };
+
+  static const Set<String> _knownTrailingModifiers = {
+    'advanced', 'potential', 'modern', 'high', 'low', 'new', 'further',
+    'certain', 'extreme', 'major', 'minor', 'critical', 'specific',
+    'similar', 'various', 'several', 'multiple', 'complex', 'large', 'small',
+    'strong', 'weak', 'wide', 'broad', 'narrow', 'direct', 'indirect',
+    'proper', 'primary', 'secondary', 'unique', 'entire', 'exact',
+    'accurate', 'precise', 'heavy', 'unsafe', 'dangerous', 'serious',
+    'severe', 'significant', 'important', 'artificial', 'unintended',
+    'unexpected', 'sophisticated', 'autonomous', 'intelligent',
+    'superintelligent', 'global', 'digital', 'physical', 'mental', 'social',
+    'medical', 'legal', 'moral', 'ethical', 'economic', 'political',
+    'technical', 'practical', 'scientific', 'environmental',
+    'computational', 'additional', 'existing', 'emerging', 'growing',
+    'increasing', 'developing', 'evolving', 'underlying', 'surrounding',
+    'remaining', 'following', 'preceding', 'leading', 'fundamental',
+    'essential', 'vital', 'crucial', 'necessary', 'possible', 'unlikely',
+    'available', 'effective', 'efficient', 'reliable', 'recent', 'current',
+    'previous', 'next', 'different', 'highly', 'extremely', 'increasingly',
+    'particularly', 'especially', 'potentially', 'significantly',
+    'relatively', 'completely', 'fully', 'partially', 'rapidly', 'newly',
+    'widely', 'closely', 'strongly', 'deeply', 'unusually', 'unexpectedly',
+    'critically', 'severely', 'heavily', 'broadly',
+  };
+
+  static const Set<String> _nonModifierAlNouns = {
+    'animal', 'hospital', 'capital', 'journal', 'festival', 'terminal',
+    'general', 'material', 'mineral', 'individual', 'official', 'original',
+    'crystal', 'arrival', 'survival', 'removal', 'approval', 'proposal',
+    'refusal', 'disposal', 'betrayal', 'portrayal', 'funeral', 'cathedral',
+    'scandal', 'sandal', 'mammal', 'manual', 'signal', 'casual', 'visual',
+  };
+
+  static const Set<String> _nonModifierIcNouns = {
+    'public', 'classic', 'critic', 'fabric', 'plastic', 'static', 'metric',
+    'clinic', 'picnic', 'traffic', 'garlic', 'tropic', 'mosaic', 'tunic',
+    'relic', 'attic', 'comic', 'topic', 'music', 'logic', 'magic', 'panic',
+    'basic',
+  };
+
+  static const Set<String> _nonModifierIveNouns = {
+    'native', 'motive', 'archive', 'detective', 'narrative', 'objective',
+    'directive', 'adjective', 'executive', 'initiative', 'alternative',
+    'perspective', 'representative', 'incentive',
+  };
+
+  static const Set<String> _nonModifierBleNouns = {
+    'vegetable', 'syllable', 'parable', 'variable', 'portable', 'timetable',
+    'turntable', 'constable', 'mandible', 'crucible',
+  };
+
+  static const Set<String> _nonModifierRyNouns = {
+    'library', 'january', 'february', 'summary', 'history', 'factory',
+    'category', 'century', 'country', 'victory', 'mystery', 'battery',
+    'gallery', 'surgery', 'delivery', 'recovery', 'discovery', 'scenery',
+    'grocery', 'bakery', 'salary', 'glossary', 'boundary', 'dictionary',
+    'vocabulary', 'secretary', 'commentary', 'documentary', 'anniversary',
+    'territory', 'directory', 'inventory', 'laboratory', 'dormitory',
+    'observatory', 'trajectory', 'accessory', 'memory', 'theory',
+  };
+
+  static const Set<String> _nonModifierNtNouns = {
+    'moment', 'present', 'client', 'student', 'parent', 'patient', 'percent',
+    'incident', 'accident', 'resident', 'president', 'assistant', 'merchant',
+    'servant', 'restaurant', 'elephant', 'account', 'amount', 'extent',
+    'intent', 'consent', 'content', 'talent', 'contestant', 'participant',
+    'consultant', 'accountant', 'defendant', 'applicant', 'inhabitant',
+    'immigrant', 'sergeant', 'lieutenant', 'peasant', 'tenant', 'tyrant',
+    'infant', 'mutant', 'pendant', 'quadrant', 'remnant', 'covenant',
+    'solvent', 'agent', 'opponent', 'component', 'exponent', 'recipient',
+    'coefficient', 'ingredient', 'nutrient', 'gradient', 'quotient', 'orient',
+    'torrent', 'garment', 'segment', 'fragment',
+  };
+
+  static String _normalizeCutoffToken(String raw) => raw
+      .toLowerCase()
+      .replaceAll(RegExp(r'''^["'“‘(\[\{*_`]+|["'”’)\]\},;:*_`]+$'''), '');
+
+  static bool _isLikelyTrailingModifier(String word) {
+    if (word.length < 3 || !RegExp(r'^[a-z]+$').hasMatch(word)) return false;
+    if (_knownTrailingModifiers.contains(word)) return true;
+    if (word.length >= 6 && word.endsWith('ous')) return true;
+    if (word.length >= 6 &&
+        (word.endsWith('ful') || word.endsWith('less'))) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ed') &&
+        !word.endsWith('eed') &&
+        word != 'hundred') {
+      return true;
+    }
+    if (word.length >= 7 &&
+        word.endsWith('al') &&
+        !_nonModifierAlNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ic') &&
+        !_nonModifierIcNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ive') &&
+        !_nonModifierIveNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 7 &&
+        (word.endsWith('able') || word.endsWith('ible')) &&
+        !_nonModifierBleNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 7 &&
+        (word.endsWith('ary') || word.endsWith('ory')) &&
+        !_nonModifierRyNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        (word.endsWith('ant') || word.endsWith('ent')) &&
+        !word.endsWith('ment') &&
+        !_nonModifierNtNouns.contains(word)) {
+      return true;
+    }
+    return false;
+  }
+
   static bool isLikelyMidClauseCutoff(String text) {
     final trimmed = text.trimRight();
     if (trimmed.isEmpty) return false;
@@ -3512,8 +3671,35 @@ class AIEngine with md.ChangeNotifier {
     if (_contractionApostropheTailRegex.hasMatch(trimmed)) return true;
     if (_trailingMarkdownWithTerminalRegex.hasMatch(trimmed)) return false;
     if (_terminalPunctTailRegex.hasMatch(trimmed)) return false;
-    final words = trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
-    return words >= 3;
+
+    final rawWords =
+        trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (rawWords.isEmpty) return false;
+
+    final lastWord = _normalizeCutoffToken(rawWords.last);
+    final penultWord = rawWords.length >= 2
+        ? _normalizeCutoffToken(rawWords[rawWords.length - 2])
+        : '';
+
+    if (_danglingTailWords.contains(lastWord)) {
+      final isDemonstrativeObject =
+          (lastWord == 'that' ||
+              lastWord == 'this' ||
+              lastWord == 'these' ||
+              lastWord == 'those') &&
+          _prepositionsBeforeDemonstrative.contains(penultWord);
+      if (!isDemonstrativeObject) {
+        return true;
+      }
+    }
+
+    if (rawWords.length >= 4 &&
+        _modifierLeadInWords.contains(penultWord) &&
+        _isLikelyTrailingModifier(lastWord)) {
+      return true;
+    }
+
+    return false;
   }
 
   @visibleForTesting
@@ -3523,6 +3709,8 @@ class AIEngine with md.ChangeNotifier {
     int? lastRoundAddedNonWs,
     int? continuationCount,
     int? nullReasonCount,
+    int? stopCutoffCount,
+    bool? isSynthesis,
   }) =>
       _shouldContinueOnDone(
         reason,
@@ -3530,6 +3718,8 @@ class AIEngine with md.ChangeNotifier {
         lastRoundAddedNonWs: lastRoundAddedNonWs,
         continuationCountOverride: continuationCount,
         nullReasonCountOverride: nullReasonCount,
+        stopCutoffCountOverride: stopCutoffCount,
+        isSynthesisOverride: isSynthesis,
       );
 
   bool _shouldContinueOnDone(
@@ -3538,9 +3728,14 @@ class AIEngine with md.ChangeNotifier {
     int? lastRoundAddedNonWs,
     int? continuationCountOverride,
     int? nullReasonCountOverride,
+    int? stopCutoffCountOverride,
+    bool? isSynthesisOverride,
   }) {
     final effectiveCount = continuationCountOverride ?? _continuationCount;
     final effectiveNullCount = nullReasonCountOverride ?? _nullReasonContinuationCount;
+    final effectiveStopCutoffCount =
+        stopCutoffCountOverride ?? _stopCutoffContinuationCount;
+    final effectiveIsSynthesis = isSynthesisOverride ?? _isSynthesizing;
     if (text.trim().isEmpty) return false;
     if (text.length >= maxContinuationChars) return false;
     if (lastRoundAddedNonWs != null && lastRoundAddedNonWs <= 0) return false;
@@ -3576,7 +3771,17 @@ class AIEngine with md.ChangeNotifier {
           upper.contains("LIMIT")) {
         return true;
       }
-      if (norm == "0" || upper == "STOP") {
+      if (_isStopFinishReason(norm)) {
+        if (!isNanoV4Active &&
+            !effectiveIsSynthesis &&
+            !insideCodeBlock &&
+            !isToolDraft &&
+            effectiveStopCutoffCount < maxStopCutoffContinuations &&
+            text.length < maxProseSoftStopChars &&
+            _countWords(text) >= 4 &&
+            isLikelyMidClauseCutoff(text)) {
+          return true;
+        }
         return false;
       }
     }
@@ -3893,6 +4098,7 @@ class AIEngine with md.ChangeNotifier {
     _combinedResponse = "";
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     streamingMessageTime = DateTime.now();
     status = "Retrying without tools...";
     notifyListeners();
@@ -4013,6 +4219,8 @@ class AIEngine with md.ChangeNotifier {
               cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
               if (_isMissingFinishReason(doneReason)) {
                 _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(doneReason)) {
+                _stopCutoffContinuationCount++;
               }
               _continuationCount++;
               _combinedResponse = responseText;
@@ -4191,6 +4399,8 @@ class AIEngine with md.ChangeNotifier {
               if (_isMissingFinishReason(contDoneReason) &&
                   !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
                 _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(contDoneReason)) {
+                _stopCutoffContinuationCount++;
               }
               _continuationCount++;
               await continueGenerating(isSynthesis: _isSynthesizing);
@@ -4673,6 +4883,7 @@ class AIEngine with md.ChangeNotifier {
     _lastFinishReason = "";
     _continuationCount = 0;
     _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     _combinedResponse = "";
     streamingMessageTime = DateTime.now();
     notifyListeners();
@@ -4822,6 +5033,8 @@ class AIEngine with md.ChangeNotifier {
               if (_isMissingFinishReason(doneReason) &&
                   !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
                 _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(doneReason)) {
+                _stopCutoffContinuationCount++;
               }
               _continuationCount++;
               _combinedResponse = responseText;
