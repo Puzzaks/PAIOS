@@ -6,6 +6,7 @@ import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../engine.dart';
+import '../../services/internal_tools_service.dart';
 import '../support/elements.dart';
 
 class ExtensionsSettingsPage extends StatefulWidget {
@@ -55,6 +56,42 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
       default:
         return Icons.extension_rounded;
     }
+  }
+
+  IconData _resolveInternalIcon(String moduleId) {
+    switch (moduleId) {
+      case InternalToolsService.moduleDocs:
+        return Icons.menu_book_rounded;
+      case InternalToolsService.moduleDevice:
+        return Icons.battery_charging_full_rounded;
+      case InternalToolsService.moduleWikipedia:
+        return Icons.public_rounded;
+      case InternalToolsService.moduleSearch:
+        return Icons.travel_explore_rounded;
+      case InternalToolsService.moduleWeather:
+        return Icons.wb_sunny_rounded;
+      default:
+        return Icons.extension_rounded;
+    }
+  }
+
+  List<M3xTool> _toolsForInternalModule(
+    AIEngine engine,
+    InternalExtensionModule mod,
+  ) {
+    return mod.tools
+        .map(
+          (spec) =>
+              engine.toolRegistry.get(spec.name) ??
+              M3xTool(
+                name: spec.name,
+                app: spec.app,
+                packageName: mod.id,
+                description: spec.description,
+                parameters: spec.parameters,
+              ),
+        )
+        .toList(growable: false);
   }
 
   String _formatPackageTitle(String pkg) {
@@ -184,7 +221,14 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
     } catch (_) {}
   }
 
-  void _showExtensionDetails(BuildContext context, String pkg, List<M3xTool> tools, bool isEnabled) {
+  void _showExtensionDetails(
+    BuildContext context,
+    String pkg,
+    List<M3xTool> tools,
+    bool isEnabled, {
+    String? customTitle,
+    IconData? customIcon,
+  }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final engine = Provider.of<AIEngine>(context, listen: false);
@@ -226,7 +270,8 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                           borderRadius: BorderRadius.circular(16),
                         ),
                         child: Icon(
-                          _resolveIcon(_findProposal(pkg)?['icon']?.toString()),
+                          customIcon ??
+                              _resolveIcon(_findProposal(pkg)?['icon']?.toString()),
                           color: scheme.onPrimaryContainer,
                           size: 26,
                         ),
@@ -237,7 +282,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _formatPackageTitle(pkg),
+                              customTitle ?? _formatPackageTitle(pkg),
                               style: theme.textTheme.titleMedium?.copyWith(
                                 fontWeight: FontWeight.bold,
                               ),
@@ -512,7 +557,151 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                               ),
                             ]),
 
-                            // Section 2: Connected Extensions
+                            // Section 2: PAIOS Built-in Extensions
+                            Category.settings(
+                              title: engine.dict.value("built_in_extensions"),
+                              context: context,
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                              child: Text(
+                                engine.dict.value("built_in_extensions_desc"),
+                                style: TextStyle(
+                                  color: scheme.onSurfaceVariant,
+                                  fontSize: 13,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                            cards.cardGroup(
+                              InternalToolsService.modules.map((mod) {
+                                final isEnabled = engine.isExtensionEnabled(mod.id);
+                                final modTools = _toolsForInternalModule(engine, mod);
+                                final toolNamesSummary = mod.toolNames.join(', ');
+                                final iconData = _resolveInternalIcon(mod.id);
+
+                                return InkWell(
+                                  onTap: () => _showExtensionDetails(
+                                    context,
+                                    mod.id,
+                                    modTools,
+                                    isEnabled,
+                                    customTitle: mod.title,
+                                    customIcon: iconData,
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 20,
+                                      vertical: 12,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          width: 40,
+                                          height: 40,
+                                          decoration: BoxDecoration(
+                                            color: isEnabled
+                                                ? scheme.primaryContainer
+                                                : scheme.surfaceContainerHighest,
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                          child: Icon(
+                                            iconData,
+                                            color: isEnabled
+                                                ? scheme.onPrimaryContainer
+                                                : scheme.onSurfaceVariant,
+                                            size: 22,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 14),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Flexible(
+                                                    child: Text(
+                                                      mod.title,
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.bold,
+                                                        fontSize: 16,
+                                                      ),
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  if (mod.requiresInternet) ...[
+                                                    const SizedBox(width: 8),
+                                                    Container(
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 2,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: scheme
+                                                            .tertiaryContainer,
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                      ),
+                                                      child: Text(
+                                                        engine.dict.value(
+                                                          "online_badge",
+                                                        ),
+                                                        style: TextStyle(
+                                                          color: scheme
+                                                              .onTertiaryContainer,
+                                                          fontSize: 11,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                mod.description,
+                                                style: TextStyle(
+                                                  color: scheme.onSurfaceVariant,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                "${mod.tools.length} ${mod.tools.length == 1 ? engine.dict.value("tool_singular") : engine.dict.value("tool_plural")} • $toolNamesSummary",
+                                                style: TextStyle(
+                                                  color: scheme.outline,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Switch(
+                                          value: isEnabled,
+                                          onChanged: (val) async {
+                                            await engine.setExtensionEnabled(
+                                              mod.id,
+                                              val,
+                                            );
+                                            setState(() {});
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+
+                            // Section 3: Connected Extensions
                             Category.settings(
                               title: engine.dict.value("connected_extensions"),
                               context: context,

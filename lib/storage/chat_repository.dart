@@ -15,6 +15,7 @@ class ChatRepository {
   String currentChat = "0";
   String lastPrompt = "";
   String? lastImagePath;
+  String? lastImageDescription;
   String Function() getDefaultPromptId;
 
   bool isLoadingTitle = false;
@@ -121,6 +122,7 @@ class ChatRepository {
   }
 
   Future<void> initFromHive() async {
+    if (!Hive.isBoxOpen('paios_storage')) return;
     final box = Hive.box('paios_storage');
     if (box.containsKey("context")) {
       context = jsonDecode(box.get("context", defaultValue: "[]"));
@@ -132,27 +134,50 @@ class ChatRepository {
     await logEvent("init", "info", chats.isEmpty ? "No chats found" : "Found chats: ${chats.length}");
   }
 
-  Future<void> addToContext(String responseText, {String? userImagePath}) async {
+  Future<void> addToContext(
+    String responseText, {
+    String? userImagePath,
+    String? userImageDescription,
+    String? thoughtProcess,
+    String? author,
+    DateTime? userTime,
+    DateTime? aiTime,
+  }) async {
     final box = Hive.box('paios_storage');
     final effectiveImagePath = userImagePath ?? lastImagePath;
+    final effectiveImageDescription =
+        (userImageDescription ?? lastImageDescription)?.trim();
+    final trimmedThought = thoughtProcess?.trim();
+    final trimmedAuthor = author?.trim();
+    final userTimestamp = (userTime ?? DateTime.now()).millisecondsSinceEpoch.toString();
+    final aiTimestamp = (aiTime ?? DateTime.now()).millisecondsSinceEpoch.toString();
 
     contextSize = contextSize + responseText.split(' ').length + lastPrompt.split(' ').length;
     context.add({
       "user": "User",
-      "time": DateTime.now().millisecondsSinceEpoch.toString(),
+      "time": userTimestamp,
       "message": lastPrompt,
       if (effectiveImagePath != null && effectiveImagePath.isNotEmpty)
         "imagePath": effectiveImagePath,
+      if (effectiveImageDescription != null &&
+          effectiveImageDescription.isNotEmpty)
+        "imageDescription": effectiveImageDescription,
     });
     context.add({
       "user": "Gemini",
-      "time": DateTime.now().millisecondsSinceEpoch.toString(),
+      if (trimmedAuthor != null && trimmedAuthor.isNotEmpty)
+        "author": trimmedAuthor,
+      "time": aiTimestamp,
       "message": responseText,
+      if (trimmedThought != null && trimmedThought.isNotEmpty)
+        "thoughtProcess": trimmedThought,
     });
 
+    lastPrompt = "";
+    lastImagePath = null;
+    lastImageDescription = null;
+
     if (currentChat == "testing") {
-      lastPrompt = "";
-      lastImagePath = null;
       notifyEngine();
       return;
     }
@@ -165,9 +190,6 @@ class ChatRepository {
     }
 
     await saveChat(context, chatID: currentChat);
-
-    lastPrompt = "";
-    lastImagePath = null;
     notifyEngine();
   }
 
@@ -175,15 +197,29 @@ class ChatRepository {
   Future<void> appendMessage({
     required String user,
     required String message,
+    String? author,
+    DateTime? time,
     String? imagePath,
+    String? imageDescription,
+    String? thoughtProcess,
   }) async {
     final box = Hive.box('paios_storage');
+    final trimmedAuthor = author?.trim();
+    final trimmedDescription = imageDescription?.trim();
+    final trimmedThought = thoughtProcess?.trim();
+    final timestamp = (time ?? DateTime.now()).millisecondsSinceEpoch.toString();
     contextSize += message.split(' ').length;
     context.add({
       "user": user,
-      "time": DateTime.now().millisecondsSinceEpoch.toString(),
+      if (trimmedAuthor != null && trimmedAuthor.isNotEmpty)
+        "author": trimmedAuthor,
+      "time": timestamp,
       "message": message,
       if (imagePath != null && imagePath.isNotEmpty) "imagePath": imagePath,
+      if (trimmedDescription != null && trimmedDescription.isNotEmpty)
+        "imageDescription": trimmedDescription,
+      if (trimmedThought != null && trimmedThought.isNotEmpty)
+        "thoughtProcess": trimmedThought,
     });
 
     if (currentChat == "testing") {
@@ -301,25 +337,46 @@ class ChatRepository {
     List conversation, {
     bool isArchived = true,
     String? title,
+    String? defaultAssistantAuthor,
   }) async {
     if (conversation.isEmpty) return "";
     final chatID = DateTime.now().millisecondsSinceEpoch.toString();
     final box = Hive.box('paios_storage');
+    final fallbackAuthor =
+        (defaultAssistantAuthor != null && defaultAssistantAuthor.trim().isNotEmpty)
+            ? defaultAssistantAuthor.trim()
+            : "Gemini Nano";
 
+    final normalizedConversation = <Map<String, dynamic>>[];
     int tokensCount = 0;
     for (var line in conversation) {
-      if (line is Map && line["message"] != null) {
-        tokensCount += line["message"].toString().split(' ').length;
+      if (line is Map) {
+        final copy = Map<String, dynamic>.from(line);
+        final rawTime = copy["time"]?.toString().trim() ?? "";
+        if (rawTime.isEmpty) {
+          copy["time"] = DateTime.now().millisecondsSinceEpoch.toString();
+        }
+        if (copy["user"] == "Gemini") {
+          final rawAuthor = copy["author"]?.toString().trim() ?? "";
+          if (rawAuthor.isEmpty) {
+            copy["author"] = fallbackAuthor;
+          }
+        }
+        if (copy["message"] != null) {
+          tokensCount += copy["message"].toString().split(' ').length;
+        }
+        normalizedConversation.add(copy);
       }
     }
+    if (normalizedConversation.isEmpty) return "";
 
     String chatTitle = title ?? "";
     if (chatTitle.isEmpty) {
-      final firstMsg = conversation.firstWhere(
-        (m) => m is Map && m["user"] == "User",
-        orElse: () => conversation.first,
+      final firstMsg = normalizedConversation.firstWhere(
+        (m) => m["user"] == "User",
+        orElse: () => normalizedConversation.first,
       );
-      final rawText = (firstMsg is Map ? firstMsg["message"] : null)?.toString() ?? "Assistant Session";
+      final rawText = firstMsg["message"]?.toString() ?? "Assistant Session";
       chatTitle = rawText.length > 36 ? "${rawText.substring(0, 36)}..." : rawText;
     }
 
@@ -329,7 +386,7 @@ class ChatRepository {
       "pinned": false,
       "isArchived": isArchived,
       "promptId": getDefaultPromptId(),
-      "history": jsonEncode(conversation).toString(),
+      "history": jsonEncode(normalizedConversation).toString(),
       "created": DateTime.now().millisecondsSinceEpoch.toString(),
       "updated": DateTime.now().millisecondsSinceEpoch.toString(),
     };
@@ -342,7 +399,7 @@ class ChatRepository {
       unawaited(() async {
         try {
           String composeConversation = "";
-          for (var line in conversation) {
+          for (var line in normalizedConversation) {
             composeConversation = "$composeConversation\n - ${line["message"]}";
           }
           final generatedTitle = await requestTitle(composeConversation);
@@ -358,6 +415,77 @@ class ChatRepository {
     return chatID;
   }
 
+  /// Updates `imageDescription` on an existing persisted message in [chatId]
+  /// (and in [context] when [chatId] matches [currentChat]).
+  ///
+  /// Matches by [messageIndex] when provided and within range, otherwise falls
+  /// back to matching [imagePath] (searching newest-first). Returns `true` if
+  /// any message entry was updated.
+  Future<bool> updateMessageImageDescription(
+    String chatId,
+    String description, {
+    int? messageIndex,
+    String? imagePath,
+  }) async {
+    final trimmed = description.trim();
+    if (trimmed.isEmpty) return false;
+
+    bool updated = false;
+
+    bool applyToList(List messages) {
+      int targetIdx = -1;
+      if (messageIndex != null &&
+          messageIndex >= 0 &&
+          messageIndex < messages.length) {
+        targetIdx = messageIndex;
+      } else if (imagePath != null && imagePath.isNotEmpty) {
+        for (int i = messages.length - 1; i >= 0; i--) {
+          final item = messages[i];
+          if (item is Map && item["imagePath"]?.toString() == imagePath) {
+            targetIdx = i;
+            break;
+          }
+        }
+      }
+      if (targetIdx == -1) return false;
+      final entry = messages[targetIdx];
+      if (entry is! Map) return false;
+      entry["imageDescription"] = trimmed;
+      return true;
+    }
+
+    final box = Hive.box('paios_storage');
+
+    if (chatId == currentChat && applyToList(context)) {
+      updated = true;
+      if (currentChat != "testing") {
+        await box.put("context", jsonEncode(context));
+      }
+    }
+
+    if (chatId != "testing" && chats.containsKey(chatId)) {
+      final rawHistory = chats[chatId]?["history"];
+      if (rawHistory is String && rawHistory.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawHistory);
+          if (decoded is List && applyToList(decoded)) {
+            chats[chatId]!["history"] = jsonEncode(decoded);
+            await box.put("chats", jsonEncode(chats));
+            updated = true;
+          }
+        } catch (_) {}
+      } else if (rawHistory is List && applyToList(rawHistory)) {
+        await box.put("chats", jsonEncode(chats));
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      notifyEngine();
+    }
+    return updated;
+  }
+
   Future<void> clearContext() async {
     final box = Hive.box('paios_storage');
     await _purgeChatImages(currentChat, context);
@@ -365,6 +493,7 @@ class ChatRepository {
     contextSize = 0;
     lastPrompt = "";
     lastImagePath = null;
+    lastImageDescription = null;
     chats.remove(currentChat);
     await box.put("chats", jsonEncode(chats));
     await box.put("context", jsonEncode(context));

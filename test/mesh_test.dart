@@ -39,7 +39,8 @@ void main() {
       expect(output.contains('### [AVAILABLE TOOLS]'), isTrue);
       expect(output.contains('ping_host'), isTrue);
       expect(output.contains('ptk'), isTrue);
-      expect(output.contains('tool_call'), isTrue);
+      expect(output.contains('"tool"'), isTrue);
+      expect(output.contains('"args"'), isTrue);
     });
 
     test('AIEngine initializes M3xMeshClient and M3xToolRegistry', () {
@@ -86,7 +87,7 @@ void main() {
       expect(fromJson.name, 'query_aicore_documentation');
     });
 
-    test('Prompt tool schema includes description field in template', () async {
+    test('Prompt tool schema omits description field from template to prevent prose hallucination', () async {
       final prompt = Prompt(ghUrl: 'https://github.com/Puzzak/PAIOS');
       final tools = [
         M3xTool(
@@ -101,7 +102,8 @@ void main() {
         {'version': '1.0.0'},
         tools: tools,
       );
-      expect(output, contains('"description": "Checking live data"'));
+      expect(output, contains('{"tool": "<tool>", "app": "<app>", "args": {}}'));
+      expect(output, isNot(contains('"description": "<2-4 word action label>"')));
     });
 
     testWidgets('ToolCallBubble renders collapsed state and expands on tap', (tester) async {

@@ -3,8 +3,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:m3x_chat/m3x_chat.dart';
 import 'package:m3x_mesh/m3x_mesh.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:provider/provider.dart';
+import 'package:geminilocal/engine.dart';
 import 'package:geminilocal/parts/translator.dart';
 
 
@@ -32,9 +34,8 @@ class Cards {
   }
 
   Widget cardGroup(List<Widget> cards) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     switch(cards.length){
-      case 0: return Container();
+      case 0: return const SizedBox.shrink();
       case 1: return Card(
         clipBehavior: Clip.hardEdge,
         shape: RoundedRectangleBorder(
@@ -48,11 +49,13 @@ class Cards {
             vertical: cardMarginV
         ),
         child: SizedBox(
-          width: width - (cardMarginH * 2),
+          width: double.infinity,
           child: cards[0],
         ),
       );
       case 2: return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Card(
             clipBehavior: Clip.hardEdge,
@@ -162,7 +165,11 @@ class Cards {
               child: cards[cards.length - 1],
             )
         );
-        return Column(children: cardsOut);
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: cardsOut,
+        );
     }
   }
 }
@@ -172,38 +179,39 @@ class CardContents {
     required String title,
     required String subtitle,
     required VoidCallback action,
+    Widget? trailing,
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return InkWell(
       onTap: action,
       child: Padding(
-        padding: EdgeInsets.symmetric(
+        padding: const EdgeInsets.symmetric(
             horizontal: 20, vertical: 10
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.start,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(height: subtitle == ""?10:0,),
-                SizedBox(
-                  width: width - 70,
-                  child: Text(
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (!hasSubtitle) const SizedBox(height: 10),
+                  Text(
                     title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                   ),
-                ),
-                subtitle == ""?Container(height: 10,):
-                SizedBox(
-                  width: width - 70,
-                  child: Text(
-                      subtitle
-                  ),
-                ),
-              ],
+                  if (hasSubtitle)
+                    Text(subtitle)
+                  else
+                    const SizedBox(height: 10),
+                ],
+              ),
             ),
+            if (trailing != null) ...[
+              const SizedBox(width: 12),
+              trailing,
+            ],
           ],
         ),
       ),
@@ -213,38 +221,39 @@ class CardContents {
     required String title,
     required String subtitle,
     required VoidCallback action,
+    Widget? trailing,
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return InkWell(
       onTap: action,
       child: Padding(
-        padding: EdgeInsets.symmetric(
+        padding: const EdgeInsets.symmetric(
             horizontal: 20, vertical: 10
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.start,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(height: subtitle == ""?5:0,),
-                SizedBox(
-                  width: width - 190,
-                  child: Text(
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (!hasSubtitle) const SizedBox(height: 5),
+                  Text(
                     title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                   ),
-                ),
-                subtitle == ""?Container(height: 5,):
-                SizedBox(
-                  width: width - 190,
-                  child: Text(
-                      subtitle
-                  ),
-                ),
-              ],
+                  if (hasSubtitle)
+                    Text(subtitle)
+                  else
+                    const SizedBox(height: 5),
+                ],
+              ),
             ),
+            if (trailing != null) ...[
+              const SizedBox(width: 12),
+              trailing,
+            ],
           ],
         ),
       ),
@@ -258,11 +267,11 @@ class CardContents {
     required Color color,
     required Color colorBG
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return InkWell(
       onTap: action,
       child: Padding(
-        padding: EdgeInsets.symmetric(
+        padding: const EdgeInsets.symmetric(
             horizontal: 20, vertical: 10
         ),
         child: Row(
@@ -270,7 +279,7 @@ class CardContents {
           children: [
             ClipRRect(
               clipBehavior: Clip.hardEdge,
-              borderRadius: BorderRadius.all(Radius.circular(35)),
+              borderRadius: const BorderRadius.all(Radius.circular(35)),
               child: Container(
                 height: 35,
                 width: 35,
@@ -281,27 +290,23 @@ class CardContents {
                 ),
               ),
             ),
-            SizedBox(width: 15,),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(height: subtitle == ""?10:0,),
-                SizedBox(
-                  width: width - 120,
-                  child: Text(
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (!hasSubtitle) const SizedBox(height: 10),
+                  Text(
                     title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                   ),
-                ),
-                subtitle == ""?Container(height: 10,):
-                SizedBox(
-                  width: width - 120,
-                  child: Text(
-                      subtitle
-                  ),
-                ),
-              ],
+                  if (hasSubtitle)
+                    Text(subtitle)
+                  else
+                    const SizedBox(height: 10),
+                ],
+              ),
             ),
           ],
         ),
@@ -312,24 +317,33 @@ class CardContents {
     required String title,
     required String subtitle,
   }) {
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return Padding(
-      padding: EdgeInsets.symmetric(
+      padding: const EdgeInsets.symmetric(
           horizontal: 20, vertical: 10
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Row(
         children: [
-          Container(height: subtitle == ""?10:0,),
-          Text(
-            title,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle == ""?Container(height: 10,):
-          Text(
-            subtitle,
-            overflow: TextOverflow.ellipsis,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (!hasSubtitle) const SizedBox(height: 10),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (hasSubtitle)
+                  Text(
+                    subtitle,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                else
+                  const SizedBox(height: 10),
+              ],
+            ),
           ),
         ],
       ),
@@ -341,38 +355,47 @@ class CardContents {
     String subsubtitle = "",
     double? progress,
   }) {
+    final bool hasSubtitle = subtitle.isNotEmpty;
+    final bool hasSubsubtitle = subsubtitle.isNotEmpty;
     return Padding(
-      padding: EdgeInsets.symmetric(
+      padding: const EdgeInsets.symmetric(
           horizontal: 20, vertical: 10
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(height: subtitle == ""?0:0,),
           Text(
             title,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             overflow: TextOverflow.ellipsis,
           ),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              subtitle == ""?Container():
-              Text(
-                subtitle,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subsubtitle == ""?Container():
-              Text(
-                subsubtitle,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
+          if (hasSubtitle || hasSubsubtitle)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                if (hasSubtitle)
+                  Flexible(
+                    child: Text(
+                      subtitle,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  )
+                else
+                  const SizedBox.shrink(),
+                if (hasSubtitle && hasSubsubtitle) const SizedBox(width: 8),
+                if (hasSubsubtitle)
+                  Flexible(
+                    child: Text(
+                      subsubtitle,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
           Padding(
-            padding: EdgeInsetsGeometry.symmetric(
-              vertical: subtitle == ""?9:5
+            padding: EdgeInsets.symmetric(
+              vertical: !hasSubtitle ? 9 : 5
             ),
             child: LinearProgressIndicator(
               value: (progress == null || progress < 0)
@@ -392,50 +415,46 @@ class CardContents {
     required VoidCallback secondAction,
     required IconData icon
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
-
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return InkWell(
       onTap: action,
       child: Padding(
-        padding: EdgeInsets.symmetric(
+        padding: const EdgeInsets.symmetric(
             horizontal: 20, vertical: 10
         ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(height: subtitle == ""?10:0,),
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                      minWidth: 100,
-                      maxWidth: width - 140
-                  ),
-                  child: Text(
-                    title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+        child: IntrinsicHeight(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (!hasSubtitle) const SizedBox(height: 10),
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (hasSubtitle)
+                      Text(
+                        subtitle,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    else
+                      const SizedBox(height: 10),
+                  ],
                 ),
-                subtitle == ""?Container(height: 10,):
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                      minWidth: 100,
-                      maxWidth: width - 140
-                  ),
-                  child: Text(
-                    subtitle,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            IntrinsicHeight(
-              child: Row(
+              ),
+              const SizedBox(width: 8),
+              Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  VerticalDivider(thickness: 3,radius: BorderRadius.all(Radius.circular(15)),),
+                  const VerticalDivider(
+                    thickness: 3,
+                    radius: BorderRadius.all(Radius.circular(15)),
+                  ),
                   IconButton(
                     icon: Icon(
                       icon,
@@ -445,9 +464,8 @@ class CardContents {
                   ),
                 ],
               ),
-            )
-
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -458,37 +476,33 @@ class CardContents {
     required VoidCallback action,
     required VoidCallback longAction,
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
+    final bool hasSubtitle = subtitle.isNotEmpty;
     return InkWell(
       onTap: action,
       onLongPress: longAction,
       child: Padding(
-        padding: EdgeInsets.symmetric(
+        padding: const EdgeInsets.symmetric(
             horizontal: 20, vertical: 10
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.start,
           children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(height: subtitle == ""?10:0,),
-                SizedBox(
-                  width: width - 70,
-                  child: Text(
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (!hasSubtitle) const SizedBox(height: 10),
+                  Text(
                     title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                   ),
-                ),
-                subtitle == ""?Container(height: 10,):
-                SizedBox(
-                  width: width - 70,
-                  child: Text(
-                    subtitle
-                  ),
-                ),
-              ],
+                  if (hasSubtitle)
+                    Text(subtitle)
+                  else
+                    const SizedBox(height: 10),
+                ],
+              ),
             ),
           ],
         ),
@@ -498,46 +512,63 @@ class CardContents {
   static Widget turn({
     required String title,
     required String subtitle,
-    required VoidCallback action,
-    required ValueChanged<bool> switcher,
+    required VoidCallback? action,
+    required ValueChanged<bool>? switcher,
     required bool value
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
-    return InkWell(
-      onTap: action,
-      child: Padding(
-        padding: const EdgeInsets.only(
-            top: 10,
-            bottom: 10,
-            right: 15,
-            left: 20
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Container(
-              constraints: BoxConstraints(
-                maxWidth: width - 140
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
-                  Text(
-                    subtitle,
-                  ),
-                ],
-              ),
+    final bool isEnabled = switcher != null;
+    return Builder(
+      builder: (context) {
+        final colorScheme = Theme.of(context).colorScheme;
+        return InkWell(
+          onTap: isEnabled ? action : null,
+          child: Padding(
+            padding: const EdgeInsets.only(
+                top: 10,
+                bottom: 10,
+                right: 15,
+                left: 20
             ),
-            Switch(
-              value: value, onChanged: switcher,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                          color: isEnabled
+                              ? null
+                              : colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                      ),
+                      if (subtitle.isNotEmpty)
+                        Text(
+                          subtitle,
+                          style: isEnabled
+                              ? null
+                              : TextStyle(
+                                  color: colorScheme.onSurfaceVariant
+                                      .withValues(alpha: 0.75),
+                                ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Switch(
+                  value: value,
+                  onChanged: switcher,
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
   static Widget addretract({
@@ -556,19 +587,22 @@ class CardContents {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-              ),
-              Text(
-                subtitle,
-              ),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+                if (subtitle.isNotEmpty)
+                  Text(subtitle),
+              ],
+            ),
           ),
+          const SizedBox(width: 8),
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
               IconButton(
                 icon: const Icon(Icons.remove_rounded),
@@ -614,16 +648,15 @@ class text {
     required VoidCallback action,
     required BuildContext context
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     return Padding(
-      padding: EdgeInsetsGeometry.only(
+      padding: const EdgeInsets.only(
           bottom: 50,
           left: 20,
           right: 20,
           top: 10
       ),
       child: SizedBox(
-          width: width - 40,
+          width: double.infinity,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -639,18 +672,19 @@ class text {
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
-              subtitle == ""?Container():const SizedBox(height: 5),
-              subtitle == ""?Container():InkWell(
-                onTap: action,
-                child: Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.bold,
-                      decoration: TextDecoration.underline
+              if (subtitle.isNotEmpty) const SizedBox(height: 5),
+              if (subtitle.isNotEmpty)
+                InkWell(
+                  onTap: action,
+                  child: Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.bold,
+                        decoration: TextDecoration.underline
+                    ),
                   ),
-                ),
-              )
+                )
             ],
           )
       ),
@@ -662,16 +696,15 @@ class text {
     required VoidCallback action,
     required BuildContext context
   }) {
-    double width = (WidgetsBinding.instance.platformDispatcher.views.first.physicalSize / WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio).width;
     return Padding(
-      padding: EdgeInsetsGeometry.only(
+      padding: const EdgeInsets.only(
           bottom: 0,
           left: 20,
           right: 20,
           top: 10
       ),
       child: SizedBox(
-          width: width - 40,
+          width: double.infinity,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -687,18 +720,19 @@ class text {
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
-              subtitle == ""?Container():const SizedBox(height: 5),
-              subtitle == ""?Container():InkWell(
-                onTap: action,
-                child: Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.bold,
-                      decoration: TextDecoration.underline
+              if (subtitle.isNotEmpty) const SizedBox(height: 5),
+              if (subtitle.isNotEmpty)
+                InkWell(
+                  onTap: action,
+                  child: Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.bold,
+                        decoration: TextDecoration.underline
+                    ),
                   ),
-                ),
-              )
+                )
             ],
           )
       ),
@@ -735,67 +769,24 @@ class text {
     );
   }
 
-  static void _showFullScreenImageDialog(BuildContext context, String imagePath) {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black87,
-      builder: (dialogContext) => Dialog.fullscreen(
-        backgroundColor: Colors.black87,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 5.0,
-                child: Center(
-                  child: Image.file(
-                    File(imagePath),
-                    fit: BoxFit.contain,
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              top: 16,
-              right: 16,
-              child: SafeArea(
-                child: IconButton.filledTonal(
-                  icon: const Icon(Icons.close_rounded),
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  static String _dictOrDefault(Dictionary? dict, String key, String fallback) {
+    if (dict == null) return fallback;
+    if (!dict.dictionary.containsKey(dict.locale)) return fallback;
+    final val = dict.value(key);
+    if (val.isEmpty || val == '!!! $key' || val == key) {
+      return fallback;
+    }
+    return val;
   }
 
-  static Widget _buildBubbleImageThumbnail(
-    BuildContext context,
-    String imagePath, {
-    required bool hasTextBelow,
-  }) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: hasTextBelow ? 2.0 : 0.0),
-      child: GestureDetector(
-        onTap: () => _showFullScreenImageDialog(context, imagePath),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 200),
-            child: Image.file(
-              File(imagePath),
-              fit: BoxFit.cover,
-              height: 200,
-            ),
-          ),
-        ),
-      ),
-    );
+  static String _senderOf(dynamic entry) {
+    if (entry is Map) {
+      return (entry['user'] ?? entry['sender'])?.toString() ?? '';
+    }
+    return '';
   }
 
-  static Widget _buildAiMarkdownBubble(BuildContext context, String data) {
+  static MarkdownStyleSheet _buildAiMarkdownStyleSheet(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final codeStyle = (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
@@ -804,7 +795,7 @@ class text {
       color: colorScheme.onSurface,
       backgroundColor: Colors.transparent,
     );
-    final styleSheet = MarkdownStyleSheet.fromTheme(theme).copyWith(
+    return MarkdownStyleSheet.fromTheme(theme).copyWith(
       a: TextStyle(
         color: colorScheme.primary,
         decoration: TextDecoration.underline,
@@ -831,199 +822,195 @@ class text {
         ),
       ),
     );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double availableWidth =
-            constraints.hasBoundedWidth && constraints.maxWidth.isFinite
-                ? constraints.maxWidth
-                : (MediaQuery.maybeSizeOf(context)?.width ?? 400.0);
-        // Reserve card margin (4 + 36 = 40) and inner padding (16 * 2 = 32).
-        final double innerBudget = (availableWidth - 72.0).clamp(0.0, availableWidth);
-        final double aiMaxWidth = availableWidth < 220.0
-            ? innerBudget
-            : (availableWidth * 0.80).clamp(180.0, 560.0).clamp(0.0, innerBudget);
-
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.start,
-          children: [
-            Flexible(
-              child: Card(
-                elevation: 0,
-                margin: const EdgeInsets.only(left: 4.0, right: 36.0, top: 2.0, bottom: 4.0),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                color: colorScheme.surfaceContainerHigh,
-                clipBehavior: Clip.hardEdge,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 12.0,
-                  ),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: aiMaxWidth,
-                      minWidth: 0.0,
-                    ),
-                    child: MarkdownBody(
-                      styleSheet: styleSheet,
-                      onTapLink: (String text, String? href, String title) async {
-                        if (href == null || href.isEmpty) return;
-                        final uri = Uri.tryParse(href);
-                        if (uri != null) {
-                          try {
-                            await launchUrl(
-                              uri,
-                              mode: LaunchMode.externalApplication,
-                            );
-                          } catch (_) {}
-                        }
-                      },
-                      selectable: true,
-                      data: data,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   List<Widget> chatlog({
     required String aiChunk,
+    String aiThoughtChunk = "",
     required String lastUser,
     required List conversation,
     required BuildContext context,
     String? pendingUserImagePath,
     Dictionary? dict,
+    bool isContinuing = false,
+    bool? isLoading,
+    String? assistantAuthor,
+    String? userAuthor,
+    DateTime? streamingMessageTime,
+    DateTime? streamingUserMessageTime,
   }) {
-    final double width = MediaQuery.maybeSizeOf(context)?.width ?? 400.0;
-    final double userMaxWidth = (width * 0.78).clamp(160.0, 560.0);
-    List<Widget> splits = [];
-    final int lastUserIdx = conversation.lastIndexWhere((m) => m["user"] == "User");
-    final int lastGeminiIdx = conversation.lastIndexWhere((m) => m["user"] == "Gemini");
-    for (int i = 0; i < conversation.length; i++) {
-      var line = conversation[i];
+    AIEngine? engine;
+    try {
+      engine = Provider.of<AIEngine>(context, listen: false);
+    } catch (_) {}
 
-      if (line["user"] == "System") {
+    final Dictionary? effectiveDict = dict ?? engine?.dict;
+    final String effectiveThoughtChunk = aiThoughtChunk.isNotEmpty
+        ? aiThoughtChunk
+        : (engine?.currentThoughtChunk ?? "");
+    final bool effectiveIsLoading = isLoading ?? (engine?.isLoading ?? false);
+    final String resolvedAssistantAuthor =
+        (assistantAuthor != null && assistantAuthor.trim().isNotEmpty)
+            ? assistantAuthor.trim()
+            : (engine?.assistantAuthorLabel ?? 'Gemini Nano');
+    final String resolvedUserAuthor =
+        (userAuthor != null && userAuthor.trim().isNotEmpty)
+            ? userAuthor.trim()
+            : _dictOrDefault(effectiveDict, 'chat_author_you', 'You');
+    final DateTime? effectiveAiTime =
+        streamingMessageTime ?? engine?.streamingMessageTime;
+    final DateTime? effectiveUserTime =
+        streamingUserMessageTime ?? engine?.streamingUserMessageTime;
+
+    final String thinkingInProgressLabel = _dictOrDefault(
+      effectiveDict,
+      'thinking_in_progress',
+      'Thinking...',
+    );
+    final String thoughtProcessLabel = _dictOrDefault(
+      effectiveDict,
+      'thought_process',
+      'Thought process',
+    );
+    final String continuingLabel = _dictOrDefault(
+      effectiveDict,
+      'model_continuing',
+      'Continuing response…',
+    );
+    final MarkdownStyleSheet aiStyleSheet = _buildAiMarkdownStyleSheet(context);
+
+    final List<Widget> splits = [];
+    final int lastUserIdx =
+        conversation.lastIndexWhere((m) => _senderOf(m) == "User");
+    final int lastGeminiIdx =
+        conversation.lastIndexWhere((m) => _senderOf(m) == "Gemini");
+
+    for (int i = 0; i < conversation.length; i++) {
+      final rawLine = conversation[i];
+      if (rawLine is! Map) continue;
+      final String sender = _senderOf(rawLine);
+
+      if (sender == "System") {
         // System tool results are attached to the corresponding ToolCallBubble
         continue;
       }
 
-      if (line["user"] == "User") {
-        String userMessage = line["message"]?.toString() ?? "";
-        String? imagePath = line["imagePath"]?.toString();
-        bool hasValidImage = false;
-        if (imagePath != null && imagePath.isNotEmpty) {
+      final ChatMessage parsed = ChatMessage.fromLegacyMap(rawLine);
+      final bool isUser = parsed.isUser;
+      final String rawMsg = parsed.message;
+      final String effectiveAuthor =
+          (parsed.author != null && parsed.author!.trim().isNotEmpty)
+              ? parsed.author!.trim()
+              : (isUser ? resolvedUserAuthor : resolvedAssistantAuthor);
+
+      if (isUser) {
+        bool hasValidImage =
+            parsed.imageBytes != null && parsed.imageBytes!.isNotEmpty;
+        if (!hasValidImage &&
+            parsed.imagePath != null &&
+            parsed.imagePath!.isNotEmpty) {
           try {
-            hasValidImage = File(imagePath).existsSync();
+            hasValidImage = File(parsed.imagePath!).existsSync();
           } catch (_) {
             hasValidImage = false;
           }
         }
-        if (userMessage.isNotEmpty || hasValidImage) {
+        if (rawMsg.isNotEmpty || hasValidImage) {
           splits.add(
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(
-                        bottom: 0,
-                        top: 0
-                    ),
-                    child: Card(
-                      elevation: 0,
-                      color: Theme.of(context).colorScheme.onSecondaryContainer,
-                      clipBehavior: Clip.hardEdge,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10,
-                            horizontal: 15
-                        ),
-                        child: Container(
-                          constraints: BoxConstraints(
-                              maxWidth: userMaxWidth,
-                              minWidth: 0
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (hasValidImage)
-                                _buildBubbleImageThumbnail(
-                                  context,
-                                  imagePath!,
-                                  hasTextBelow: userMessage.isNotEmpty,
-                                ),
-                              if (userMessage.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(
-                                    top: 6.0,
-                                    left: 4.0,
-                                    right: 4.0,
-                                    bottom: 2.0,
-                                  ),
-                                  child: Text(
-                                    userMessage,
-                                    textAlign: TextAlign.start,
-                                    style: TextStyle(
-                                      color: Theme.of(context).colorScheme.onSecondary,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  )
-                ],
-              )
-          );
-        }
-      }
-      if (line["user"] == "Gemini") {
-        String aiMessage = line["message"]?.toString() ?? "";
-        // Only skip trailing duplicate matching the streaming AI chunk
-        if (i == lastGeminiIdx && aiChunk.isNotEmpty && (aiMessage == aiChunk || aiChunk.startsWith(aiMessage))) {
-          continue;
-        }
-        if (aiMessage.isNotEmpty) {
-          final toolCall = _extractToolCall(aiMessage);
-          if (toolCall != null) {
-            String? toolResult;
-            if (i + 1 < conversation.length) {
-              final nextLine = conversation[i + 1];
-              if (nextLine["user"] == "System") {
-                final nextMsg = nextLine["message"]?.toString() ?? "";
-                if (nextMsg.startsWith("[TOOL RESULT:")) {
-                  final match = RegExp(r'^\[TOOL RESULT:\s*([\s\S]*)\]$').firstMatch(nextMsg.trim());
-                  toolResult = match != null ? match.group(1) : nextMsg;
-                } else {
-                  toolResult = nextMsg;
-                }
-              }
-            }
-            splits.add(
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: ToolCallBubble(
-                  toolCall: toolCall,
-                  rawMessage: aiMessage,
-                  toolResult: toolResult,
-                  dict: dict,
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: ChatMessageBubble(
+                showAvatar: false,
+                message: parsed.copyWith(
+                  sender: sender.isNotEmpty ? sender : 'User',
+                  isUser: true,
+                  author: effectiveAuthor,
                 ),
               ),
-            );
-            continue;
-          }
-
-          splits.add(_buildAiMarkdownBubble(context, aiMessage));
+            ),
+          );
         }
+        continue;
+      }
+
+      // Only skip trailing duplicate matching the streaming AI chunk
+      if (i == lastGeminiIdx &&
+          aiChunk.isNotEmpty &&
+          (rawMsg == aiChunk || aiChunk.startsWith(rawMsg))) {
+        continue;
+      }
+
+      final toolCall = rawMsg.isNotEmpty ? _extractToolCall(rawMsg) : null;
+      if (toolCall != null) {
+        String? toolResult;
+        if (i + 1 < conversation.length) {
+          final nextLine = conversation[i + 1];
+          if (nextLine is Map && _senderOf(nextLine) == "System") {
+            final nextMsg = nextLine["message"]?.toString() ?? "";
+            if (nextMsg.startsWith("[TOOL RESULT:")) {
+              final match =
+                  RegExp(r'^\[TOOL RESULT:\s*([\s\S]*)\]$').firstMatch(nextMsg.trim());
+              toolResult = match != null ? match.group(1) : nextMsg;
+            } else {
+              toolResult = nextMsg;
+            }
+          }
+        }
+        splits.add(
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: ChatMessageBubble(
+              showAvatar: false,
+              thoughtProcessLabel: thoughtProcessLabel,
+              thinkingInProgressLabel: thinkingInProgressLabel,
+              markdownStyleSheet: aiStyleSheet,
+              message: parsed.copyWith(
+                sender: sender.isNotEmpty ? sender : 'Gemini',
+                isUser: false,
+                author: effectiveAuthor,
+                message: '',
+              ),
+              customContent: ToolCallBubble(
+                toolCall: toolCall,
+                rawMessage: rawMsg,
+                toolResult: toolResult,
+                dict: effectiveDict,
+                embeddedInBubble: true,
+              ),
+            ),
+          ),
+        );
+        continue;
+      }
+
+      if (rawMsg.isNotEmpty || parsed.hasThoughts) {
+        final bool isActiveLastHistoryAi = isContinuing &&
+            aiChunk.isEmpty &&
+            lastUser.isEmpty &&
+            i == lastGeminiIdx &&
+            i > lastUserIdx;
+        splits.add(
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: ChatMessageBubble(
+              showAvatar: false,
+              thoughtProcessLabel: thoughtProcessLabel,
+              thinkingInProgressLabel: thinkingInProgressLabel,
+              markdownStyleSheet: aiStyleSheet,
+              message: parsed.copyWith(
+                sender: sender.isNotEmpty ? sender : 'Gemini',
+                isUser: false,
+                author: effectiveAuthor,
+                isLoading: isActiveLastHistoryAi,
+                loadingLabel: isActiveLastHistoryAi ? continuingLabel : null,
+                clearLoadingLabel: !isActiveLastHistoryAi,
+              ),
+            ),
+          ),
+        );
       }
     }
+
     bool hasPendingImage = false;
     if (pendingUserImagePath != null && pendingUserImagePath.isNotEmpty) {
       try {
@@ -1037,10 +1024,15 @@ class text {
     // (e.g., during tool execution / synthesis where _handleToolCall committed it prior to tool calls).
     bool isPendingUserCommitted = false;
     if (lastUser.isNotEmpty && lastUserIdx != -1) {
-      final lastUserMsg = conversation[lastUserIdx]["message"]?.toString() ?? "";
+      final lastUserMsg =
+          (conversation[lastUserIdx] as Map)["message"]?.toString() ?? "";
       if (lastUserMsg == lastUser) {
         final hasToolCallOrResult = conversation.sublist(lastUserIdx + 1).any(
-          (m) => m["user"] == "System" || (m["user"] == "Gemini" && _extractToolCall(m["message"]?.toString() ?? "") != null),
+          (m) =>
+              m is Map &&
+              (_senderOf(m) == "System" ||
+                  (_senderOf(m) == "Gemini" &&
+                      _extractToolCall(m["message"]?.toString() ?? "") != null)),
         );
         if (hasToolCallOrResult || lastUserIdx > lastGeminiIdx) {
           isPendingUserCommitted = true;
@@ -1050,80 +1042,99 @@ class text {
 
     if ((lastUser.isNotEmpty || hasPendingImage) && !isPendingUserCommitted) {
       splits.add(
-        Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(
-                  bottom: 0,
-                  top: 0
-              ),
-              child: Card(
-                elevation: 0,
-                color: Theme.of(context).colorScheme.onSecondaryContainer,
-                clipBehavior: Clip.hardEdge,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                      vertical: 10,
-                      horizontal: 15
-                  ),
-                  child: Container(
-                    constraints: BoxConstraints(
-                        maxWidth: userMaxWidth,
-                        minWidth: 0
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (hasPendingImage)
-                          _buildBubbleImageThumbnail(
-                            context,
-                            pendingUserImagePath!,
-                            hasTextBelow: lastUser.isNotEmpty,
-                          ),
-                        if (lastUser.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(
-                              top: 6.0,
-                              left: 4.0,
-                              right: 4.0,
-                              bottom: 2.0,
-                            ),
-                            child: Text(
-                              lastUser,
-                              textAlign: TextAlign.start,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.onSecondary,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            )
-          ],
-        )
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: ChatMessageBubble(
+            showAvatar: false,
+            message: ChatMessage(
+              sender: 'User',
+              author: resolvedUserAuthor,
+              message: lastUser,
+              isUser: true,
+              timestamp: effectiveUserTime,
+              imagePath: hasPendingImage ? pendingUserImagePath : null,
+            ),
+          ),
+        ),
       );
     }
-    if (!(aiChunk == "")) {
-      final streamingTool = _extractToolCall(aiChunk);
-      if (streamingTool != null) {
+
+    final String trimmedLiveThought = effectiveThoughtChunk.trim();
+    final bool hasLiveThought = trimmedLiveThought.isNotEmpty;
+    final bool hasAiChunk = aiChunk.isNotEmpty;
+    final bool isWaitingInitial =
+        effectiveIsLoading && !hasAiChunk && !isContinuing;
+    final bool isActiveContinuing = isContinuing && (isLoading ?? true);
+    final bool hasCommittedAiForContinuation = isContinuing &&
+        !hasAiChunk &&
+        lastUser.isEmpty &&
+        lastGeminiIdx != -1 &&
+        lastGeminiIdx > lastUserIdx;
+    final bool shouldRenderActiveAiBubble = hasAiChunk ||
+        hasLiveThought ||
+        (isWaitingInitial && !hasCommittedAiForContinuation);
+
+    if (shouldRenderActiveAiBubble) {
+      final completeTool = hasAiChunk ? _extractToolCall(aiChunk) : null;
+      if (hasAiChunk &&
+          (completeTool != null || _looksLikeStreamingToolDraft(aiChunk))) {
+        final streamingTool = completeTool ?? _extractPartialToolCall(aiChunk);
         splits.add(
           Padding(
+            key: const ValueKey<String>('active_ai_bubble'),
             padding: const EdgeInsets.symmetric(vertical: 4),
-            child: ToolCallBubble(
-              toolCall: streamingTool,
-              rawMessage: aiChunk,
-              toolResult: null,
-              dict: dict,
+            child: ChatMessageBubble(
+              showAvatar: false,
+              thoughtProcessLabel: thoughtProcessLabel,
+              thinkingInProgressLabel: thinkingInProgressLabel,
+              markdownStyleSheet: aiStyleSheet,
+              message: ChatMessage(
+                sender: 'Gemini',
+                author: resolvedAssistantAuthor,
+                message: '',
+                isUser: false,
+                timestamp: effectiveAiTime,
+                thoughts: hasLiveThought ? trimmedLiveThought : null,
+                isThinkingStreaming: hasLiveThought && !hasAiChunk,
+                isLoading: isActiveContinuing,
+                loadingLabel: isActiveContinuing ? continuingLabel : null,
+              ),
+              customContent: ToolCallBubble(
+                toolCall: streamingTool,
+                rawMessage: aiChunk,
+                toolResult: null,
+                dict: effectiveDict,
+                embeddedInBubble: true,
+              ),
             ),
           ),
         );
       } else {
-        splits.add(_buildAiMarkdownBubble(context, aiChunk));
+        final bool activeBubbleLoading =
+            isWaitingInitial || isActiveContinuing;
+        splits.add(
+          Padding(
+            key: const ValueKey<String>('active_ai_bubble'),
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: ChatMessageBubble(
+              showAvatar: false,
+              thoughtProcessLabel: thoughtProcessLabel,
+              thinkingInProgressLabel: thinkingInProgressLabel,
+              markdownStyleSheet: aiStyleSheet,
+              message: ChatMessage(
+                sender: 'Gemini',
+                author: resolvedAssistantAuthor,
+                message: aiChunk,
+                isUser: false,
+                timestamp: effectiveAiTime,
+                thoughts: hasLiveThought ? trimmedLiveThought : null,
+                isThinkingStreaming: hasLiveThought && !hasAiChunk,
+                isLoading: activeBubbleLoading,
+                loadingLabel: isActiveContinuing ? continuingLabel : null,
+              ),
+            ),
+          ),
+        );
       }
     }
     return splits;
@@ -1132,9 +1143,393 @@ class text {
 
 typedef TextPart = text;
 
+/// Collapsible Material 3 pill/card displaying Gemini Nano's reasoning trace
+/// above the corresponding assistant response.
+class ThoughtProcessBubble extends StatefulWidget {
+  final String thought;
+  final bool isStreaming;
+  final Dictionary? dict;
+
+  const ThoughtProcessBubble({
+    super.key,
+    required this.thought,
+    this.isStreaming = false,
+    this.dict,
+  });
+
+  @override
+  State<ThoughtProcessBubble> createState() => _ThoughtProcessBubbleState();
+}
+
+class _ThoughtProcessBubbleState extends State<ThoughtProcessBubble>
+    with SingleTickerProviderStateMixin {
+  late bool _isExpanded;
+  bool _userToggled = false;
+  late final AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _isExpanded = widget.isStreaming;
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+      lowerBound: 0.45,
+      upperBound: 1.0,
+    );
+    if (widget.isStreaming) {
+      _pulseController.repeat(reverse: true);
+    } else {
+      _pulseController.value = 1.0;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ThoughtProcessBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isStreaming != oldWidget.isStreaming) {
+      if (widget.isStreaming) {
+        _pulseController.repeat(reverse: true);
+      } else {
+        _pulseController.stop();
+        _pulseController.value = 1.0;
+      }
+      if (!_userToggled) {
+        _isExpanded = widget.isStreaming;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final dict = widget.dict;
+
+    final String label = widget.isStreaming
+        ? (dict?.value('thinking_in_progress') ?? 'Thinking...')
+        : (dict?.value('thought_process') ?? 'Thought process');
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final double availableWidth =
+            constraints.hasBoundedWidth && constraints.maxWidth.isFinite
+                ? constraints.maxWidth
+                : (MediaQuery.maybeSizeOf(context)?.width ?? 400.0);
+        // Reserve left (4) + right (36) padding around the bubble.
+        final double innerBudget = (availableWidth - 40.0).clamp(0.0, availableWidth);
+        final double maxBubbleWidth = availableWidth < 220.0
+            ? innerBudget
+            : (availableWidth * 0.80).clamp(180.0, 560.0).clamp(0.0, innerBudget);
+
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(
+              left: 4.0,
+              right: 36.0,
+              top: 2.0,
+              bottom: 2.0,
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+              child: AnimatedSize(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeInOut,
+                alignment: Alignment.topLeft,
+                child: Material(
+                  color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.65),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(
+                      color: widget.isStreaming
+                          ? colorScheme.tertiary.withValues(alpha: 0.45)
+                          : colorScheme.outlineVariant.withValues(alpha: 0.45),
+                      width: 1,
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      setState(() {
+                        _userToggled = true;
+                        _isExpanded = !_isExpanded;
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12.0,
+                        vertical: 8.0,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              FadeTransition(
+                                opacity: _pulseController,
+                                child: Container(
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.tertiaryContainer,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    Icons.psychology_alt_rounded,
+                                    size: 14,
+                                    color: colorScheme.onTertiaryContainer,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: FadeTransition(
+                                  opacity: _pulseController,
+                                  child: Text(
+                                    label,
+                                    style: theme.textTheme.labelLarge?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              AnimatedRotation(
+                                turns: _isExpanded ? 0.5 : 0.0,
+                                duration: const Duration(milliseconds: 200),
+                                child: Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                  size: 18,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (_isExpanded) ...[
+                            const SizedBox(height: 8),
+                            Divider(
+                              height: 1,
+                              thickness: 1,
+                              color: colorScheme.outlineVariant.withValues(alpha: 0.4),
+                            ),
+                            const SizedBox(height: 8),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 240),
+                              child: SingleChildScrollView(
+                                child: SelectableText(
+                                  widget.thought,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Extracts and parses an M3x agentic tool call from [text], if present.
 Map<String, dynamic>? _extractToolCall(String text) {
   return M3xToolCallParser.extract(text);
+}
+
+/// Returns true immediately as soon as [text] begins streaming a JSON/fenced tool draft.
+bool looksLikeStreamingToolDraft(String text) {
+  final trimmed = text.trimLeft();
+  if (trimmed.isEmpty) return false;
+  final lower = trimmed.toLowerCase();
+  if (trimmed.startsWith('{') ||
+      lower.startsWith('```json') ||
+      RegExp(r'^```(?:json)?\s*\{', caseSensitive: false).hasMatch(trimmed)) {
+    return true;
+  }
+  return M3xToolCallParser.looksLikeIncompleteToolCall(text);
+}
+
+bool _looksLikeStreamingToolDraft(String text) =>
+    looksLikeStreamingToolDraft(text);
+
+/// Uses full [M3xToolCallParser.extract] if complete, or regex-extracts partial fields mid-stream.
+Map<String, dynamic> _extractPartialToolCall(String text) {
+  final full = M3xToolCallParser.extract(text);
+  if (full != null) return full;
+
+  final partial = <String, dynamic>{};
+  final toolMatch = RegExp(
+    r'''["'](?:tool|name|method)["']\s*:\s*["']((?:\\.|[^"'\\\r\n])*)["']''',
+  ).firstMatch(text);
+  if (toolMatch != null) {
+    final val = toolMatch.group(1)?.replaceAll(r'\_', '_').replaceAll(r'\"', '"').trim() ?? '';
+    if (val.isNotEmpty) partial['tool'] = val;
+  }
+
+  final descMatch = RegExp(
+    r'''["']description["']\s*:\s*["']((?:\\.|[^"'\\\r\n])*)["']''',
+  ).firstMatch(text);
+  if (descMatch != null) {
+    final val = descMatch.group(1)?.replaceAll(r'\_', '_').replaceAll(r'\"', '"').trim() ?? '';
+    if (val.isNotEmpty) partial['description'] = val;
+  }
+
+  final appMatch = RegExp(
+    r'''["']app["']\s*:\s*["']((?:\\.|[^"'\\\r\n])*)["']''',
+  ).firstMatch(text);
+  if (appMatch != null) {
+    final val = appMatch.group(1)?.replaceAll(r'\_', '_').replaceAll(r'\"', '"').trim() ?? '';
+    if (val.isNotEmpty) partial['app'] = val;
+  }
+
+  return partial;
+}
+
+bool _isVerboseToolDescription(String? desc) {
+  final trimmed = desc?.trim() ?? '';
+  if (trimmed.isEmpty || trimmed.length > 44) return true;
+  final lower = trimmed.toLowerCase();
+  return lower.startsWith('returns ') ||
+      lower.startsWith('checks whether ') ||
+      lower.startsWith('provides ') ||
+      lower.startsWith('retrieves ') ||
+      lower.startsWith('lists ') ||
+      lower.startsWith('searches official ');
+}
+
+String _humanizeToolName(String toolName, {String appName = '', Dictionary? dict}) {
+  final trimmed = toolName.trim();
+  if (trimmed.isEmpty) {
+    return dict?.value('tool_selecting') ?? 'Selecting a tool...';
+  }
+  final lower = trimmed.toLowerCase();
+  if (lower == 'query_aicore_documentation') {
+    return 'Searching documentation';
+  }
+  if (lower == 'get_battery_status') {
+    return dict?.value('tool_checking_battery') ?? 'Checking battery';
+  }
+  if (lower == 'wikipedia_summary') {
+    return dict?.value('tool_searching_wikipedia') ?? 'Searching Wikipedia';
+  }
+  if (lower == 'wikipedia_details') {
+    return dict?.value('tool_reading_wikipedia') ?? 'Reading Wikipedia';
+  }
+  if (lower == 'duckduckgo_search') {
+    return dict?.value('tool_searching_duckduckgo') ?? 'Searching DuckDuckGo';
+  }
+  if (lower == 'weather_forecast') {
+    return dict?.value('tool_checking_weather') ?? 'Checking weather';
+  }
+
+  final normalized = trimmed
+      .replaceAllMapped(RegExp(r'([a-z0-9])([A-Z])'), (m) => '${m[1]}_${m[2]}')
+      .toLowerCase();
+  final rawTokens = normalized
+      .split(RegExp(r'[_\-.:/\s]+'))
+      .where((t) => t.isNotEmpty)
+      .toList();
+
+  final appSlug = appName.trim().toLowerCase().split('.').last;
+  final prefixes = <String>{
+    'alerts',
+    'demo',
+    'ptk',
+    'paios',
+    'geminilocal',
+    'ggscanus',
+    'binotool',
+    'the2k48',
+    'm3x',
+    'mesh',
+    'app',
+    if (appSlug.isNotEmpty) appSlug,
+  };
+  while (rawTokens.length > 1 && prefixes.contains(rawTokens.first)) {
+    rawTokens.removeAt(0);
+  }
+  if (rawTokens.isEmpty) {
+    return dict?.value('tool_selecting') ?? 'Selecting a tool...';
+  }
+
+  const verbMap = <String, String>{
+    'get': 'Checking',
+    'check': 'Checking',
+    'fetch': 'Fetching',
+    'read': 'Reading',
+    'list': 'Listing',
+    'search': 'Searching',
+    'query': 'Searching',
+    'find': 'Finding',
+    'run': 'Running',
+    'exec': 'Running',
+    'execute': 'Running',
+    'create': 'Creating',
+    'add': 'Adding',
+    'update': 'Updating',
+    'set': 'Setting',
+    'delete': 'Deleting',
+    'remove': 'Removing',
+    'sync': 'Syncing',
+    'refresh': 'Refreshing',
+    'open': 'Opening',
+    'launch': 'Opening',
+    'toggle': 'Toggling',
+    'analyze': 'Analyzing',
+    'inspect': 'Inspecting',
+    'ping': 'Pinging',
+    'send': 'Sending',
+  };
+  const listAdjectives = <String>{
+    'active',
+    'all',
+    'open',
+    'recent',
+    'pending',
+    'enabled',
+    'installed',
+    'available',
+  };
+
+  final first = rawTokens.first;
+  final mappedVerb = verbMap[first];
+  if (mappedVerb != null) {
+    final rest = rawTokens.skip(1).take(3).toList();
+    if (rest.isEmpty) {
+      return first == 'ping' ? 'Pinging service' : '$mappedVerb status';
+    }
+    if (first == 'list' && rest.length == 1 && listAdjectives.contains(rest[0])) {
+      return '$mappedVerb ${rest[0]} items';
+    }
+    return '$mappedVerb ${rest.join(' ')}';
+  }
+
+  final words = rawTokens.take(4).toList();
+  final firstWord = words.first;
+  final capitalized = '${firstWord[0].toUpperCase()}${firstWord.substring(1)}';
+  return words.length > 1 ? '$capitalized ${words.skip(1).join(' ')}' : capitalized;
 }
 
 class _ParsedToolResult {
@@ -1249,6 +1644,7 @@ class ToolCallBubble extends StatefulWidget {
   final String rawMessage;
   final String? toolResult;
   final Dictionary? dict;
+  final bool embeddedInBubble;
 
   const ToolCallBubble({
     super.key,
@@ -1256,6 +1652,7 @@ class ToolCallBubble extends StatefulWidget {
     required this.rawMessage,
     this.toolResult,
     this.dict,
+    this.embeddedInBubble = false,
   });
 
   @override
@@ -1329,11 +1726,14 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
     final colorScheme = theme.colorScheme;
     final dict = widget.dict;
 
-    final toolName = (widget.toolCall['tool'] ??
+    final rawToolName = (widget.toolCall['tool'] ??
             widget.toolCall['name'] ??
             widget.toolCall['method'] ??
-            'tool')
-        .toString();
+            '')
+        .toString()
+        .trim();
+    final toolName = rawToolName.isEmpty ? 'tool' : rawToolName;
+    final appName = (widget.toolCall['app'] ?? '').toString().trim();
     final arguments = _extractArguments(
       widget.toolCall['arguments'] ??
           widget.toolCall['params'] ??
@@ -1344,24 +1744,19 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
 
     final IconData toolIcon = parsedResult.isError
         ? Icons.error_outline_rounded
-        : (toolName == 'query_aicore_documentation'
+        : (rawToolName == 'query_aicore_documentation'
             ? Icons.menu_book_rounded
-            : (toolName.contains('battery')
+            : (rawToolName.contains('battery')
                 ? Icons.battery_charging_full_rounded
                 : Icons.build_circle_outlined));
 
     final String title;
-    if (desc != null && desc.isNotEmpty) {
-      title = desc;
-    } else if (toolName == 'query_aicore_documentation') {
-      final query = arguments['query'] ?? arguments['topic'] ?? arguments['q'] ?? 'AICore';
-      final template = dict?.value('tool_reading_docs') ?? "Reading documentation for '%s'";
-      title = template.contains('%s') ? template.replaceAll('%s', query.toString()) : "$template ($query)";
-    } else if (toolName == 'get_battery_status') {
-      title = dict?.value('tool_checking_battery') ?? "Checking battery status";
+    if (!_isVerboseToolDescription(desc)) {
+      title = desc!;
+    } else if (rawToolName.isEmpty) {
+      title = dict?.value('tool_selecting') ?? 'Selecting a tool...';
     } else {
-      final template = dict?.value('tool_using') ?? "Using tool: %s";
-      title = template.contains('%s') ? template.replaceAll('%s', toolName) : "$template: $toolName";
+      title = _humanizeToolName(rawToolName, appName: appName, dict: dict);
     }
 
     final Color badgeBg = parsedResult.isError
@@ -1378,6 +1773,157 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
     final String resultLabel = parsedResult.isError && parsedResult.errorCode != null
         ? '$resultLabelBase (${parsedResult.errorCode})'
         : resultLabelBase;
+
+    final Widget headerRow = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: badgeBg,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            toolIcon,
+            size: 16,
+            color: badgeFg,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Flexible(
+          fit: FlexFit.loose,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (parsedResult.isError &&
+                  parsedResult.errorMessage != null &&
+                  parsedResult.errorMessage!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    parsedResult.errorCode != null
+                        ? '[${parsedResult.errorCode}] ${parsedResult.errorMessage}'
+                        : parsedResult.errorMessage!,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colorScheme.error,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        AnimatedRotation(
+          turns: _isExpanded ? 0.5 : 0.0,
+          duration: const Duration(milliseconds: 200),
+          child: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 20,
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+
+    final Widget innerContent = Padding(
+      padding: widget.embeddedInBubble
+          ? EdgeInsets.zero
+          : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          headerRow,
+          if (_isExpanded) ...[
+            SizedBox(height: widget.embeddedInBubble ? 10 : 12),
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: colorScheme.outlineVariant.withValues(alpha: 0.4),
+            ),
+            const SizedBox(height: 10),
+
+            // Tool Request
+            Text(
+              dict?.value('tool_request') ?? "Tool Request",
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: colorScheme.primary,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 4),
+            _buildCodePanel(
+              backgroundColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+              borderColor: colorScheme.outlineVariant.withValues(alpha: 0.3),
+              textColor: colorScheme.onSurface,
+              content: _formatJson({
+                'tool': toolName,
+                if (widget.toolCall['app'] != null) 'app': widget.toolCall['app'],
+                if (desc != null && desc.isNotEmpty) 'description': desc,
+                'arguments': arguments,
+              }),
+            ),
+
+            // Tool Result (if present)
+            if (parsedResult.hasResult) ...[
+              const SizedBox(height: 10),
+              Text(
+                resultLabel,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: parsedResult.isError
+                      ? colorScheme.error
+                      : colorScheme.secondary,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+              _buildCodePanel(
+                backgroundColor: parsedResult.isError
+                    ? colorScheme.errorContainer.withValues(alpha: 0.45)
+                    : colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+                borderColor: parsedResult.isError
+                    ? colorScheme.error.withValues(alpha: 0.4)
+                    : colorScheme.outlineVariant.withValues(alpha: 0.3),
+                textColor: parsedResult.isError
+                    ? colorScheme.onErrorContainer
+                    : colorScheme.onSurface,
+                content: parsedResult.displayText,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+
+    if (widget.embeddedInBubble) {
+      return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            HapticFeedback.lightImpact();
+            setState(() {
+              _isExpanded = !_isExpanded;
+            });
+          },
+          child: innerContent,
+        ),
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1415,137 +1961,7 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
                       _isExpanded = !_isExpanded;
                     });
                   },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Collapsed Row (Always visible)
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: badgeBg,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                toolIcon,
-                                size: 16,
-                                color: badgeFg,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    title,
-                                    style: theme.textTheme.bodyMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                      color: colorScheme.onSurface,
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  if (parsedResult.isError &&
-                                      parsedResult.errorMessage != null &&
-                                      parsedResult.errorMessage!.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(
-                                        parsedResult.errorCode != null
-                                            ? '[${parsedResult.errorCode}] ${parsedResult.errorMessage}'
-                                            : parsedResult.errorMessage!,
-                                        style: theme.textTheme.labelSmall?.copyWith(
-                                          color: colorScheme.error,
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            AnimatedRotation(
-                              turns: _isExpanded ? 0.5 : 0.0,
-                              duration: const Duration(milliseconds: 200),
-                              child: Icon(
-                                Icons.keyboard_arrow_down_rounded,
-                                size: 20,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        // Expanded Details
-                        if (_isExpanded) ...[
-                          const SizedBox(height: 12),
-                          Divider(
-                            height: 1,
-                            thickness: 1,
-                            color: colorScheme.outlineVariant.withValues(alpha: 0.4),
-                          ),
-                          const SizedBox(height: 10),
-
-                          // Tool Request
-                          Text(
-                            dict?.value('tool_request') ?? "Tool Request",
-                            style: theme.textTheme.labelSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: colorScheme.primary,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          _buildCodePanel(
-                            backgroundColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
-                            borderColor: colorScheme.outlineVariant.withValues(alpha: 0.3),
-                            textColor: colorScheme.onSurface,
-                            content: _formatJson({
-                              'tool': toolName,
-                              if (widget.toolCall['app'] != null) 'app': widget.toolCall['app'],
-                              if (desc != null && desc.isNotEmpty) 'description': desc,
-                              'arguments': arguments,
-                            }),
-                          ),
-
-                          // Tool Result (if present)
-                          if (parsedResult.hasResult) ...[
-                            const SizedBox(height: 10),
-                            Text(
-                              resultLabel,
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color: parsedResult.isError
-                                    ? colorScheme.error
-                                    : colorScheme.secondary,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            _buildCodePanel(
-                              backgroundColor: parsedResult.isError
-                                  ? colorScheme.errorContainer.withValues(alpha: 0.45)
-                                  : colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
-                              borderColor: parsedResult.isError
-                                  ? colorScheme.error.withValues(alpha: 0.4)
-                                  : colorScheme.outlineVariant.withValues(alpha: 0.3),
-                              textColor: parsedResult.isError
-                                  ? colorScheme.onErrorContainer
-                                  : colorScheme.onSurface,
-                              content: parsedResult.displayText,
-                            ),
-                          ],
-                        ],
-                      ],
-                    ),
-                  ),
+                  child: innerContent,
                 ),
               ),
             ),

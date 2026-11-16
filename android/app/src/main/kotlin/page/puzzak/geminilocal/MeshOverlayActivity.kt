@@ -1,6 +1,7 @@
 package page.puzzak.geminilocal
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -10,6 +11,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -18,9 +20,11 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -38,6 +42,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -49,15 +54,17 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.Keep
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.StreamingCallback
+import com.google.mlkit.genai.prompt.GenerateContentRequest
 import com.google.mlkit.genai.prompt.GenerateContentResponse
-import com.google.mlkit.genai.prompt.Generation
-import com.google.mlkit.genai.prompt.ImagePart
-import com.google.mlkit.genai.prompt.TextPart
-import com.google.mlkit.genai.prompt.generateContentRequest
 import java.io.File
 import java.lang.ref.WeakReference
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
@@ -68,6 +75,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onCompletion
@@ -98,6 +106,7 @@ class MeshOverlayActivity : Activity() {
     companion object {
         private const val TAG = "MeshOverlayActivity"
         private const val REQUEST_CODE_BUBBLE_IMAGE = 0x4249
+        private const val REQUEST_CODE_BUBBLE_CAMERA = 0x424A
         private const val MAX_DOWNSAMPLE_DIMENSION = 768
         private const val ASSIST_CACHE_TTL_MS = 1500L
         private const val MAX_EXTERNAL_TOOL_SCHEMA_CHARS = 3500
@@ -135,9 +144,6 @@ class MeshOverlayActivity : Activity() {
 
         /** Inner card vertical padding in dp */
         const val CARD_PADDING_VERTICAL_DP = 14
-
-        @Volatile
-        private var lastGreetingPhrase: String? = null
         // =========================================================================
 
         @Keep
@@ -272,11 +278,18 @@ class MeshOverlayActivity : Activity() {
 
     private val activityScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeStreamJob: Job? = null
+    private var visualSummaryJob: Job? = null
+    @Volatile
+    private var cachedResolvedClient: PaiosModelHelper.ResolvedModelClient? = null
+    private val modelClientLock = Any()
+    @Volatile
+    private var overlayTurnSequence: Long = 0L
     private var callbackFired = false
     private var callId: Any = "overlay-${System.currentTimeMillis()}"
     private var isInteractiveMode = false
     private var isLaunchingImagePicker = false
     private var isDismissing = false
+    private var skipPendingArchiveOnDismiss = false
     private var isSheetExpanded = false
     private var activeSheetAnimator: android.animation.ValueAnimator? = null
     private var lastLaunchTimestampMs = 0L
@@ -294,8 +307,10 @@ class MeshOverlayActivity : Activity() {
     // Interactive state & views
     private var currentBitmap: Bitmap? = null
     private val attachedBitmaps = mutableListOf<Bitmap>()
+    private val userBitmaps = mutableListOf<Bitmap>()
     private var activeSessionBitmap: Bitmap? = null
     private var screenContextBitmap: Bitmap? = null
+    private var pendingCameraPhotoFile: File? = null
     private var downsampleSetting: Boolean = true
     private val maxImagesAllowed: Int
         get() = if (downsampleSetting) 5 else 3
@@ -304,6 +319,7 @@ class MeshOverlayActivity : Activity() {
     private var contextData: String = ""
     private var conversationHistoryPrompt: String = ""
     private var visualContextMemory: String = ""
+    private var activeVisualNote: String = ""
     private var lastResponseText: String = ""
     private val sessionMessages = mutableListOf<JSONObject>()
 
@@ -442,7 +458,6 @@ class MeshOverlayActivity : Activity() {
     private var imagePreviewLabel: TextView? = null
     private var outputScrollView: ScrollView? = null
     private var messagesContainer: LinearLayout? = null
-    private var emptyStateCard: LinearLayout? = null
     private var sheetProgressBar: ProgressBar? = null
     private var promptInput: EditText? = null
     private var currentScrollMaxHeightPx: Int = 0
@@ -569,17 +584,26 @@ class MeshOverlayActivity : Activity() {
 
     private fun handleIncomingIntent(launchIntent: Intent) {
         activeStreamJob?.cancel()
+        visualSummaryJob?.cancel()
+        overlayTurnSequence++
         isDismissing = false
+        skipPendingArchiveOnDismiss = false
         lastLaunchTimestampMs = System.currentTimeMillis()
 
         // Reset isolated session context on every hotkey / assist invocation
         conversationHistoryPrompt = ""
         visualContextMemory = ""
+        activeVisualNote = ""
         contextData = ""
         currentBitmap = null
         attachedBitmaps.clear()
+        userBitmaps.clear()
         activeSessionBitmap = null
         screenContextBitmap = null
+        pendingCameraPhotoFile?.let { file ->
+            try { if (file.exists()) file.delete() } catch (_: Exception) {}
+        }
+        pendingCameraPhotoFile = null
         lastResponseText = ""
         sessionMessages.clear()
 
@@ -692,35 +716,104 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
+    private fun isSystemAssistScreenshotEnabled(): Boolean {
+        return try {
+            Settings.Secure.getInt(contentResolver, "assist_screenshot_enabled", 1) == 1
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun isSystemAssistStructureEnabled(): Boolean {
+        return try {
+            Settings.Secure.getInt(contentResolver, "assist_structure_enabled", 1) == 1
+        } catch (_: Exception) {
+            true
+        }
+    }
+
     /**
      * Called when `PaiosVoiceInteractionSession` receives a system screenshot from the OS.
-     * Scales and converts the bitmap on `Dispatchers.IO` so the UI thread never drops frames.
+     * Strips system status bar, navigation bar, and display cutout insets, then scales and
+     * converts the bitmap on `Dispatchers.IO` so the UI thread never drops frames.
      */
     fun onSystemAssistScreenshotAvailable(bitmap: Bitmap) {
-        if (!isInteractiveMode) return
+        if (!isInteractiveMode ||
+            !isSystemAssistScreenshotEnabled() ||
+            rawCallerPackage.equals(packageName, ignoreCase = true)
+        ) {
+            return
+        }
         downsampleSetting = resolveDownsampleSetting()
+        val windowMetrics = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                windowManager.currentWindowMetrics
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        val boundsW = windowMetrics?.bounds?.width() ?: 0
+        val boundsH = windowMetrics?.bounds?.height() ?: 0
+        val sysInsets = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && windowMetrics != null) {
+            windowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                WindowInsets.Type.statusBars() or
+                    WindowInsets.Type.navigationBars() or
+                    WindowInsets.Type.displayCutout()
+            )
+        } else {
+            null
+        }
+        val insetLeft = sysInsets?.left ?: 0
+        val insetTop = sysInsets?.top ?: 0
+        val insetRight = sysInsets?.right ?: 0
+        val insetBottom = sysInsets?.bottom ?: 0
+
         activityScope.launch {
             val processed = withContext(Dispatchers.IO) {
                 try {
-                    val softBmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        bitmap.config == Bitmap.Config.HARDWARE
+                    val softBmp = if ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                            bitmap.config == Bitmap.Config.HARDWARE) ||
+                        bitmap.config != Bitmap.Config.ARGB_8888
                     ) {
                         bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: bitmap
                     } else {
                         bitmap
                     }
-                    if (downsampleSetting &&
-                        (softBmp.width > MAX_DOWNSAMPLE_DIMENSION || softBmp.height > MAX_DOWNSAMPLE_DIMENSION)
-                    ) {
-                        val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(softBmp.width, softBmp.height).toFloat()
-                        Bitmap.createScaledBitmap(
+                    val cropRect = PaiosModelHelper.computeInsetCropRect(
+                        bitmapWidth = softBmp.width,
+                        bitmapHeight = softBmp.height,
+                        insetLeft = insetLeft,
+                        insetTop = insetTop,
+                        insetRight = insetRight,
+                        insetBottom = insetBottom,
+                        boundsWidth = boundsW,
+                        boundsHeight = boundsH
+                    )
+                    val croppedBmp = if (cropRect != null) {
+                        Bitmap.createBitmap(
                             softBmp,
-                            (softBmp.width * scale).toInt().coerceAtLeast(1),
-                            (softBmp.height * scale).toInt().coerceAtLeast(1),
-                            true
+                            cropRect.left,
+                            cropRect.top,
+                            cropRect.width,
+                            cropRect.height
                         )
                     } else {
                         softBmp
+                    }
+                    if (downsampleSetting &&
+                        (croppedBmp.width > MAX_DOWNSAMPLE_DIMENSION || croppedBmp.height > MAX_DOWNSAMPLE_DIMENSION)
+                    ) {
+                        val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(croppedBmp.width, croppedBmp.height).toFloat()
+                        Bitmap.createScaledBitmap(
+                            croppedBmp,
+                            (croppedBmp.width * scale).toInt().coerceAtLeast(1),
+                            (croppedBmp.height * scale).toInt().coerceAtLeast(1),
+                            true
+                        )
+                    } else {
+                        croppedBmp
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Error scaling assist screenshot: ${e.message}")
@@ -728,7 +821,9 @@ class MeshOverlayActivity : Activity() {
                 }
             }
             withContext(Dispatchers.Main) {
-                attachScreenContext(processed)
+                if (!rawCallerPackage.equals(packageName, ignoreCase = true)) {
+                    attachScreenContext(processed)
+                }
             }
         }
     }
@@ -738,6 +833,7 @@ class MeshOverlayActivity : Activity() {
      */
     fun onSystemAssistContextAvailable(callerPkg: String, screenText: String) {
         if (!isInteractiveMode) return
+        val structureEnabled = isSystemAssistStructureEnabled()
         val defaultAssist = tr("assistant_context_default")
         if (callerPkg.isNotBlank() && callerPkg != "Screen") {
             if (rawCallerPackage.isBlank()) {
@@ -748,7 +844,17 @@ class MeshOverlayActivity : Activity() {
                 callerName = formatShortCaller(callerPkg)
             }
         }
-        if (screenText.isNotBlank() && !contextData.contains(screenText.take(60))) {
+        if (rawCallerPackage.equals(packageName, ignoreCase = true)) {
+            screenContextBitmap?.let { existingScreenBmp ->
+                attachedBitmaps.remove(existingScreenBmp)
+                if (currentBitmap === existingScreenBmp) {
+                    currentBitmap = userBitmaps.firstOrNull()
+                }
+                screenContextBitmap = null
+                renderAttachedImagesPreview()
+            }
+        }
+        if (structureEnabled && screenText.isNotBlank() && !contextData.contains(screenText.take(60))) {
             contextData = if (contextData.isBlank()) {
                 "Screen Content ($callerName):\n$screenText"
             } else {
@@ -759,8 +865,12 @@ class MeshOverlayActivity : Activity() {
     }
 
     private fun updateContextBadgeUI() {
-        val hasImage = attachedBitmaps.isNotEmpty() || currentBitmap != null
-        val hasContext = contextData.isNotBlank()
+        val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+        val hasImage = userBitmaps.isNotEmpty() ||
+            (!isSelfCaller && isSystemAssistScreenshotEnabled() && screenContextBitmap != null) ||
+            (currentBitmap != null && currentBitmap !== screenContextBitmap)
+        val hasContext = contextData.isNotBlank() &&
+            (isSystemAssistStructureEnabled() || contextData.contains("Live Mesh Telemetry:"))
         val visionStr = tr("assistant_context_vision")
         val contextStr = tr("assistant_context_data")
         val label = when {
@@ -778,6 +888,7 @@ class MeshOverlayActivity : Activity() {
      * environment/telemetry context without cold-spawning unrelated background apps.
      */
     private fun discoverLiveMeshContext(targetPkg: String = rawCallerPackage) {
+        if (!isMeshEnabledInPrefs()) return
         val candidatePkg = targetPkg.trim()
         if (candidatePkg.isEmpty() ||
             candidatePkg == packageName ||
@@ -862,9 +973,44 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
+    private fun applyExifOrientation(bitmap: Bitmap, exif: ExifInterface?): Bitmap {
+        if (exif == null) return bitmap
+        val orientation = exif.getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            else -> return bitmap
+        }
+        return try {
+            val transformed = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (transformed !== bitmap) {
+                bitmap.recycle()
+            }
+            transformed
+        } catch (e: Exception) {
+            Log.w(TAG, "EXIF orientation transform failed: ${e.message}")
+            bitmap
+        }
+    }
+
     /**
-     * Decodes a Bitmap from [imageUriStr] or [imageBase64] and optionally downsamples
-     * so the longest edge is at most [MAX_DOWNSAMPLE_DIMENSION] (768px).
+     * Decodes a Bitmap from [imageUriStr] or [imageBase64] with EXIF orientation correction
+     * and optionally downsamples so the longest edge is at most [MAX_DOWNSAMPLE_DIMENSION] (768px).
      */
     private fun decodeVisualBitmap(
         imageBase64: String?,
@@ -872,15 +1018,27 @@ class MeshOverlayActivity : Activity() {
         downsample: Boolean
     ): Bitmap? {
         try {
+            var exif: ExifInterface? = null
             val rawBitmap: Bitmap = when {
                 !imageUriStr.isNullOrBlank() -> {
                     if (imageUriStr.startsWith("content://") || imageUriStr.startsWith("file://")) {
-                        contentResolver.openInputStream(Uri.parse(imageUriStr))?.use {
+                        val parsedUri = Uri.parse(imageUriStr)
+                        exif = try {
+                            contentResolver.openInputStream(parsedUri)?.use { ExifInterface(it) }
+                        } catch (_: Exception) {
+                            null
+                        }
+                        contentResolver.openInputStream(parsedUri)?.use {
                             BitmapFactory.decodeStream(it)
                         }
                     } else {
                         val file = File(imageUriStr)
                         if (file.exists()) {
+                            exif = try {
+                                ExifInterface(file.absolutePath)
+                            } catch (_: Exception) {
+                                null
+                            }
                             BitmapFactory.decodeFile(file.absolutePath)
                         } else {
                             null
@@ -895,16 +1053,96 @@ class MeshOverlayActivity : Activity() {
                 else -> null
             } ?: return null
 
-            if (downsample && (rawBitmap.width > MAX_DOWNSAMPLE_DIMENSION || rawBitmap.height > MAX_DOWNSAMPLE_DIMENSION)) {
-                val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(rawBitmap.width, rawBitmap.height).toFloat()
-                val newW = (rawBitmap.width * scale).toInt().coerceAtLeast(1)
-                val newH = (rawBitmap.height * scale).toInt().coerceAtLeast(1)
-                return Bitmap.createScaledBitmap(rawBitmap, newW, newH, true)
+            val orientedBitmap = applyExifOrientation(rawBitmap, exif)
+            if (downsample && (orientedBitmap.width > MAX_DOWNSAMPLE_DIMENSION || orientedBitmap.height > MAX_DOWNSAMPLE_DIMENSION)) {
+                val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(orientedBitmap.width, orientedBitmap.height).toFloat()
+                val newW = (orientedBitmap.width * scale).toInt().coerceAtLeast(1)
+                val newH = (orientedBitmap.height * scale).toInt().coerceAtLeast(1)
+                return Bitmap.createScaledBitmap(orientedBitmap, newW, newH, true)
             }
-            return rawBitmap
+            return orientedBitmap
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decode visual context bitmap: ${e.message}", e)
             return null
+        }
+    }
+
+    private suspend fun getOverlayResolvedClient(): PaiosModelHelper.ResolvedModelClient {
+        val stage = PaiosModelHelper.getModelReleaseStage(this)
+        val pref = PaiosModelHelper.getModelPreference(this)
+        val existing = synchronized(modelClientLock) { cachedResolvedClient }
+        if (existing != null &&
+            existing.requestedStage == stage &&
+            existing.requestedPreference == pref &&
+            existing.statusCode == FeatureStatus.AVAILABLE
+        ) {
+            return existing
+        }
+        val fresh = PaiosModelHelper.resolveClient(
+            requestedStage = stage,
+            requestedPreference = pref,
+            allowDownloadable = false
+        )
+        val oldModel = synchronized(modelClientLock) {
+            val prev = cachedResolvedClient?.model
+            cachedResolvedClient = fresh
+            if (prev !== fresh.model) prev else null
+        }
+        if (oldModel != null) {
+            runCatching { oldModel.close() }
+        }
+        return fresh
+    }
+
+    private fun shouldEnableOverlayThinking(resolved: PaiosModelHelper.ResolvedModelClient): Boolean {
+        if (!resolved.capabilities.isThinkingModeAvailable) return false
+        if (resolved.capabilities.isNanoV4 || resolved.capabilities.isThinkingModeAvailable) {
+            return true
+        }
+        return PaiosModelHelper.getEnableThinking(this, defaultValue = false)
+    }
+
+    private suspend fun generateOneShotWithPolicyFallback(
+        resolved: PaiosModelHelper.ResolvedModelClient,
+        promptText: String,
+        extraContextData: String,
+        bitmap: Bitmap?
+    ): GenerateContentResponse {
+        val effectivePrompt = if (extraContextData.isNotBlank()) {
+            "$promptText\n\nContext:\n$extraContextData"
+        } else {
+            promptText
+        }
+        val request = PaiosModelHelper.buildRequest(
+            prompt = effectivePrompt,
+            instructions = null,
+            image = bitmap,
+            maxTokens = null,
+            temperature = null,
+            enableThinking = false,
+            useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+            useThinkingCapability = false
+        )
+        return try {
+            resolved.model.generateContent(request)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            if (extraContextData.isNotBlank() && PaiosModelHelper.isPolicyCheckException(e)) {
+                Log.w(TAG, "[POLICY FALLBACK RETRY] Headless RPC retrying without passive context")
+                val fallbackRequest = PaiosModelHelper.buildRequest(
+                    prompt = promptText,
+                    instructions = null,
+                    image = bitmap,
+                    maxTokens = null,
+                    temperature = null,
+                    enableThinking = false,
+                    useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                    useThinkingCapability = false
+                )
+                resolved.model.generateContent(fallbackRequest)
+            } else {
+                throw e
+            }
         }
     }
 
@@ -939,18 +1177,13 @@ class MeshOverlayActivity : Activity() {
             try {
                 if (methodName == "query_local_ai" || (methodName.isEmpty() && promptText.isNotEmpty())) {
                     val bitmap = decodeVisualBitmap(imageBase64, imageUri, downsample)
-                    val effectivePrompt = if (contextData.isNotBlank()) {
-                        "$promptText\n\nContext:\n$contextData"
-                    } else {
-                        promptText
-                    }
-                    val generativeModel = Generation.getClient()
-                    val request = if (bitmap != null) {
-                        generateContentRequest(ImagePart(bitmap), TextPart(effectivePrompt)) {}
-                    } else {
-                        generateContentRequest(TextPart(effectivePrompt)) {}
-                    }
-                    val response: GenerateContentResponse = generativeModel.generateContent(request)
+                    val resolved = getOverlayResolvedClient()
+                    val response: GenerateContentResponse = generateOneShotWithPolicyFallback(
+                        resolved = resolved,
+                        promptText = promptText,
+                        extraContextData = contextData,
+                        bitmap = bitmap
+                    )
                     val text = response.candidates.firstOrNull()?.text ?: ""
 
                     val resultObj = JSONObject().apply {
@@ -1135,22 +1368,17 @@ class MeshOverlayActivity : Activity() {
             try {
                 if (methodName == "query_local_ai" || (methodName.isEmpty() && promptText.isNotEmpty())) {
                     val bitmap = decodeVisualBitmap(imageBase64, imageUri, downsample)
-                    val effectivePrompt = if (contextData.isNotBlank()) {
-                        "$promptText\n\nContext:\n$contextData"
-                    } else {
-                        promptText
-                    }
                     Log.d(
                         TAG,
-                        "[INFERENCE START] Prompt length: ${effectivePrompt.length} | Vision: ${bitmap != null}"
+                        "[INFERENCE START] Prompt length: ${promptText.length} | Context length: ${contextData.length} | Vision: ${bitmap != null}"
                     )
-                    val generativeModel = Generation.getClient()
-                    val request = if (bitmap != null) {
-                        generateContentRequest(ImagePart(bitmap), TextPart(effectivePrompt)) {}
-                    } else {
-                        generateContentRequest(TextPart(effectivePrompt)) {}
-                    }
-                    val response: GenerateContentResponse = generativeModel.generateContent(request)
+                    val resolved = getOverlayResolvedClient()
+                    val response: GenerateContentResponse = generateOneShotWithPolicyFallback(
+                        resolved = resolved,
+                        promptText = promptText,
+                        extraContextData = contextData,
+                        bitmap = bitmap
+                    )
                     val text = response.candidates.firstOrNull()?.text ?: ""
                     Log.d(TAG, "[INFERENCE COMPLETE] Generated ${text.length} chars")
 
@@ -1217,175 +1445,54 @@ class MeshOverlayActivity : Activity() {
     }
 
     private fun resolveActivePersonaContent(): String {
+        var rawContent = ""
         try {
             val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
             val prefContent = prefs.getString("flutter.defaultPromptContent", null)
             if (!prefContent.isNullOrBlank()) {
-                return prefContent.trim()
+                rawContent = prefContent.trim()
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read defaultPromptContent from prefs: ${e.message}")
         }
 
-        val personaId = resolveActivePersona()
-        try {
-            val assetPath = "flutter_assets/assets/prompts/$personaId.md"
-            val content = assets.open(assetPath).bufferedReader().use { it.readText() }.trim()
-            if (content.isNotBlank()) {
-                return content
-            }
-        } catch (_: Exception) {}
-
-        return ""
-    }
-
-    private fun getPersonaGreeting(persona: String, lang: String): String {
-        val isUk = lang == "uk"
-        val isDe = lang == "de"
-        val isTr = lang == "tr"
-        val isZh = lang == "zh"
-
-        val phrases = when {
-            persona.contains("pirate") -> {
-                if (isUk) {
-                    listOf(
-                        "Агов, капітане! Який курс прокладаємо сьогодні?",
-                        "Грім і блискавка! Які скарби чи пригоди нас чекають?",
-                        "Йо-хо-хо! Готовий до здобичі нових знань, друже?",
-                        "Свистати всіх нагору! Який твій наказ, капітане?",
-                        "Агов! Компас налаштований, куди тримаємо курс?",
-                        "Слухаю уважно, морський вовче! Що маємо розвідати?",
-                        "Які таємниці семи морів розгадаємо сьогодні?"
-                    )
-                } else if (isDe) {
-                    listOf(
-                        "Ahoi, Kapitän! Welchen Kurs setzen wir heute?",
-                        "Beim Klabautermann! Welche Schätze oder Abenteuer warten auf uns?",
-                        "Aye! Bereit, neues Wissen zu erbeuten, Kumpel?",
-                        "Alle Mann an Deck! Was ist dein Befehl, Kapitän?",
-                        "Ahoi! Der Kompass steht bereit – wohin segeln wir?"
-                    )
-                } else {
-                    listOf(
-                        "Ahoy, captain! What course are we chartin' today?",
-                        "Shiver me timbers! What treasures or troubles await?",
-                        "Aye! Ready to plunder some knowledge, matey?",
-                        "Ahoy! The compass is set—what's yer command?",
-                        "All hands on deck! What wisdom do ye seek from the deep?",
-                        "Avast ye! Speak yer mind, or walk the plank!",
-                        "Ahoy, scallywag! Need a hand with yer next adventure?"
-                    )
+        if (rawContent.isEmpty()) {
+            val personaId = resolveActivePersona()
+            try {
+                val assetPath = "flutter_assets/assets/prompts/$personaId.md"
+                val content = assets.open(assetPath).bufferedReader().use { it.readText() }.trim()
+                if (content.isNotBlank()) {
+                    rawContent = content
                 }
-            }
-            persona.contains("terminal") || persona.contains("code") || persona.contains("concise") || persona.contains("old") -> {
-                if (isUk) {
-                    listOf(
-                        "Термінал готовий. Очікую введення.",
-                        "Система онлайн. Який запит?",
-                        "Готовий. Вкажіть завдання.",
-                        "Демон PAIOS активний. Очікую команди.",
-                        "Готовий до виконання інструкцій.",
-                        "Потік введення відкритий. Що оптимізуємо?",
-                        "На зв'язку. Введіть директиву."
-                    )
-                } else if (isDe) {
-                    listOf(
-                        "Terminal bereit. Warte auf Eingabe.",
-                        "System online. Was ist die Anfrage?",
-                        "Bereit. Ziel angeben.",
-                        "PAIOS Daemon aktiv. Warte auf Befehle.",
-                        "Eingabekanal offen. Wie kann ich helfen?"
-                    )
-                } else {
-                    listOf(
-                        "Terminal ready. Awaiting input.",
-                        "System online. What is the query?",
-                        "Ready. State the objective.",
-                        "PAIOS daemon active. Listening on stdin.",
-                        "Ready for task execution.",
-                        "Prompt required. Standing by.",
-                        "Input stream open. How can I optimize your workflow?"
-                    )
-                }
-            }
-            persona.contains("creative") || persona.contains("writer") -> {
-                if (isUk) {
-                    listOf(
-                        "Іскра натхнення напоготові! Що творимо сьогодні?",
-                        "Створимо щось дивовижне разом. Яка ідея?",
-                        "Чисте полотно чекає. Який задум розкриємо?",
-                        "Готовий до брейншторму! Діліться будь-якою думкою.",
-                        "Натхнення заряджено. Що досліджуємо?",
-                        "Кожна чудова історія починається з ідеї. Яка у вас?"
-                    )
-                } else {
-                    listOf(
-                        "Spark of creativity ready! What are we imagining today?",
-                        "Let's create something brilliant together. What's the idea?",
-                        "A blank canvas awaits. What story or concept shall we explore?",
-                        "Ready to brainstorm! Throw any thought my way.",
-                        "Inspired and ready. What world are we building?",
-                        "Every great journey starts with an idea. What's yours?"
-                    )
-                }
-            }
-            else -> {
-                if (isUk) {
-                    listOf(
-                        "Готовий допомогти! Над чим працюємо?",
-                        "Чим можу допомогти просто зараз?",
-                        "PAIOS напоготові. Що у вас на думці?",
-                        "До ваших послуг! Що потрібно зробити?",
-                        "Слухаю вас! Запитуйте або покажіть екран.",
-                        "Привіт! Я на зв'язку, готовий до дій.",
-                        "Яке завдання вирішуємо сьогодні?"
-                    )
-                } else if (isDe) {
-                    listOf(
-                        "Bereit zu helfen! Woran arbeiten wir?",
-                        "Wie kann ich dir jetzt helfen?",
-                        "PAIOS steht bereit. Was liegt an?",
-                        "Zu deinen Diensten! Was brauchst du?",
-                        "Ich höre zu! Frag mich etwas oder zeige deinen Bildschirm.",
-                        "Hallo! Ich bin einsatzbereit."
-                    )
-                } else if (isTr) {
-                    listOf(
-                        "Yardım etmeye hazırım! Bugün ne üzerinde çalışıyoruz?",
-                        "Şu anda size nasıl yardımcı olabilirim?",
-                        "PAIOS hazır. Aklınızda ne var?",
-                        "Hizmetinizdeyim! Ne yapmamı istersiniz?",
-                        "Dinliyorum! Bana bir şey sorun veya ekranınızı paylaşın."
-                    )
-                } else if (isZh) {
-                    listOf(
-                        "随时待命！今天我们要处理什么？",
-                        "现在有什么我可以帮您的吗？",
-                        "PAIOS 已准备就绪。有什么想法？",
-                        "为您服务！需要做些什么？",
-                        "我正在倾听！随时提问或分享屏幕。"
-                    )
-                } else {
-                    listOf(
-                        "Ready to assist! What are we working on?",
-                        "How can I help you right now?",
-                        "PAIOS is ready. What's on your mind?",
-                        "At your service! What do you need?",
-                        "I'm listening! Ask me anything or share your screen.",
-                        "Hey there! Ready whenever you are.",
-                        "What can I solve for you today?"
-                    )
-                }
-            }
+            } catch (_: Exception) {}
         }
-        val available = if (phrases.size > 1 && lastGreetingPhrase != null) {
-            phrases.filter { it != lastGreetingPhrase }
-        } else {
-            phrases
+
+        if (rawContent.isEmpty()) return ""
+
+        val appName = try {
+            val label = packageManager.getApplicationLabel(applicationInfo)?.toString()
+            if (!label.isNullOrBlank()) label else "PAIOS"
+        } catch (_: Exception) {
+            "PAIOS"
         }
-        val chosen = available.random()
-        lastGreetingPhrase = chosen
-        return chosen
+        val appVersion = try {
+            val pInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            pInfo.versionName ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+
+        return rawContent
+            .replace("%devname%", "Puzzak")
+            .replace("%appname%", appName)
+            .replace("%appversion%", appVersion)
+            .replace(Regex("%\\w+%"), "")
+            .trim()
     }
 
     // =========================================================================
@@ -1778,126 +1885,11 @@ class MeshOverlayActivity : Activity() {
             )
         }
 
-        // Persona Opening Greeting Bubble (0ms instant personality, localized)
-        val welcomeCard = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(18).toFloat()
-                setColor(palette.aiBubbleBg)
-                setStroke(dp(1), palette.aiBubbleBorder)
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-
-        val welcomeIcon = ImageView(this).apply {
-            setImageDrawable(
-                M3VectorDrawable(
-                    M3IconType.SPARKLE,
-                    palette.accent,
-                    dp(18)
-                )
-            )
-            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply {
-                rightMargin = dp(10)
-            }
-        }
-        welcomeCard.addView(welcomeIcon)
-
-        val persona = resolveActivePersona()
-        val activeLang = cachedLangCode ?: Locale.getDefault().language.lowercase(Locale.ROOT)
-        val initialGreeting = getPersonaGreeting(persona, activeLang)
-
-        val welcomeText = TextView(this).apply {
-            text = initialGreeting
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-            setTextColor(palette.bodyText)
-            setLineSpacing(0f, 1.2f)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        welcomeCard.addView(welcomeText)
-
-        emptyStateCard = welcomeCard
-        msgList.addView(welcomeCard)
         scroll.addView(msgList)
 
         outputScrollView = scroll
         messagesContainer = msgList
         sheetCard.addView(scroll)
-
-        // System Assist Screenshot Settings tip chip (shows when "Use screenshot" is disabled in OS settings)
-        val screenshotEnabled = try {
-            Settings.Secure.getInt(contentResolver, "assist_screenshot_enabled", 1) == 1
-        } catch (_: Exception) {
-            true
-        }
-        if (!screenshotEnabled) {
-            val tipChip = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(6), dp(12), dp(6))
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dp(14).toFloat()
-                    setColor(palette.surfaceContainer)
-                    setStroke(dp(1), palette.cardBorder)
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    topMargin = dp(4)
-                    bottomMargin = dp(4)
-                }
-                isClickable = true
-                setOnClickListener {
-                    it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                    try {
-                        startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        })
-                    } catch (e: Exception) {
-                        try {
-                            startActivity(Intent(Settings.ACTION_SETTINGS).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            })
-                        } catch (_: Exception) {}
-                    }
-                }
-            }
-
-            val tipIcon = ImageView(this).apply {
-                setImageDrawable(
-                    M3VectorDrawable(
-                        M3IconType.SPARKLE,
-                        palette.accent,
-                        dp(14)
-                    )
-                )
-                layoutParams = LinearLayout.LayoutParams(dp(14), dp(14)).apply {
-                    rightMargin = dp(8)
-                }
-            }
-            tipChip.addView(tipIcon)
-
-            val tipText = TextView(this).apply {
-                text = "Enable 'Use screenshot' in Assistant Settings to analyze screen"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(palette.subtitle)
-                isSingleLine = true
-                ellipsize = TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            tipChip.addView(tipText)
-
-            sheetCard.addView(tipChip)
-        }
 
         // 4. Pending Image Attachment Preview Row (Horizontal scroll of attachments above input bar)
         val previewScroll = HorizontalScrollView(this).apply {
@@ -1939,7 +1931,7 @@ class MeshOverlayActivity : Activity() {
             }
         }
 
-        val cameraBtn = ImageView(this).apply {
+        val galleryBtn = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER
             contentDescription = tr("attach_image")
             setImageDrawable(
@@ -1973,6 +1965,82 @@ class MeshOverlayActivity : Activity() {
                 } catch (e: Exception) {
                     isLaunchingImagePicker = false
                     Log.e(TAG, "Failed to launch gallery picker from bubble: ${e.message}", e)
+                }
+            }
+        }
+        inputRow.addView(galleryBtn)
+
+        val cameraBtn = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER
+            contentDescription = tr("take_photo")
+            setImageDrawable(
+                M3VectorDrawable(
+                    M3IconType.CAMERA,
+                    palette.accent,
+                    dp(20)
+                )
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.chipBg)
+                setStroke(dp(1), palette.cardBorder)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+                leftMargin = dp(6)
+            }
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                if (attachedBitmaps.size >= maxImagesAllowed) {
+                    it.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                    Toast.makeText(this@MeshOverlayActivity, tr("max_images_reached"), Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                var createdFile: File? = null
+                try {
+                    val cameraDir = File(cacheDir, "assistant_camera").apply { mkdirs() }
+                    val photoFile = File.createTempFile("paios_cam_${System.currentTimeMillis()}_", ".jpg", cameraDir)
+                    createdFile = photoFile
+                    pendingCameraPhotoFile?.let { old ->
+                        if (old.exists()) {
+                            try { old.delete() } catch (_: Exception) {}
+                        }
+                    }
+                    pendingCameraPhotoFile = photoFile
+                    val photoUri = FileProvider.getUriForFile(
+                        this@MeshOverlayActivity,
+                        "$packageName.fileprovider",
+                        photoFile
+                    )
+                    val captureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                        putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
+                        clipData = ClipData.newRawUri("", photoUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        packageManager.queryIntentActivities(
+                            captureIntent,
+                            PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong())
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        packageManager.queryIntentActivities(captureIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                    }
+                    for (ri in resolveInfos) {
+                        grantUriPermission(
+                            ri.activityInfo.packageName,
+                            photoUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    isLaunchingImagePicker = true
+                    startActivityForResult(captureIntent, REQUEST_CODE_BUBBLE_CAMERA)
+                } catch (e: Exception) {
+                    isLaunchingImagePicker = false
+                    createdFile?.let { f ->
+                        try { if (f.exists()) f.delete() } catch (_: Exception) {}
+                    }
+                    pendingCameraPhotoFile = null
+                    Log.e(TAG, "Failed to launch camera capture from bubble: ${e.message}", e)
                 }
             }
         }
@@ -2049,7 +2117,9 @@ class MeshOverlayActivity : Activity() {
         val now = System.currentTimeMillis()
         if (now - latestAssistTimestampMs <= ASSIST_CACHE_TTL_MS) {
             latestAssistBitmap?.let { bmp ->
-                onSystemAssistScreenshotAvailable(bmp)
+                if (isSystemAssistScreenshotEnabled()) {
+                    onSystemAssistScreenshotAvailable(bmp)
+                }
                 latestAssistBitmap = null
             }
             val cachedText = latestAssistScreenText
@@ -2074,7 +2144,7 @@ class MeshOverlayActivity : Activity() {
                 }
                 if (bmp != null) {
                     withContext(Dispatchers.Main) {
-                        attachGalleryBitmap(bmp)
+                        attachUserBitmap(bmp)
                     }
                 }
             }
@@ -2170,6 +2240,7 @@ class MeshOverlayActivity : Activity() {
     }
 
     private fun openInFullApp() {
+        skipPendingArchiveOnDismiss = true
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             action = Intent.ACTION_VIEW
@@ -2224,14 +2295,32 @@ class MeshOverlayActivity : Activity() {
         renderAttachedImagesPreview()
     }
 
-    private fun attachGalleryBitmap(bitmap: Bitmap) {
+    private fun attachUserBitmap(bitmap: Bitmap) {
+        val existingScreenBmp = screenContextBitmap
+        if (existingScreenBmp != null) {
+            attachedBitmaps.remove(existingScreenBmp)
+            screenContextBitmap = null
+        }
         if (attachedBitmaps.size >= maxImagesAllowed) {
             (sheetCardView ?: window?.decorView)?.performHapticFeedback(HapticFeedbackConstants.REJECT)
             Toast.makeText(this, tr("max_images_reached"), Toast.LENGTH_SHORT).show()
             return
         }
+        val outgoingNote = activeVisualNote.trim().ifEmpty {
+            visualContextMemory.trim().take(240)
+        }
+        if (activeSessionBitmap != null && outgoingNote.isNotEmpty()) {
+            val marker = "\nUser attached a previous image: $outgoingNote\n"
+            if (!conversationHistoryPrompt.contains(marker)) {
+                conversationHistoryPrompt += marker
+            }
+        }
+        visualSummaryJob?.cancel()
+        activeVisualNote = ""
+        visualContextMemory = ""
         activeSessionBitmap = null
         currentBitmap = bitmap
+        userBitmaps.add(bitmap)
         attachedBitmaps.add(bitmap)
         renderAttachedImagesPreview()
     }
@@ -2244,7 +2333,7 @@ class MeshOverlayActivity : Activity() {
         if (isScreenContext) {
             attachScreenContext(bitmap)
         } else {
-            attachGalleryBitmap(bitmap)
+            attachUserBitmap(bitmap)
         }
     }
 
@@ -2254,7 +2343,8 @@ class MeshOverlayActivity : Activity() {
 
         itemsRow.removeAllViews()
 
-        if (attachedBitmaps.isEmpty()) {
+        val visibleUserPhotos = attachedBitmaps.filter { it !== screenContextBitmap }
+        if (visibleUserPhotos.isEmpty()) {
             container.visibility = View.GONE
             updateContextBadgeUI()
             return
@@ -2262,143 +2352,63 @@ class MeshOverlayActivity : Activity() {
 
         container.visibility = View.VISIBLE
 
-        for (bitmap in attachedBitmaps.toList()) {
-            if (bitmap === screenContextBitmap) {
-                // Screen context chip: [✦] Screen context added [✕]
-                val chip = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(10), dp(6), dp(8), dp(6))
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dp(14).toFloat()
-                        setColor(palette.surfaceContainer)
-                        setStroke(dp(1), palette.cardBorder)
-                    }
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        rightMargin = dp(8)
-                    }
+        for (bitmap in visibleUserPhotos) {
+            // User-attached image item: FrameLayout with 40x40dp thumbnail + subtle close badge
+            val frame = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+                    rightMargin = dp(8)
                 }
-
-                val icon = ImageView(this).apply {
-                    setImageDrawable(
-                        M3VectorDrawable(
-                            M3IconType.SPARKLE,
-                            palette.accent,
-                            dp(15)
-                        )
-                    )
-                    layoutParams = LinearLayout.LayoutParams(dp(15), dp(15)).apply {
-                        rightMargin = dp(6)
-                    }
-                }
-                chip.addView(icon)
-
-                val label = TextView(this).apply {
-                    text = tr("screen_context_added")
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    setTextColor(palette.bodyText)
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        rightMargin = dp(8)
-                    }
-                }
-                chip.addView(label)
-
-                val removeBtn = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER
-                    contentDescription = tr("remove_image")
-                    setImageDrawable(
-                        M3VectorDrawable(
-                            M3IconType.CLOSE,
-                            palette.subtitle,
-                            dp(10)
-                        )
-                    )
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(palette.chipBg)
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
-                    setOnClickListener {
-                        it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        attachedBitmaps.remove(bitmap)
-                        if (currentBitmap === bitmap) {
-                            currentBitmap = attachedBitmaps.firstOrNull()
-                        }
-                        if (attachedBitmaps.isEmpty()) {
-                            activeSessionBitmap = null
-                        }
-                        screenContextBitmap = null
-                        renderAttachedImagesPreview()
-                    }
-                }
-                chip.addView(removeBtn)
-
-                itemsRow.addView(chip)
-            } else {
-                // Gallery image item: FrameLayout with 40x40dp thumbnail + subtle close badge
-                val frame = FrameLayout(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply {
-                        rightMargin = dp(8)
-                    }
-                }
-
-                val thumb = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    clipToOutline = true
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dp(10).toFloat()
-                        setColor(palette.chipBg)
-                    }
-                    setImageBitmap(bitmap)
-                    layoutParams = FrameLayout.LayoutParams(dp(40), dp(40)).apply {
-                        gravity = Gravity.BOTTOM or Gravity.START
-                    }
-                }
-                frame.addView(thumb)
-
-                val removeBadge = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER
-                    contentDescription = tr("remove_image")
-                    setImageDrawable(
-                        M3VectorDrawable(
-                            M3IconType.CLOSE,
-                            palette.bodyText,
-                            dp(9)
-                        )
-                    )
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(palette.surfaceContainer)
-                        setStroke(dp(1), palette.cardBorder)
-                    }
-                    layoutParams = FrameLayout.LayoutParams(dp(18), dp(18)).apply {
-                        gravity = Gravity.TOP or Gravity.END
-                    }
-                    setOnClickListener {
-                        it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                        attachedBitmaps.remove(bitmap)
-                        if (currentBitmap === bitmap) {
-                            currentBitmap = attachedBitmaps.firstOrNull()
-                        }
-                        if (attachedBitmaps.isEmpty()) {
-                            activeSessionBitmap = null
-                        }
-                        renderAttachedImagesPreview()
-                    }
-                }
-                frame.addView(removeBadge)
-
-                itemsRow.addView(frame)
             }
+
+            val thumb = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                clipToOutline = true
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(10).toFloat()
+                    setColor(palette.chipBg)
+                }
+                setImageBitmap(bitmap)
+                layoutParams = FrameLayout.LayoutParams(dp(40), dp(40)).apply {
+                    gravity = Gravity.BOTTOM or Gravity.START
+                }
+            }
+            frame.addView(thumb)
+
+            val removeBadge = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER
+                contentDescription = tr("remove_image")
+                setImageDrawable(
+                    M3VectorDrawable(
+                        M3IconType.CLOSE,
+                        palette.bodyText,
+                        dp(9)
+                    )
+                )
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(palette.surfaceContainer)
+                    setStroke(dp(1), palette.cardBorder)
+                }
+                layoutParams = FrameLayout.LayoutParams(dp(18), dp(18)).apply {
+                    gravity = Gravity.TOP or Gravity.END
+                }
+                setOnClickListener {
+                    it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    attachedBitmaps.remove(bitmap)
+                    userBitmaps.remove(bitmap)
+                    if (currentBitmap === bitmap) {
+                        currentBitmap = attachedBitmaps.firstOrNull()
+                    }
+                    if (attachedBitmaps.isEmpty()) {
+                        activeSessionBitmap = null
+                    }
+                    renderAttachedImagesPreview()
+                }
+            }
+            frame.addView(removeBadge)
+
+            itemsRow.addView(frame)
         }
 
         updateContextBadgeUI()
@@ -2414,7 +2424,6 @@ class MeshOverlayActivity : Activity() {
         image: Bitmap? = null
     ) {
         val container = messagesContainer ?: return
-        emptyStateCard?.visibility = View.GONE
 
         val screenWidth = resources.displayMetrics.widthPixels
         val maxBubbleWidth = (screenWidth * 0.78f).toInt()
@@ -2521,13 +2530,182 @@ class MeshOverlayActivity : Activity() {
         outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
     }
 
+    private data class AiBubbleViews(
+        val cardContainer: LinearLayout,
+        val thoughtContainer: LinearLayout,
+        val thoughtTogglePill: TextView,
+        val thoughtBodyView: TextView,
+        val answerView: TextView,
+        var isThoughtExpanded: Boolean = true,
+        var userToggledThought: Boolean = false
+    ) {
+        fun updateThought(thoughtText: String, isStillThinking: Boolean) {
+            if (thoughtText.isBlank()) return
+            thoughtContainer.visibility = View.VISIBLE
+            thoughtBodyView.text = thoughtText.trim()
+            val label = if (isStillThinking) "✦ Thinking…" else "✦ Thought process"
+            val chevron = if (isThoughtExpanded) "▾" else "▸"
+            thoughtTogglePill.text = "$label $chevron"
+            thoughtBodyView.visibility = if (isThoughtExpanded) View.VISIBLE else View.GONE
+        }
+
+        fun collapseThoughtIfAuto() {
+            if (!userToggledThought && isThoughtExpanded) {
+                isThoughtExpanded = false
+                thoughtBodyView.visibility = View.GONE
+            }
+            if (thoughtContainer.visibility == View.VISIBLE) {
+                val chevron = if (isThoughtExpanded) "▾" else "▸"
+                thoughtTogglePill.text = "✦ Thought process $chevron"
+            }
+        }
+
+        fun hideThought() {
+            thoughtContainer.visibility = View.GONE
+        }
+    }
+
+    private fun addAiThinkingBubble(initialStatus: String): AiBubbleViews {
+        val container = messagesContainer
+        if (container == null) {
+            val fallbackCard = LinearLayout(this)
+            val fallbackThoughtContainer = LinearLayout(this)
+            val fallbackPill = TextView(this)
+            val fallbackThoughtBody = TextView(this)
+            val fallbackAnswer = TextView(this)
+            return AiBubbleViews(
+                cardContainer = fallbackCard,
+                thoughtContainer = fallbackThoughtContainer,
+                thoughtTogglePill = fallbackPill,
+                thoughtBodyView = fallbackThoughtBody,
+                answerView = fallbackAnswer
+            )
+        }
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val maxBubbleWidth = (screenWidth * 0.88f).toInt()
+        val innerMaxWidth = (maxBubbleWidth - dp(28)).coerceAtLeast(dp(120))
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        val cardContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                val r = dp(18).toFloat()
+                val tail = dp(4).toFloat()
+                cornerRadii = floatArrayOf(r, r, r, r, r, r, tail, tail)
+                setColor(palette.aiBubbleBg)
+                setStroke(dp(1), palette.aiBubbleBorder)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val thoughtContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(6)
+            }
+        }
+
+        val thoughtTogglePill = TextView(this).apply {
+            text = "✦ Thinking… ▾"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(palette.subtitle)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(10).toFloat()
+                setColor(palette.chipBg)
+                setStroke(dp(1), palette.cardBorder)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val thoughtBodyView = TextView(this).apply {
+            maxWidth = innerMaxWidth
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(palette.subtitle)
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.ITALIC)
+            setLineSpacing(0f, 1.2f)
+            setPadding(dp(4), dp(4), dp(4), dp(2))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        thoughtContainer.addView(thoughtTogglePill)
+        thoughtContainer.addView(thoughtBodyView)
+
+        val answerView = TextView(this).apply {
+            text = formatMarkdownToSpannable(initialStatus)
+            maxWidth = innerMaxWidth
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(palette.bodyText)
+            setLineSpacing(0f, 1.25f)
+            setTextIsSelectable(true)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        val bubbleViews = AiBubbleViews(
+            cardContainer = cardContainer,
+            thoughtContainer = thoughtContainer,
+            thoughtTogglePill = thoughtTogglePill,
+            thoughtBodyView = thoughtBodyView,
+            answerView = answerView
+        )
+
+        thoughtTogglePill.setOnClickListener {
+            bubbleViews.userToggledThought = true
+            bubbleViews.isThoughtExpanded = !bubbleViews.isThoughtExpanded
+            thoughtBodyView.visibility = if (bubbleViews.isThoughtExpanded) View.VISIBLE else View.GONE
+            val baseLabel = if (thoughtTogglePill.text.toString().contains("Thinking")) {
+                "✦ Thinking…"
+            } else {
+                "✦ Thought process"
+            }
+            thoughtTogglePill.text = "$baseLabel ${if (bubbleViews.isThoughtExpanded) "▾" else "▸"}"
+        }
+
+        cardContainer.addView(thoughtContainer)
+        cardContainer.addView(answerView)
+        row.addView(cardContainer)
+        container.addView(row)
+        outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+        return bubbleViews
+    }
+
     /**
      * Appends a left-aligned Material 3 AI response bubble to [messagesContainer] (no "PAIOS:" label)
      * and returns its [TextView] so streaming tokens can update it with live markdown spans.
      */
     private fun addAiMessageBubble(initialStatus: String): TextView {
         val container = messagesContainer ?: return TextView(this)
-        emptyStateCard?.visibility = View.GONE
 
         val screenWidth = resources.displayMetrics.widthPixels
         val maxBubbleWidth = (screenWidth * 0.88f).toInt()
@@ -2711,14 +2889,291 @@ class MeshOverlayActivity : Activity() {
         return composite
     }
 
+    private sealed class StreamAttemptResult {
+        data class Completed(
+            val text: String,
+            val handledToolCall: Boolean,
+            val finishReason: String? = null
+        ) : StreamAttemptResult()
+        data class Failed(val error: Throwable, val partialText: String) : StreamAttemptResult()
+    }
+
+    private fun boundOverlaySnippet(text: String, maxChars: Int): String {
+        val trimmed = text.trim()
+        if (maxChars <= 0 || trimmed.isEmpty() || trimmed.length <= maxChars) return trimmed
+        val cut = trimmed.substring(0, maxChars)
+        val lastBreak = cut.lastIndexOfAny(charArrayOf('\n', ' '))
+        val clean = if (lastBreak >= (maxChars * 0.6).toInt()) {
+            cut.substring(0, lastBreak).trimEnd()
+        } else {
+            cut.trimEnd()
+        }
+        return "$clean..."
+    }
+
+    private fun buildInteractiveSystemBlock(
+        personaSystemPrompt: String,
+        addTime: Boolean,
+        shareLocale: Boolean,
+        appLang: String,
+        hasAnySessionImage: Boolean,
+        callerNameSnapshot: String,
+        contextDataSnapshot: String,
+        visualMemorySnapshot: String,
+        historySnapshot: String,
+        meshToolsPrompt: String,
+        includeContextDataBlock: Boolean,
+        includeTools: Boolean,
+        isCompactBudget: Boolean = false
+    ): String = buildString {
+        val effectivePersona = if (isCompactBudget) {
+            PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt, 120).orEmpty()
+        } else {
+            personaSystemPrompt
+        }
+        val effectiveContextData = if (isCompactBudget) {
+            boundOverlaySnippet(contextDataSnapshot, 450)
+        } else {
+            contextDataSnapshot
+        }
+        val effectiveVisualMemory = if (isCompactBudget) {
+            boundOverlaySnippet(visualMemorySnapshot, 300)
+        } else {
+            visualMemorySnapshot
+        }
+        val historyCharLimit = if (isCompactBudget) 600 else 1600
+
+        if (effectivePersona.isNotBlank()) {
+            append("## [SYSTEM INSTRUCTIONS]\n")
+            append(effectivePersona)
+            append("\n\n")
+        }
+
+        if (addTime || shareLocale) {
+            append("### [CONTEXTUAL DATA]\n")
+            if (addTime) {
+                val timeStr = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date())
+                append(" - Current Time: $timeStr\n")
+            }
+            if (shareLocale) {
+                append(" - Language: $appLang\n")
+            }
+            append("\n")
+        }
+
+        append("## [GUIDELINES]\n")
+        if (effectivePersona.isNotBlank()) {
+            append(" - Follow the active persona instructions above.\n")
+        }
+        append(" - Respond naturally and concisely to greetings, casual conversation, and general questions.\n")
+        append(" - Stay truthful and concise; say when you do not know something instead of guessing.\n")
+        if (hasAnySessionImage) {
+            append(" - Inspect and answer directly from the attached image.\n")
+        }
+        if (includeContextDataBlock) {
+            append(" - Background screen and app context from $callerNameSnapshot is optional; use it only when the user explicitly asks about their screen or open app.\n")
+        }
+        if (shareLocale) {
+            append(" - Respond in $appLang unless the user asks for another language.\n")
+        }
+        if (addTime) {
+            append(" - Use Current Time from [CONTEXTUAL DATA] when the user asks about the current date or time.\n")
+        }
+
+        if (includeTools && meshToolsPrompt.isNotBlank()) {
+            append("\n")
+            append(meshToolsPrompt)
+        }
+
+        if (includeContextDataBlock && effectiveContextData.isNotBlank()) {
+            append("\n\n### [BACKGROUND SCREEN CONTEXT]\n")
+            append("Optional passive context from $callerNameSnapshot (use only if the user explicitly asks about their screen or open app):\n")
+            append(effectiveContextData)
+        }
+
+        if (includeContextDataBlock && effectiveVisualMemory.isNotBlank()) {
+            append("\n\n### [VISUAL CONTEXT MEMORY]\n")
+            append(effectiveVisualMemory)
+        }
+
+        if (historySnapshot.isNotBlank()) {
+            append("\n\n### [CHAT HISTORY]\n")
+            append(historySnapshot.takeLast(historyCharLimit))
+        }
+    }.trim()
+
+    private suspend fun executeInteractiveStreamAttempt(
+        resolved: PaiosModelHelper.ResolvedModelClient,
+        request: GenerateContentRequest,
+        useThinking: Boolean,
+        turnId: Long,
+        aiBubbleView: TextView,
+        bubbleViews: AiBubbleViews,
+        prefixText: String = ""
+    ): StreamAttemptResult {
+        var streamedText = ""
+        var handledToolCall = false
+        var lastFinishReason: String? = null
+        try {
+            if (useThinking) {
+                val streamLock = Any()
+                val textBuffer = StringBuilder()
+                val thoughtBuffer = StringBuilder()
+
+                val finalResponse = resolved.model.generateContent(
+                    request,
+                    object : StreamingCallback {
+                        override fun onNewThought(thought: String) {
+                            if (thought.isEmpty()) return
+                            synchronized(streamLock) {
+                                thoughtBuffer.append(thought)
+                            }
+                            activityScope.launch(Dispatchers.Main) {
+                                if (overlayTurnSequence != turnId || isDismissing || handledToolCall) return@launch
+                                val snapshotThought: String
+                                val hasAnswer: Boolean
+                                synchronized(streamLock) {
+                                    snapshotThought = thoughtBuffer.toString()
+                                    hasAnswer = textBuffer.isNotEmpty()
+                                }
+                                bubbleViews.updateThought(snapshotThought, isStillThinking = !hasAnswer)
+                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            }
+                        }
+
+                        override fun onNewText(text: String) {
+                            if (text.isEmpty()) return
+                            synchronized(streamLock) {
+                                textBuffer.append(text)
+                            }
+                            activityScope.launch(Dispatchers.Main) {
+                                if (overlayTurnSequence != turnId || isDismissing) return@launch
+                                val snapshotText = synchronized(streamLock) { textBuffer.toString() }
+                                streamedText = snapshotText
+                                val displayText = if (prefixText.isNotEmpty()) {
+                                    PaiosModelHelper.stitchOverlayContinuation(prefixText, snapshotText)
+                                } else {
+                                    snapshotText
+                                }
+                                val toolCall = extractToolCallJson(displayText)
+                                val isToolCallPending = looksLikeIncompleteToolCall(displayText)
+                                if (toolCall != null || isToolCallPending) {
+                                    handledToolCall = true
+                                }
+                                if (handledToolCall) {
+                                    bubbleViews.hideThought()
+                                    val desc = formatToolChipLabel(toolCall, displayText)
+                                    applyToolChipStyle(aiBubbleView, desc)
+                                } else if (displayText.isNotBlank()) {
+                                    bubbleViews.collapseThoughtIfAuto()
+                                    aiBubbleView.text = formatMarkdownToSpannable(displayText)
+                                }
+                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            }
+                        }
+                    }
+                )
+
+                val finalText = synchronized(streamLock) { textBuffer.toString() }
+                    .ifEmpty { finalResponse.candidates.firstOrNull()?.text ?: "" }
+                val finalThought = synchronized(streamLock) { thoughtBuffer.toString() }
+                    .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
+                lastFinishReason = PaiosModelHelper.normalizeFinishReason(
+                    finalResponse.candidates.firstOrNull()?.finishReason
+                )
+                streamedText = finalText
+
+                if (finalThought.isNotBlank() && !handledToolCall) {
+                    withContext(Dispatchers.Main) {
+                        if (overlayTurnSequence == turnId && !isDismissing) {
+                            bubbleViews.updateThought(finalThought, isStillThinking = false)
+                            if (finalText.isNotBlank()) {
+                                bubbleViews.collapseThoughtIfAuto()
+                            }
+                        }
+                    }
+                }
+                return StreamAttemptResult.Completed(streamedText, handledToolCall, lastFinishReason)
+            } else {
+                var streamError: Throwable? = null
+                resolved.model.generateContentStream(request)
+                    .onEach { chunk ->
+                        val candidate = chunk.candidates.firstOrNull()
+                        val piece = candidate?.text ?: ""
+                        val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                        if (chunkReason != null) {
+                            lastFinishReason = chunkReason
+                        }
+                        streamedText += piece
+                        val displayText = if (prefixText.isNotEmpty()) {
+                            PaiosModelHelper.stitchOverlayContinuation(prefixText, streamedText)
+                        } else {
+                            streamedText
+                        }
+                        val toolCall = extractToolCallJson(displayText)
+                        val isToolCallPending = looksLikeIncompleteToolCall(displayText)
+                        if (toolCall != null || isToolCallPending) {
+                            handledToolCall = true
+                        }
+                        withContext(Dispatchers.Main) {
+                            if (overlayTurnSequence != turnId || isDismissing) return@withContext
+                            if (handledToolCall) {
+                                bubbleViews.hideThought()
+                                val desc = formatToolChipLabel(toolCall, displayText)
+                                applyToolChipStyle(aiBubbleView, desc)
+                            } else if (displayText.isNotBlank()) {
+                                aiBubbleView.text = formatMarkdownToSpannable(displayText)
+                            }
+                            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                        }
+                    }
+                    .catch { e ->
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        streamError = e
+                    }
+                    .collect {}
+
+                val failure = streamError
+                if (failure != null) {
+                    return StreamAttemptResult.Failed(failure, streamedText)
+                }
+                return StreamAttemptResult.Completed(streamedText, handledToolCall, lastFinishReason)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return StreamAttemptResult.Failed(e, streamedText)
+        }
+    }
+
     private fun startInteractiveStreaming(userPrompt: String) {
         activeStreamJob?.cancel()
+        visualSummaryJob?.cancel()
+        val turnId = ++overlayTurnSequence
 
-        val bitmapsSnapshot = attachedBitmaps.toList()
-        addUserMessageBubble(userPrompt, images = bitmapsSnapshot)
+        val userBitmapsSnapshot = userBitmaps.toList()
+        val hasUserPhotos = userBitmapsSnapshot.isNotEmpty()
+        val isPureGreeting = !hasUserPhotos && PaiosModelHelper.isPureGreetingOrSmallTalk(userPrompt)
+        val isSelfCaller = rawCallerPackage.equals(packageName, ignoreCase = true)
+        val screenBitmapSnapshot = if (!hasUserPhotos && !isPureGreeting && !isSelfCaller && isSystemAssistScreenshotEnabled()) {
+            screenContextBitmap
+        } else {
+            null
+        }
+        val effectiveBitmaps = when {
+            hasUserPhotos -> userBitmapsSnapshot
+            screenBitmapSnapshot != null -> listOf(screenBitmapSnapshot)
+            else -> emptyList()
+        }
+        addUserMessageBubble(userPrompt, images = effectiveBitmaps)
         currentBitmap = null
-        attachedBitmaps.clear()
-        screenContextBitmap = null
+        userBitmaps.clear()
+        if (hasUserPhotos || !isPureGreeting) {
+            attachedBitmaps.clear()
+            screenContextBitmap = null
+        } else {
+            attachedBitmaps.retainAll { it === screenContextBitmap }
+        }
         renderAttachedImagesPreview()
 
         // Record user message in session message list
@@ -2729,169 +3184,607 @@ class MeshOverlayActivity : Activity() {
         }
         sessionMessages.add(userMsg)
 
-        val aiBubbleView = addAiMessageBubble(tr("assistant_thinking"))
+        val bubbleViews = addAiThinkingBubble(tr("assistant_thinking"))
+        val aiBubbleView = bubbleViews.answerView
         sheetProgressBar?.visibility = View.VISIBLE
 
-        val contextDataSnapshot = contextData
+        val contextDataSnapshot = if (!hasUserPhotos && !isPureGreeting) contextData else ""
         val callerNameSnapshot = callerName
-        val visualMemorySnapshot = visualContextMemory
+        val visualMemorySnapshot = if (hasUserPhotos || isPureGreeting) "" else activeVisualNote.ifBlank { visualContextMemory }
         val historySnapshot = conversationHistoryPrompt
 
         activeStreamJob = activityScope.launch(Dispatchers.IO) {
             val personaSystemPrompt = resolveActivePersonaContent()
+            val addTime = isAddCurrentTimeEnabled()
+            val shareLocale = isShareLocaleEnabled()
+            val appLang = tr("current_language")
             val meshToolsPrompt = getMeshToolSchemaPrompt()
+            val temperatureValue = resolveTemperatureSetting()
+            val hasPassiveContext = !hasUserPhotos &&
+                (screenBitmapSnapshot != null || contextDataSnapshot.isNotBlank() || visualMemorySnapshot.isNotBlank())
+            val hasAnySessionImage = hasUserPhotos || screenBitmapSnapshot != null || activeSessionBitmap != null
 
-            val fullPrompt = buildString {
-                if (personaSystemPrompt.isNotBlank()) {
-                    append("System Instruction / Persona:\n")
-                    append(personaSystemPrompt)
-                    append("\n\n")
-                }
-                append(meshToolsPrompt)
-                append("\n\n")
-
-                if (contextDataSnapshot.isNotBlank()) {
-                    append("Application & Screen Context ($callerNameSnapshot):\n")
-                    append(contextDataSnapshot)
-                    append("\n\n")
-                }
-                if (visualMemorySnapshot.isNotBlank()) {
-                    append("Visual Context Memory (from previously analyzed image / screen):\n")
-                    append(visualMemorySnapshot)
-                    append("\n\n")
-                }
-                if (historySnapshot.isNotBlank()) {
-                    append("Recent Conversation:\n")
-                    append(historySnapshot.takeLast(1600))
-                    append("\n\n")
-                }
-                append("User Request: ")
-                append(userPrompt)
+            fun formatCleanUserTurn(hasImage: Boolean): String = if (hasImage) {
+                "[Image attached to this message]\nUser's request: $userPrompt"
+            } else {
+                "User's request: $userPrompt"
             }
 
-            var streamedText = ""
-            var handledToolCall = false
-            var streamFailed = false
             try {
-                val generativeModel = Generation.getClient()
-                val request = if (bitmapsSnapshot.isNotEmpty()) {
-                    val combinedBmp = compositeBitmaps(bitmapsSnapshot)
-                    activeSessionBitmap = combinedBmp
-                    generateContentRequest(ImagePart(combinedBmp), TextPart(fullPrompt)) {}
-                } else if (activeSessionBitmap != null) {
-                    generateContentRequest(ImagePart(activeSessionBitmap!!), TextPart(fullPrompt)) {}
-                } else {
-                    generateContentRequest(TextPart(fullPrompt)) {}
+                val resolved = getOverlayResolvedClient()
+                val isCompactBudget = !resolved.capabilities.isNanoV4 && !resolved.capabilities.isThinkingModeAvailable
+                val fullSystemBlock = buildInteractiveSystemBlock(
+                    personaSystemPrompt = personaSystemPrompt,
+                    addTime = addTime,
+                    shareLocale = shareLocale,
+                    appLang = appLang,
+                    hasAnySessionImage = hasAnySessionImage,
+                    callerNameSnapshot = callerNameSnapshot,
+                    contextDataSnapshot = contextDataSnapshot,
+                    visualMemorySnapshot = visualMemorySnapshot,
+                    historySnapshot = historySnapshot,
+                    meshToolsPrompt = meshToolsPrompt,
+                    includeContextDataBlock = hasPassiveContext,
+                    includeTools = true,
+                    isCompactBudget = isCompactBudget
+                )
+                val useThinking = shouldEnableOverlayThinking(resolved)
+                val newUserCompositeBitmap = if (hasUserPhotos) compositeBitmaps(userBitmapsSnapshot) else null
+                val primaryBitmap = newUserCompositeBitmap ?: screenBitmapSnapshot ?: activeSessionBitmap
+                val persistentUserBitmap = newUserCompositeBitmap ?: activeSessionBitmap
+
+                // Primary attempt: matches ChatPage framing (clean TextPart + structured SystemInstruction, maxTokens = null)
+                val primaryRequest = PaiosModelHelper.buildRequest(
+                    prompt = formatCleanUserTurn(primaryBitmap != null),
+                    instructions = fullSystemBlock.takeIf { it.isNotBlank() },
+                    image = primaryBitmap,
+                    maxTokens = null,
+                    temperature = temperatureValue,
+                    enableThinking = useThinking,
+                    useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                    useThinkingCapability = resolved.capabilities.isThinkingModeAvailable,
+                    candidateCount = 1
+                )
+
+                var attemptResult = executeInteractiveStreamAttempt(
+                    resolved = resolved,
+                    request = primaryRequest,
+                    useThinking = useThinking,
+                    turnId = turnId,
+                    aiBubbleView = aiBubbleView,
+                    bubbleViews = bubbleViews
+                )
+
+                // Tier 1 policy fallback: strip passive screen/Assist context & bound SystemInstruction <= 140 words
+                if (attemptResult is StreamAttemptResult.Failed &&
+                    attemptResult.partialText.isBlank() &&
+                    PaiosModelHelper.isPolicyCheckException(attemptResult.error) &&
+                    (hasPassiveContext || useThinking || !resolved.capabilities.isSystemPromptAvailable || fullSystemBlock.length > 600)
+                ) {
+                    Log.w(
+                        TAG,
+                        "[POLICY FALLBACK RETRY] Tier 1: stripping passive screen/assist context & bounding SystemInstruction"
+                    )
+                    withContext(Dispatchers.Main) {
+                        bubbleViews.hideThought()
+                    }
+                    val boundedPersona = PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt)
+                    val tier1Prompt = buildString {
+                        val supplementary = buildInteractiveSystemBlock(
+                            personaSystemPrompt = "",
+                            addTime = addTime,
+                            shareLocale = shareLocale,
+                            appLang = appLang,
+                            hasAnySessionImage = persistentUserBitmap != null,
+                            callerNameSnapshot = callerNameSnapshot,
+                            contextDataSnapshot = "",
+                            visualMemorySnapshot = "",
+                            historySnapshot = historySnapshot,
+                            meshToolsPrompt = meshToolsPrompt,
+                            includeContextDataBlock = false,
+                            includeTools = true,
+                            isCompactBudget = isCompactBudget
+                        )
+                        if (supplementary.isNotBlank()) {
+                            append(supplementary)
+                            append("\n\n")
+                        }
+                        append(formatCleanUserTurn(persistentUserBitmap != null))
+                    }
+                    val tier1Request = PaiosModelHelper.buildRequest(
+                        prompt = tier1Prompt,
+                        instructions = boundedPersona,
+                        image = persistentUserBitmap,
+                        maxTokens = null,
+                        temperature = temperatureValue,
+                        enableThinking = false,
+                        useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                        useThinkingCapability = false,
+                        candidateCount = 1
+                    )
+                    attemptResult = executeInteractiveStreamAttempt(
+                        resolved = resolved,
+                        request = tier1Request,
+                        useThinking = false,
+                        turnId = turnId,
+                        aiBubbleView = aiBubbleView,
+                        bubbleViews = bubbleViews
+                    )
                 }
 
-                generativeModel.generateContentStream(request)
-                    .onEach { chunk ->
-                        val piece = chunk.candidates.firstOrNull()?.text ?: ""
-                        streamedText += piece
-                        val toolCall = extractToolCallJson(streamedText)
-                        val isToolCallPending = looksLikeIncompleteToolCall(streamedText)
-                        if (toolCall != null || isToolCallPending) {
-                            handledToolCall = true
-                        }
-                        withContext(Dispatchers.Main) {
-                            if (handledToolCall) {
-                                val desc = formatToolChipLabel(toolCall, streamedText)
-                                applyToolChipStyle(aiBubbleView, desc)
-                            } else {
-                                val formatted = formatMarkdownToSpannable(streamedText)
-                                aiBubbleView.text = formatted
+                // Tier 2 policy fallback: bare minimal prompt (no instructions, no tools, no history, no passive images)
+                if (attemptResult is StreamAttemptResult.Failed &&
+                    attemptResult.partialText.isBlank() &&
+                    PaiosModelHelper.isPolicyCheckException(attemptResult.error)
+                ) {
+                    Log.w(TAG, "[POLICY FALLBACK RETRY] Tier 2: retrying with bare minimal user prompt")
+                    withContext(Dispatchers.Main) {
+                        bubbleViews.hideThought()
+                    }
+                    val bareBitmap = if (hasUserPhotos) newUserCompositeBitmap else null
+                    val tier2Request = PaiosModelHelper.buildRequest(
+                        prompt = formatCleanUserTurn(bareBitmap != null),
+                        instructions = null,
+                        image = bareBitmap,
+                        maxTokens = null,
+                        temperature = temperatureValue,
+                        enableThinking = false,
+                        useNativeSystemInstruction = false,
+                        useThinkingCapability = false,
+                        candidateCount = 1
+                    )
+                    attemptResult = executeInteractiveStreamAttempt(
+                        resolved = resolved,
+                        request = tier2Request,
+                        useThinking = false,
+                        turnId = turnId,
+                        aiBubbleView = aiBubbleView,
+                        bubbleViews = bubbleViews
+                    )
+                }
+
+                when (val finalAttempt = attemptResult) {
+                    is StreamAttemptResult.Completed -> {
+                        var accumulatedText = finalAttempt.text
+                        var currentFinishReason = finalAttempt.finishReason
+                        var currentHandledTool = finalAttempt.handledToolCall
+                        var continuationCount = 0
+                        var nullReasonRetryCount = 0
+                        var lastRoundAddedNonWs = accumulatedText.count { !it.isWhitespace() }
+
+                        while (overlayTurnSequence == turnId &&
+                            !isDismissing &&
+                            extractToolCallJson(accumulatedText) == null
+                        ) {
+                            val incompleteTool = looksLikeIncompleteToolCall(accumulatedText)
+                            val shouldContinue = PaiosModelHelper.shouldContinuePartialResponse(
+                                finishReason = currentFinishReason,
+                                partialText = accumulatedText,
+                                continuationCount = continuationCount,
+                                lastRoundAddedChars = lastRoundAddedNonWs,
+                                isNanoV4 = resolved.capabilities.isNanoV4,
+                                nullReasonRetryCount = nullReasonRetryCount
+                            ) || (incompleteTool &&
+                                continuationCount < PaiosModelHelper.MAX_OVERLAY_CONTINUATIONS &&
+                                lastRoundAddedNonWs > 0 &&
+                                accumulatedText.length < PaiosModelHelper.MAX_OVERLAY_ACCUMULATED_CHARS)
+
+                            if (!shouldContinue) break
+
+                            if (PaiosModelHelper.normalizeFinishReason(currentFinishReason) == null && !incompleteTool) {
+                                nullReasonRetryCount++
                             }
-                            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            continuationCount++
+                            Log.i(
+                                TAG,
+                                "[OVERLAY AUTO-CONTINUE #$continuationCount] reason=$currentFinishReason nanoV4=${resolved.capabilities.isNanoV4} chars=${accumulatedText.length}"
+                            )
+                            withContext(Dispatchers.Main) {
+                                if (overlayTurnSequence == turnId && !isDismissing) {
+                                    sheetProgressBar?.visibility = View.VISIBLE
+                                }
+                            }
+
+                            val contSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+                                originalQuestion = userPrompt,
+                                partialText = accumulatedText,
+                                personaAnchor = personaSystemPrompt,
+                                languageCode = if (shareLocale) appLang else null,
+                                isJsonDraft = incompleteTool
+                            )
+                            val contRequest = PaiosModelHelper.buildRequest(
+                                prompt = contSpec.userPrompt,
+                                instructions = contSpec.instructions,
+                                image = null,
+                                maxTokens = null,
+                                temperature = temperatureValue,
+                                enableThinking = false,
+                                useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                                useThinkingCapability = false,
+                                candidateCount = 1
+                            )
+                            val contResult = executeInteractiveStreamAttempt(
+                                resolved = resolved,
+                                request = contRequest,
+                                useThinking = false,
+                                turnId = turnId,
+                                aiBubbleView = aiBubbleView,
+                                bubbleViews = bubbleViews,
+                                prefixText = accumulatedText
+                            )
+                            when (contResult) {
+                                is StreamAttemptResult.Completed -> {
+                                    lastRoundAddedNonWs = contResult.text.count { !it.isWhitespace() }
+                                    accumulatedText = PaiosModelHelper.stitchOverlayContinuation(
+                                        accumulatedText,
+                                        contResult.text
+                                    )
+                                    currentFinishReason = contResult.finishReason
+                                    currentHandledTool = contResult.handledToolCall
+                                }
+                                is StreamAttemptResult.Failed -> {
+                                    Log.w(
+                                        TAG,
+                                        "[OVERLAY AUTO-CONTINUE #$continuationCount] failed: ${contResult.error.message}"
+                                    )
+                                    if (contResult.partialText.isNotBlank()) {
+                                        accumulatedText = PaiosModelHelper.stitchOverlayContinuation(
+                                            accumulatedText,
+                                            contResult.partialText
+                                        )
+                                    }
+                                    break
+                                }
+                            }
+                        }
+
+                        val outcome = handleCompletedInteractiveTurn(
+                            streamedText = accumulatedText,
+                            handledToolCall = currentHandledTool,
+                            userPrompt = userPrompt,
+                            personaSystemPrompt = personaSystemPrompt,
+                            historySnapshot = historySnapshot,
+                            userBitmapsSnapshot = userBitmapsSnapshot,
+                            newUserCompositeBitmap = newUserCompositeBitmap,
+                            effectiveBitmaps = effectiveBitmaps,
+                            aiBubbleView = aiBubbleView,
+                            bubbleViews = bubbleViews,
+                            temperatureValue = temperatureValue,
+                            turnId = turnId
+                        )
+                        val turnBitmap = activeSessionBitmap
+                        if (outcome.first && turnBitmap != null && overlayTurnSequence == turnId && !isDismissing) {
+                            schedulePostTurnVisualSummary(turnBitmap, userPrompt, outcome.second, turnId)
                         }
                     }
-                    .catch { e ->
-                        if (e is kotlinx.coroutines.CancellationException) throw e
-                        streamFailed = true
-                        Log.e(TAG, "[STREAM ERROR] ${e.message}", e)
+                    is StreamAttemptResult.Failed -> {
+                        val err = finalAttempt.error
+                        val partial = finalAttempt.partialText
+                        Log.e(TAG, "[STREAM ERROR] ${err.message}", err)
+                        if (PaiosModelHelper.isPolicyCheckException(err)) {
+                            // Ensure failed passive/session context cannot poison future turns
+                            contextData = ""
+                            if (!hasUserPhotos) {
+                                activeSessionBitmap = null
+                            }
+                        }
                         withContext(Dispatchers.Main) {
                             sheetProgressBar?.visibility = View.GONE
-                            val errText = if (streamedText.isEmpty()) {
-                                "${e.message}"
+                            bubbleViews.hideThought()
+                            val errMsg = if (PaiosModelHelper.isPolicyCheckException(err)) {
+                                resolvePolicyCheckFallbackMessage()
                             } else {
-                                "$streamedText\n\n*${e.message}*"
+                                err.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
                             }
+                            val errText = if (partial.isBlank()) errMsg else "$partial\n\n*$errMsg*"
                             aiBubbleView.text = formatMarkdownToSpannable(errText)
                         }
                     }
-                    .onCompletion { cause ->
-                        if (cause != null || streamFailed) {
-                            withContext(Dispatchers.Main) {
-                                sheetProgressBar?.visibility = View.GONE
-                            }
-                            return@onCompletion
-                        }
-
-                        val finalToolCall = extractToolCallJson(streamedText)
-                        if (finalToolCall != null) {
-                            val tool = finalToolCall.optString("tool", "")
-                            val app = finalToolCall.optString("app", "paios")
-                            val args = finalToolCall.optJSONObject("arguments") ?: JSONObject()
-                            val desc = formatToolChipLabel(finalToolCall, streamedText)
-
-                            val toolCallMsg = JSONObject().apply {
-                                put("user", "Gemini")
-                                put("message", streamedText)
-                                put("time", System.currentTimeMillis().toString())
-                            }
-                            sessionMessages.add(toolCallMsg)
-
-                            launchToolSynthesis(
-                                userPrompt = userPrompt,
-                                toolBubble = aiBubbleView,
-                                toolName = tool,
-                                appName = app,
-                                description = desc,
-                                arguments = args,
-                                personaSystemPrompt = personaSystemPrompt
-                            )
-                            return@onCompletion
-                        }
-
-                        if (handledToolCall || looksLikeIncompleteToolCall(streamedText)) {
-                            Log.w(TAG, "[STREAM INCOMPLETE TOOL] Discarding unparseable tool call draft")
-                            withContext(Dispatchers.Main) {
-                                sheetProgressBar?.visibility = View.GONE
-                                aiBubbleView.text = formatMarkdownToSpannable("Unable to parse completed tool request. Please try again.")
-                            }
-                            return@onCompletion
-                        }
-
-                        withContext(Dispatchers.Main) {
-                            sheetProgressBar?.visibility = View.GONE
-                            if (streamedText.isNotEmpty()) {
-                                conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $streamedText\n"
-                                lastResponseText = streamedText
-                                if (bitmapsSnapshot.isNotEmpty() || activeSessionBitmap != null) {
-                                    visualContextMemory = streamedText.take(1200)
-                                }
-                                val aiMsg = JSONObject().apply {
-                                    put("user", "Gemini")
-                                    put("message", streamedText)
-                                    put("time", System.currentTimeMillis().toString())
-                                }
-                                sessionMessages.add(aiMsg)
-                            }
-                        }
-                    }
-                    .collect {}
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "[STREAM INIT ERROR] ${e.message}", e)
+                if (PaiosModelHelper.isPolicyCheckException(e)) {
+                    contextData = ""
+                    if (!hasUserPhotos) {
+                        activeSessionBitmap = null
+                    }
+                }
                 withContext(Dispatchers.Main) {
                     sheetProgressBar?.visibility = View.GONE
-                    aiBubbleView.text = formatMarkdownToSpannable("${e.message}")
+                    bubbleViews.hideThought()
+                    val errMsg = if (PaiosModelHelper.isPolicyCheckException(e)) {
+                        resolvePolicyCheckFallbackMessage()
+                    } else {
+                        e.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
+                    }
+                    aiBubbleView.text = formatMarkdownToSpannable(errMsg)
                 }
             }
         }
     }
 
+    private fun resolveOverlayAuthorLabel(
+        resolved: PaiosModelHelper.ResolvedModelClient? = null
+    ): String {
+        val client = resolved ?: synchronized(modelClientLock) { cachedResolvedClient }
+        return if (client != null) {
+            PaiosModelHelper.formatNanoAuthor(
+                baseModelName = client.capabilities.baseModelName,
+                isNanoV4 = client.capabilities.isNanoV4
+            )
+        } else {
+            "Gemini Nano"
+        }
+    }
+
+    private suspend fun handleCompletedInteractiveTurn(
+        streamedText: String,
+        handledToolCall: Boolean,
+        userPrompt: String,
+        personaSystemPrompt: String,
+        historySnapshot: String,
+        userBitmapsSnapshot: List<Bitmap>,
+        newUserCompositeBitmap: Bitmap?,
+        effectiveBitmaps: List<Bitmap>,
+        aiBubbleView: TextView,
+        bubbleViews: AiBubbleViews,
+        temperatureValue: Float,
+        turnId: Long
+    ): Pair<Boolean, String> {
+        val finalToolCall = extractToolCallJson(streamedText)
+        if (finalToolCall != null) {
+            val tool = finalToolCall.optString("tool", "")
+            val app = finalToolCall.optString("app", "paios")
+            val args = finalToolCall.optJSONObject("args")
+                ?: finalToolCall.optJSONObject("arguments")
+                ?: finalToolCall.optJSONObject("params")
+                ?: JSONObject()
+            val desc = formatToolChipLabel(finalToolCall, streamedText)
+
+            val toolCallMsg = JSONObject().apply {
+                put("user", "Gemini")
+                put("author", resolveOverlayAuthorLabel())
+                put("message", streamedText)
+                put("time", System.currentTimeMillis().toString())
+            }
+            sessionMessages.add(toolCallMsg)
+
+            withContext(Dispatchers.Main) {
+                bubbleViews.hideThought()
+            }
+            launchToolSynthesis(
+                userPrompt = userPrompt,
+                toolBubble = aiBubbleView,
+                toolName = tool,
+                appName = app,
+                description = desc,
+                arguments = args,
+                personaSystemPrompt = personaSystemPrompt
+            )
+            return Pair(false, "")
+        }
+
+        if (handledToolCall || looksLikeIncompleteToolCall(streamedText)) {
+            Log.w(TAG, "[STREAM INCOMPLETE TOOL] Discarding unparseable tool call draft")
+            withContext(Dispatchers.Main) {
+                sheetProgressBar?.visibility = View.GONE
+                bubbleViews.hideThought()
+                aiBubbleView.text = formatMarkdownToSpannable("Unable to parse completed tool request. Please try again.")
+            }
+            return Pair(false, "")
+        }
+
+        if (streamedText.isBlank()) {
+            runEmptyStreamFallback(
+                userPrompt = userPrompt,
+                personaSystemPrompt = personaSystemPrompt,
+                historySnapshot = historySnapshot,
+                userBitmapsSnapshot = userBitmapsSnapshot,
+                newUserCompositeBitmap = newUserCompositeBitmap,
+                aiBubbleView = aiBubbleView,
+                temperatureValue = temperatureValue,
+                turnId = turnId
+            )
+            return Pair(false, "")
+        }
+
+        if (userBitmapsSnapshot.isNotEmpty() && newUserCompositeBitmap != null) {
+            activeSessionBitmap = newUserCompositeBitmap
+        }
+
+        withContext(Dispatchers.Main) {
+            sheetProgressBar?.visibility = View.GONE
+            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $streamedText\n"
+            lastResponseText = streamedText
+            if (effectiveBitmaps.isNotEmpty() || activeSessionBitmap != null) {
+                visualContextMemory = streamedText.take(1200)
+            }
+            val aiMsg = JSONObject().apply {
+                put("user", "Gemini")
+                put("author", resolveOverlayAuthorLabel())
+                put("message", streamedText)
+                put("time", System.currentTimeMillis().toString())
+            }
+            sessionMessages.add(aiMsg)
+        }
+        val shouldSummarize = userBitmapsSnapshot.isNotEmpty() &&
+            activeSessionBitmap != null &&
+            overlayTurnSequence == turnId
+        return Pair(shouldSummarize, if (shouldSummarize) streamedText else "")
+    }
+
+    private fun resolveEmptyResponseFallback(): String {
+        return tr("error_no_response").takeIf { it != "error_no_response" }
+            ?: "Could not generate a response. Please try again."
+    }
+
+    private fun resolvePolicyCheckFallbackMessage(): String {
+        return tr("error_policy_check").takeIf { it != "error_policy_check" }
+            ?: "This request couldn't be processed by the on-device safety check. Try rephrasing or clearing screen context."
+    }
+
+    private suspend fun runEmptyStreamFallback(
+        userPrompt: String,
+        personaSystemPrompt: String,
+        historySnapshot: String,
+        userBitmapsSnapshot: List<Bitmap>,
+        newUserCompositeBitmap: Bitmap?,
+        aiBubbleView: TextView,
+        temperatureValue: Float,
+        turnId: Long
+    ) {
+        val hasUserPhotos = userBitmapsSnapshot.isNotEmpty()
+        Log.w(TAG, "[EMPTY STREAM RETRY] Initial stream returned blank; retrying once (hasUserPhotos=$hasUserPhotos)")
+        val retryInstructions = buildString {
+            val boundedPersona = PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt)
+            if (!boundedPersona.isNullOrBlank()) {
+                append(boundedPersona)
+            }
+            if (!hasUserPhotos && historySnapshot.isNotBlank()) {
+                if (isNotEmpty()) append("\n\n")
+                append("### [CHAT HISTORY]\n")
+                append(historySnapshot.takeLast(1200))
+            }
+        }.takeIf { it.isNotBlank() }
+
+        val retryPrompt = if (hasUserPhotos) {
+            "[Image attached to this message]\nUser's request: $userPrompt"
+        } else {
+            "User's request: $userPrompt"
+        }
+
+        var retryText = ""
+        var retryError: Throwable? = null
+        try {
+            val resolved = getOverlayResolvedClient()
+            val retryBitmap = if (hasUserPhotos) (newUserCompositeBitmap ?: compositeBitmaps(userBitmapsSnapshot)) else null
+            val retryRequest = PaiosModelHelper.buildRequest(
+                prompt = retryPrompt,
+                instructions = retryInstructions,
+                image = retryBitmap,
+                maxTokens = null,
+                temperature = temperatureValue,
+                enableThinking = false,
+                useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                useThinkingCapability = false,
+                candidateCount = 1
+            )
+            resolved.model.generateContentStream(retryRequest)
+                .onEach { chunk ->
+                    val piece = chunk.candidates.firstOrNull()?.text ?: ""
+                    retryText += piece
+                    if (retryText.isNotBlank()) {
+                        val formatted = formatMarkdownToSpannable(retryText)
+                        withContext(Dispatchers.Main) {
+                            aiBubbleView.text = formatted
+                            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                        }
+                    }
+                }
+                .catch { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    retryError = e
+                }
+                .collect {}
+
+            if (retryError != null &&
+                retryText.isBlank() &&
+                PaiosModelHelper.isPolicyCheckException(retryError!!) &&
+                retryInstructions != null
+            ) {
+                Log.w(TAG, "[POLICY FALLBACK RETRY] Empty-stream retry hit policy check; retrying bare prompt")
+                retryError = null
+                val bareRequest = PaiosModelHelper.buildRequest(
+                    prompt = retryPrompt,
+                    instructions = null,
+                    image = retryBitmap,
+                    maxTokens = null,
+                    temperature = temperatureValue,
+                    enableThinking = false,
+                    useNativeSystemInstruction = false,
+                    useThinkingCapability = false,
+                    candidateCount = 1
+                )
+                resolved.model.generateContentStream(bareRequest)
+                    .onEach { chunk ->
+                        val piece = chunk.candidates.firstOrNull()?.text ?: ""
+                        retryText += piece
+                        if (retryText.isNotBlank()) {
+                            val formatted = formatMarkdownToSpannable(retryText)
+                            withContext(Dispatchers.Main) {
+                                aiBubbleView.text = formatted
+                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            }
+                        }
+                    }
+                    .catch { e ->
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        retryError = e
+                    }
+                    .collect {}
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            retryError = e
+        }
+
+        val finalError = retryError
+        if (finalError != null) {
+            Log.e(TAG, "[EMPTY STREAM RETRY ERROR] ${finalError.message}", finalError)
+            withContext(Dispatchers.Main) {
+                sheetProgressBar?.visibility = View.GONE
+                val errMsg = if (PaiosModelHelper.isPolicyCheckException(finalError)) {
+                    resolvePolicyCheckFallbackMessage()
+                } else {
+                    finalError.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
+                }
+                val errText = if (retryText.isBlank()) errMsg else "$retryText\n\n*$errMsg*"
+                aiBubbleView.text = formatMarkdownToSpannable(errText)
+            }
+            return
+        }
+
+        if (hasUserPhotos && retryText.isNotBlank()) {
+            activeSessionBitmap = newUserCompositeBitmap ?: activeSessionBitmap
+        }
+
+        withContext(Dispatchers.Main) {
+            sheetProgressBar?.visibility = View.GONE
+            if (retryText.isNotBlank()) {
+                aiBubbleView.text = formatMarkdownToSpannable(retryText)
+                conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $retryText\n"
+                lastResponseText = retryText
+                if (hasUserPhotos) {
+                    visualContextMemory = retryText.take(1200)
+                }
+                val aiMsg = JSONObject().apply {
+                    put("user", "Gemini")
+                    put("author", resolveOverlayAuthorLabel())
+                    put("message", retryText)
+                    put("time", System.currentTimeMillis().toString())
+                }
+                sessionMessages.add(aiMsg)
+            } else {
+                aiBubbleView.text = formatMarkdownToSpannable(resolveEmptyResponseFallback())
+            }
+            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+        }
+        val turnBitmap = activeSessionBitmap
+        if (hasUserPhotos && retryText.isNotBlank() && turnBitmap != null && overlayTurnSequence == turnId && !isDismissing) {
+            schedulePostTurnVisualSummary(turnBitmap, userPrompt, retryText, turnId)
+        }
+    }
+
     private fun applyToolChipStyle(view: TextView, description: String) {
+        val parentCard = view.parent as? LinearLayout
+        if (parentCard != null && parentCard.childCount > 1) {
+            parentCard.getChildAt(0)?.visibility = View.GONE
+            parentCard.background = null
+            parentCard.setPadding(0, 0, 0, 0)
+        }
         view.text = formatMarkdownToSpannable("🔧  *$description*")
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         view.setTextColor(palette.subtitle)
@@ -2929,7 +3822,7 @@ class MeshOverlayActivity : Activity() {
             }
 
             val toolResultBanner = if (isToolError) {
-                "[TOOL ERROR — DATA UNAVAILABLE] Calling '$toolName' on '$appName' FAILED: $resultPayload. Inform the user of this failure and NEVER invent data or claim everything is normal."
+                "[TOOL ERROR — DATA UNAVAILABLE] Calling '$toolName' on '$appName' failed: $resultPayload."
             } else {
                 "[TOOL RESULT: $resultPayload]"
             }
@@ -2948,101 +3841,364 @@ class MeshOverlayActivity : Activity() {
 
             // 3. Build natural language synthesis prompt
             val isShareLocale = isShareLocaleEnabled()
-            val synthesisPrompt = buildString {
-                if (personaSystemPrompt.isNotBlank()) {
-                    append("System Instruction / Persona:\n$personaSystemPrompt\n\n")
-                }
-                append("The tool '$toolName' from application '$appName' was executed and returned:\n")
+            val synthesisUserBlock = buildString {
+                append("User question: \"$userPrompt\"\n\n")
+                append("Tool '$toolName' from '$appName' returned:\n")
                 append("$toolResultBanner\n\n")
 
                 if (isShareLocale) {
                     val appLang = activeDict.optString("current_language", "en")
-                    append("CRITICAL LANGUAGE INSTRUCTION: You MUST respond in the current app language ($appLang). Do not switch to English.\n\n")
+                    append("Respond in $appLang.\n")
                 } else {
-                    append("CRITICAL LANGUAGE INSTRUCTION: You MUST respond in the EXACT SAME LANGUAGE as the user's request: \"$userPrompt\" (e.g. if the user asked in Ukrainian, you MUST answer in Ukrainian; do not switch to English).\n\n")
+                    append("Respond in the same language as \"$userPrompt\".\n")
                 }
 
                 if (isToolError) {
-                    append("The tool failed. Explain clearly that live data could not be retrieved due to this error. NEVER claim there are no incidents or invent data.")
+                    append("Explain clearly in plain prose that live data could not be retrieved due to this error, without inventing results.")
                 } else {
-                    append("Please provide a clear, helpful, and natural language answer to the user's request: \"$userPrompt\" using the tool result above.")
+                    append("Summarize these results clearly in natural, conversational sentences to answer the user's question. Reply in plain prose only.")
                 }
             }
 
+            val synthTurnId = overlayTurnSequence
             var synthText = ""
-            var synthFailed = false
+            var synthError: Throwable? = null
+            var lastSynthFinishReason: String? = null
             try {
-                val generativeModel = Generation.getClient()
-                val request = generateContentRequest(TextPart(synthesisPrompt)) {}
-                generativeModel.generateContentStream(request)
+                val resolved = getOverlayResolvedClient()
+                val temperatureValue = resolveTemperatureSetting()
+                val boundedPersona = PaiosModelHelper.trimSystemInstructionToWordLimit(personaSystemPrompt)
+                val request = PaiosModelHelper.buildRequest(
+                    prompt = synthesisUserBlock,
+                    instructions = boundedPersona,
+                    image = null,
+                    maxTokens = null,
+                    temperature = temperatureValue,
+                    enableThinking = false,
+                    useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                    useThinkingCapability = false,
+                    candidateCount = 1
+                )
+                resolved.model.generateContentStream(request)
                     .onEach { chunk ->
-                        val piece = chunk.candidates.firstOrNull()?.text ?: ""
+                        val candidate = chunk.candidates.firstOrNull()
+                        val piece = candidate?.text ?: ""
+                        val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                        if (chunkReason != null) {
+                            lastSynthFinishReason = chunkReason
+                        }
                         synthText += piece
-                        val formatted = formatMarkdownToSpannable(synthText)
-                        withContext(Dispatchers.Main) {
-                            synthesisBubble.text = formatted
-                            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                        if (synthText.isNotBlank()) {
+                            val formatted = formatMarkdownToSpannable(synthText)
+                            withContext(Dispatchers.Main) {
+                                synthesisBubble.text = formatted
+                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            }
                         }
                     }
                     .catch { e ->
                         if (e is kotlinx.coroutines.CancellationException) throw e
-                        synthFailed = true
-                        Log.e(TAG, "[SYNTHESIS STREAM ERROR] ${e.message}", e)
-                        withContext(Dispatchers.Main) {
-                            sheetProgressBar?.visibility = View.GONE
-                            val errText = if (synthText.isEmpty()) "${e.message}" else "$synthText\n\n*${e.message}*"
-                            synthesisBubble.text = formatMarkdownToSpannable(errText)
-                        }
-                    }
-                    .onCompletion { cause ->
-                        withContext(Dispatchers.Main) {
-                            sheetProgressBar?.visibility = View.GONE
-                            if (cause == null && !synthFailed && synthText.isNotEmpty()) {
-                                conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $synthText\n"
-                                lastResponseText = synthText
-                                val aiMsg = JSONObject().apply {
-                                    put("user", "Gemini")
-                                    put("message", synthText)
-                                    put("time", System.currentTimeMillis().toString())
-                                }
-                                sessionMessages.add(aiMsg)
-                            }
-                        }
+                        synthError = e
                     }
                     .collect {}
+
+                if (synthError != null &&
+                    synthText.isBlank() &&
+                    PaiosModelHelper.isPolicyCheckException(synthError!!) &&
+                    boundedPersona != null
+                ) {
+                    Log.w(TAG, "[POLICY FALLBACK RETRY] Tool synthesis retrying without persona instructions")
+                    synthError = null
+                    lastSynthFinishReason = null
+                    val fallbackRequest = PaiosModelHelper.buildRequest(
+                        prompt = synthesisUserBlock,
+                        instructions = null,
+                        image = null,
+                        maxTokens = null,
+                        temperature = temperatureValue,
+                        enableThinking = false,
+                        useNativeSystemInstruction = false,
+                        useThinkingCapability = false,
+                        candidateCount = 1
+                    )
+                    resolved.model.generateContentStream(fallbackRequest)
+                        .onEach { chunk ->
+                            val candidate = chunk.candidates.firstOrNull()
+                            val piece = candidate?.text ?: ""
+                            val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                            if (chunkReason != null) {
+                                lastSynthFinishReason = chunkReason
+                            }
+                            synthText += piece
+                            if (synthText.isNotBlank()) {
+                                val formatted = formatMarkdownToSpannable(synthText)
+                                withContext(Dispatchers.Main) {
+                                    synthesisBubble.text = formatted
+                                    outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                }
+                            }
+                        }
+                        .catch { e ->
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            synthError = e
+                        }
+                        .collect {}
+                }
+
+                // Auto-continue tool synthesis on v3 / truncated outputs
+                var synthContinuationCount = 0
+                var synthNullReasonRetries = 0
+                var synthLastAddedNonWs = synthText.count { !it.isWhitespace() }
+                while (synthError == null &&
+                    overlayTurnSequence == synthTurnId &&
+                    !isDismissing &&
+                    PaiosModelHelper.shouldContinuePartialResponse(
+                        finishReason = lastSynthFinishReason,
+                        partialText = synthText,
+                        continuationCount = synthContinuationCount,
+                        lastRoundAddedChars = synthLastAddedNonWs,
+                        isNanoV4 = resolved.capabilities.isNanoV4,
+                        nullReasonRetryCount = synthNullReasonRetries
+                    )
+                ) {
+                    if (PaiosModelHelper.normalizeFinishReason(lastSynthFinishReason) == null) {
+                        synthNullReasonRetries++
+                    }
+                    synthContinuationCount++
+                    Log.i(
+                        TAG,
+                        "[OVERLAY SYNTHESIS AUTO-CONTINUE #$synthContinuationCount] reason=$lastSynthFinishReason chars=${synthText.length}"
+                    )
+                    withContext(Dispatchers.Main) {
+                        if (overlayTurnSequence == synthTurnId && !isDismissing) {
+                            sheetProgressBar?.visibility = View.VISIBLE
+                        }
+                    }
+                    val contSpec = PaiosModelHelper.buildOverlayContinuationPrompt(
+                        originalQuestion = synthesisUserBlock,
+                        partialText = synthText,
+                        personaAnchor = personaSystemPrompt,
+                        languageCode = if (isShareLocale) activeDict.optString("current_language", "en") else null,
+                        maxQuestionChars = 1200
+                    )
+                    val contRequest = PaiosModelHelper.buildRequest(
+                        prompt = contSpec.userPrompt,
+                        instructions = contSpec.instructions,
+                        image = null,
+                        maxTokens = null,
+                        temperature = temperatureValue,
+                        enableThinking = false,
+                        useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                        useThinkingCapability = false,
+                        candidateCount = 1
+                    )
+                    var roundText = ""
+                    var roundReason: String? = null
+                    var roundError: Throwable? = null
+                    resolved.model.generateContentStream(contRequest)
+                        .onEach { chunk ->
+                            val candidate = chunk.candidates.firstOrNull()
+                            val piece = candidate?.text ?: ""
+                            val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                            if (chunkReason != null) {
+                                roundReason = chunkReason
+                            }
+                            roundText += piece
+                            val stitchedPreview = PaiosModelHelper.stitchOverlayContinuation(synthText, roundText)
+                            if (stitchedPreview.isNotBlank()) {
+                                val formatted = formatMarkdownToSpannable(stitchedPreview)
+                                withContext(Dispatchers.Main) {
+                                    if (overlayTurnSequence == synthTurnId && !isDismissing) {
+                                        synthesisBubble.text = formatted
+                                        outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                    }
+                                }
+                            }
+                        }
+                        .catch { e ->
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            roundError = e
+                        }
+                        .collect {}
+
+                    val activeRoundError = roundError
+                    if (activeRoundError != null) {
+                        Log.w(TAG, "[OVERLAY SYNTHESIS AUTO-CONTINUE #$synthContinuationCount] failed: ${activeRoundError.message}")
+                        if (roundText.isNotBlank()) {
+                            synthText = PaiosModelHelper.stitchOverlayContinuation(synthText, roundText)
+                        }
+                        break
+                    }
+                    synthLastAddedNonWs = roundText.count { !it.isWhitespace() }
+                    synthText = PaiosModelHelper.stitchOverlayContinuation(synthText, roundText)
+                    lastSynthFinishReason = roundReason
+                }
+
+                val finalSynthErr = synthError
+                if (finalSynthErr != null) {
+                    Log.e(TAG, "[SYNTHESIS STREAM ERROR] ${finalSynthErr.message}", finalSynthErr)
+                    withContext(Dispatchers.Main) {
+                        sheetProgressBar?.visibility = View.GONE
+                        val errMsg = if (PaiosModelHelper.isPolicyCheckException(finalSynthErr)) {
+                            resolvePolicyCheckFallbackMessage()
+                        } else {
+                            finalSynthErr.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
+                        }
+                        val errText = if (synthText.isBlank()) errMsg else "$synthText\n\n*$errMsg*"
+                        synthesisBubble.text = formatMarkdownToSpannable(errText)
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        sheetProgressBar?.visibility = View.GONE
+                        if (synthText.isNotBlank()) {
+                            conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $synthText\n"
+                            lastResponseText = synthText
+                            val aiMsg = JSONObject().apply {
+                                put("user", "Gemini")
+                                put("author", resolveOverlayAuthorLabel(resolved))
+                                put("message", synthText)
+                                put("time", System.currentTimeMillis().toString())
+                            }
+                            sessionMessages.add(aiMsg)
+                        } else {
+                            val fallbackMsg = if (isToolError) {
+                                "Tool '$toolName' failed to return a response."
+                            } else {
+                                resolveEmptyResponseFallback()
+                            }
+                            synthesisBubble.text = formatMarkdownToSpannable(fallbackMsg)
+                        }
+                    }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "[SYNTHESIS INIT ERROR] ${e.message}", e)
                 withContext(Dispatchers.Main) {
                     sheetProgressBar?.visibility = View.GONE
-                    synthesisBubble.text = formatMarkdownToSpannable("${e.message}")
+                    val errMsg = if (PaiosModelHelper.isPolicyCheckException(e)) {
+                        resolvePolicyCheckFallbackMessage()
+                    } else {
+                        e.message?.takeIf { it.isNotBlank() } ?: resolveEmptyResponseFallback()
+                    }
+                    synthesisBubble.text = formatMarkdownToSpannable(errMsg)
                 }
             }
         }
     }
 
+    private fun extractPartialToolField(streamedText: String, fieldName: String): String {
+        val regex = Regex("""["']$fieldName["']\s*:\s*["']((?:\\.|[^"'\\\r\n])*)["']""")
+        val match = regex.find(streamedText) ?: return ""
+        return match.groupValues[1]
+            .replace("\\_", "_")
+            .replace("\\\"", "\"")
+            .trim()
+    }
+
+    private fun isVerboseToolDescription(description: String): Boolean {
+        val trimmed = description.trim()
+        if (trimmed.isEmpty() || trimmed.length > 44) return true
+        val lower = trimmed.lowercase(Locale.ROOT)
+        return lower.startsWith("returns ") ||
+            lower.startsWith("checks whether ") ||
+            lower.startsWith("provides ") ||
+            lower.startsWith("retrieves ") ||
+            lower.startsWith("lists ") ||
+            lower.startsWith("searches official ")
+    }
+
+    private fun humanizeToolName(toolName: String, appName: String = ""): String {
+        val trimmed = toolName.trim()
+        if (trimmed.isEmpty()) return tr("tool_selecting")
+        val lower = trimmed.lowercase(Locale.ROOT)
+        when (lower) {
+            "query_aicore_documentation" -> return "Searching documentation"
+            "get_battery_status" -> return "Checking battery"
+            "wikipedia_summary" -> return "Searching Wikipedia"
+            "wikipedia_details" -> return "Reading Wikipedia"
+            "duckduckgo_search" -> return "Searching DuckDuckGo"
+            "weather_forecast" -> return "Checking weather"
+        }
+
+        val normalized = trimmed
+            .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+            .lowercase(Locale.ROOT)
+        val rawTokens = normalized.split(Regex("[_\\-.:/\\s]+")).filter { it.isNotEmpty() }.toMutableList()
+        val appSlug = appName.trim().lowercase(Locale.ROOT).substringAfterLast('.')
+        val prefixes = mutableSetOf("alerts", "demo", "ptk", "paios", "geminilocal", "ggscanus", "binotool", "the2k48", "m3x", "mesh", "app")
+        if (appSlug.isNotEmpty()) prefixes.add(appSlug)
+        while (rawTokens.size > 1 && prefixes.contains(rawTokens.first())) {
+            rawTokens.removeAt(0)
+        }
+        if (rawTokens.isEmpty()) return tr("tool_selecting")
+
+        val verbMap = mapOf(
+            "get" to "Checking",
+            "check" to "Checking",
+            "fetch" to "Fetching",
+            "read" to "Reading",
+            "list" to "Listing",
+            "search" to "Searching",
+            "query" to "Searching",
+            "find" to "Finding",
+            "run" to "Running",
+            "exec" to "Running",
+            "execute" to "Running",
+            "create" to "Creating",
+            "add" to "Adding",
+            "update" to "Updating",
+            "set" to "Setting",
+            "delete" to "Deleting",
+            "remove" to "Removing",
+            "sync" to "Syncing",
+            "refresh" to "Refreshing",
+            "open" to "Opening",
+            "launch" to "Opening",
+            "toggle" to "Toggling",
+            "analyze" to "Analyzing",
+            "inspect" to "Inspecting",
+            "ping" to "Pinging",
+            "send" to "Sending"
+        )
+        val first = rawTokens.first()
+        val mappedVerb = verbMap[first]
+        return if (mappedVerb != null) {
+            val rest = rawTokens.drop(1).take(3)
+            when {
+                rest.isEmpty() -> when (first) {
+                    "ping" -> "Pinging service"
+                    else -> "$mappedVerb status"
+                }
+                first == "list" && rest.size == 1 && rest[0] in setOf("active", "all", "open", "recent", "pending", "enabled", "installed", "available") ->
+                    "$mappedVerb ${rest[0]} items"
+                else -> "$mappedVerb ${rest.joinToString(" ")}"
+            }
+        } else {
+            val words = rawTokens.take(4)
+            words.first().replaceFirstChar { it.titlecase(Locale.ROOT) } +
+                if (words.size > 1) " " + words.drop(1).joinToString(" ") else ""
+        }
+    }
+
     private fun formatToolChipLabel(toolCall: JSONObject?, streamedText: String): String {
-        val explicitDesc = toolCall?.optString("description")?.trim().orEmpty()
-        if (explicitDesc.isNotEmpty()) return explicitDesc
+        val rawDesc = toolCall?.optString("description")?.trim().orEmpty()
+            .ifEmpty { extractPartialToolField(streamedText, "description") }
+        if (!isVerboseToolDescription(rawDesc)) return rawDesc
 
         val toolName = toolCall?.optString("tool")?.trim().orEmpty()
-        return when {
-            toolName.contains("doc") || (toolName.isEmpty() && streamedText.contains("doc")) -> {
-                val query = toolCall?.optJSONObject("arguments")?.optString("query")?.trim().orEmpty()
-                when {
-                    query.isNotEmpty() -> tr("tool_reading_docs").replace("%s", query)
-                    toolName.isNotEmpty() -> tr("tool_using").replace("%s", toolName)
-                    else -> tr("tool_reading_docs").replace(" '%s'", "").replace("'%s'", "").replace("%s", "").trim()
-                }
-            }
-            toolName.contains("battery") || (toolName.isEmpty() && streamedText.contains("battery")) -> {
-                tr("tool_checking_battery")
-            }
-            toolName.isNotEmpty() -> {
-                tr("tool_using").replace("%s", toolName)
-            }
-            else -> tr("assistant_status_processing")
+            .ifEmpty { toolCall?.optString("name")?.trim().orEmpty() }
+            .ifEmpty { toolCall?.optString("method")?.trim().orEmpty() }
+            .ifEmpty { extractPartialToolField(streamedText, "tool") }
+            .ifEmpty { extractPartialToolField(streamedText, "name") }
+            .ifEmpty { extractPartialToolField(streamedText, "method") }
+        val appName = toolCall?.optString("app")?.trim().orEmpty()
+            .ifEmpty { extractPartialToolField(streamedText, "app") }
+
+        return if (toolName.isNotEmpty()) {
+            humanizeToolName(toolName, appName)
+        } else {
+            tr("tool_selecting")
         }
     }
 
@@ -3144,18 +4300,14 @@ class MeshOverlayActivity : Activity() {
                                     val rawDesc = toolObj.optString("description", "")
                                         .trim()
                                         .replace(Regex("\\s+"), " ")
-                                    val desc = if (rawDesc.length > 220) {
-                                        rawDesc.take(217) + "..."
+                                    val desc = if (rawDesc.length > 140) {
+                                        rawDesc.take(137) + "..."
                                     } else {
                                         rawDesc
                                     }
-                                    val paramsObj = toolObj.optJSONObject("parameters")
-                                        ?: JSONObject().apply {
-                                            put("type", "object")
-                                            put("properties", JSONObject())
-                                        }
+                                    val compactParams = formatCompactToolParams(toolObj.optJSONObject("parameters"))
                                     entries.add(
-                                        "\n - $name (app: \"$pkg\"): $desc\n   arguments schema: $paramsObj"
+                                        "\n - $name (app: \"$pkg\"): $desc\n   args: $compactParams"
                                     )
                                 }
                             }
@@ -3190,7 +4342,46 @@ class MeshOverlayActivity : Activity() {
         collected
     }
 
+    private fun formatCompactToolParams(paramsObj: JSONObject?): String {
+        val props = paramsObj?.optJSONObject("properties") ?: return "{}"
+        if (props.length() == 0) return "{}"
+
+        val parts = mutableListOf<String>()
+        var totalLen = 2 // "{}"
+        val keys = props.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val propObj = props.optJSONObject(key)
+            val baseType = propObj?.optString("type", "")?.trim()?.takeIf { it.isNotEmpty() } ?: "any"
+            val enumArr = propObj?.optJSONArray("enum")
+            val typeSpec = if (enumArr != null && enumArr.length() > 0) {
+                val enums = (0 until enumArr.length())
+                    .mapNotNull { idx -> enumArr.opt(idx)?.toString()?.trim()?.takeIf { it.isNotEmpty() } }
+                if (enums.isNotEmpty()) "$baseType(${enums.joinToString("|")})" else baseType
+            } else {
+                baseType
+            }
+            val rawEntry = "$key: $typeSpec"
+            val entry = if (parts.isEmpty() && rawEntry.length > 158) {
+                rawEntry.take(155) + "..."
+            } else {
+                rawEntry
+            }
+            val addedLen = entry.length + if (parts.isEmpty()) 0 else 2
+            if (totalLen + addedLen > 160 && parts.isNotEmpty()) {
+                parts.add("...")
+                break
+            }
+            parts.add(entry)
+            totalLen += addedLen
+        }
+        return "{${parts.joinToString(", ")}}"
+    }
+
     private suspend fun getMeshToolSchemaPrompt(): String {
+        if (!isMeshEnabledInPrefs()) return ""
+
+        val internalSpecs = InternalToolsHelper.getMeshToolPromptSpecs(this)
         val externalEntries = try {
             fetchExternalMeshToolEntries()
         } catch (e: Exception) {
@@ -3198,31 +4389,19 @@ class MeshOverlayActivity : Activity() {
             emptyList()
         }
 
+        if (internalSpecs.isBlank() && externalEntries.isEmpty()) {
+            return ""
+        }
+
         return buildString {
-            append(
-                """
-### [AVAILABLE TOOLS]
-You have access to external agentic tools provided by connected applications in the M3x mesh.
-
-CRITICAL TOOL INVOCATION RULES:
-1. ONLY invoke a tool when the user's latest message explicitly asks for information, status, or an action that REQUIRES that specific tool.
-2. NEVER invoke a tool for general greetings (e.g. "hi", "hello", "how are you"), pleasantries, casual conversation, self-descriptions, or questions that do not require external live data. For these, respond naturally in conversation without calling any tool.
-3. NEVER guess or invoke a tool speculatively. If unsure, respond conversationally.
-4. NEVER invoke a tool when the user is asking about visual contents, images, photos, UI widgets, screenshots, or apps visible on the screen, or when no tool exists for the requested data. There is NO tool for reading screen apps or images; inspect the attached image directly or answer honestly that no such tool exists.
-
-When a tool is genuinely required by the user's explicit request, respond ONLY with a valid JSON tool call block using double quotes:
-```json
-{"action": "tool_call", "app": "<app>", "tool": "<tool>", "description": "Checking live data", "arguments": {}}
-```
-Do not add any text before or after the JSON block.
-
-Available tool schemas:
- - query_aicore_documentation (app: "paios"): Searches official Google ML Kit GenAI and AICore documentation for supported devices, token limits, system prompt guidelines, error codes (-101, -100, BUSY, BACKGROUND_USE_BLOCKED), and multimodal vision specs.
-   arguments schema: {"type":"object","properties":{"query":{"type":"string","description":"Search topic, device model, or error code (e.g. \"token limits\", \"-101\", \"Pixel 9\", \"system prompt\", \"vision downsample\")"}},"required":["query"]}
- - get_battery_status (app: "paios"): Checks device battery level, charging state, and power status. NEVER invoke this tool for questions about images, photos, screen icons, UI widgets, or visible apps.
-   arguments schema: {"type":"object","properties":{}}
-""".trimIndent()
-            )
+            append("### [AVAILABLE TOOLS]\n")
+            append("Use a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text.\n")
+            append("When calling a tool, respond with ONLY a JSON object using double quotes:\n")
+            append("""{"tool": "<tool>", "app": "<app>", "args": {}, "description": "<2-4 word action label>"}""")
+            append("\n\nTools:")
+            if (internalSpecs.isNotBlank()) {
+                append(internalSpecs)
+            }
             for (entry in externalEntries) {
                 append(entry)
             }
@@ -3233,6 +4412,9 @@ Available tool schemas:
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return false
         if (extractToolCallJson(trimmed) != null) return false
+        if (trimmed.startsWith("{") || trimmed.startsWith("```json", ignoreCase = true)) {
+            return true
+        }
         val stripped = trimmed.replace(Regex("""^```(?:json)?\s*""", RegexOption.IGNORE_CASE), "")
         if (!stripped.startsWith("{")) return false
         return stripped.contains("\"action\"") ||
@@ -3324,7 +4506,7 @@ Available tool schemas:
         if (obj.optString("action") == "tool_call") return true
         val tool = obj.opt("tool")?.toString()?.trim()
         if (tool.isNullOrEmpty()) return false
-        return obj.has("arguments") || obj.has("params") || obj.has("app") || obj.has("description")
+        return obj.has("args") || obj.has("arguments") || obj.has("params") || obj.has("app") || obj.has("description")
     }
 
     private fun sanitizeJsonLikeString(raw: String, convertSingleQuotes: Boolean): String {
@@ -3398,6 +4580,68 @@ Available tool schemas:
             }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun isAddCurrentTimeEnabled(): Boolean {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            if (prefs.contains("flutter.addCurrentTimeToRequests")) {
+                prefs.getBoolean("flutter.addCurrentTimeToRequests", false)
+            } else if (prefs.contains("addCurrentTimeToRequests")) {
+                prefs.getBoolean("addCurrentTimeToRequests", false)
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isMeshEnabledInPrefs(): Boolean {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            if (prefs.contains("flutter.enableMesh")) {
+                prefs.getBoolean("flutter.enableMesh", true)
+            } else if (prefs.contains("enableMesh")) {
+                prefs.getBoolean("enableMesh", true)
+            } else {
+                true
+            }
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun resolveTemperatureSetting(): Float {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val raw = prefs.all["flutter.temperature"] ?: prefs.all["temperature"]
+            val parsed = when (raw) {
+                is Number -> raw.toFloat()
+                is String -> raw
+                    .removePrefix("VGhpcyBpcyB0aGUgcHJlZml4IGZvciBEb3VibGUu")
+                    .toFloatOrNull()
+                else -> null
+            }
+            (parsed ?: 0.7f).coerceIn(0.0f, 1.0f)
+        } catch (_: Exception) {
+            0.7f
+        }
+    }
+
+    private fun resolveMaxTokensSetting(): Int {
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            val raw = prefs.all["flutter.tokens"] ?: prefs.all["tokens"]
+            val parsed = when (raw) {
+                is Number -> raw.toInt()
+                is String -> raw.trim().toIntOrNull()
+                else -> null
+            }
+            (parsed?.takeIf { it > 0 } ?: 256).coerceIn(1, 256)
+        } catch (_: Exception) {
+            256
         }
     }
 
@@ -3484,20 +4728,146 @@ Available tool schemas:
         }
     }
 
+    private suspend fun runOneShotModelCall(
+        promptPrefixText: String,
+        userText: String,
+        bitmap: Bitmap? = null,
+        maxTokens: Int = 160,
+        temperatureValue: Float = 0.2f,
+        shouldYield: (() -> Boolean)? = null,
+    ): String = withContext(Dispatchers.IO) {
+        val resolved = getOverlayResolvedClient()
+        val cleanPrefix = PaiosModelHelper.trimSystemInstructionToWordLimit(promptPrefixText)
+        val clampedTokens = maxTokens.coerceIn(1, 256)
+        var activeRequest = PaiosModelHelper.buildRequest(
+            prompt = userText,
+            instructions = cleanPrefix,
+            image = bitmap,
+            maxTokens = clampedTokens,
+            temperature = temperatureValue,
+            enableThinking = false,
+            useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+            useThinkingCapability = false,
+            candidateCount = 1
+        )
+        var retriedPolicyFallback = false
+
+        val retryDelaysMs = longArrayOf(200L, 450L, 800L)
+        var attempt = 0
+        while (attempt <= retryDelaysMs.size) {
+            if (shouldYield?.invoke() == true) return@withContext ""
+            try {
+                val response = resolved.model.generateContent(activeRequest)
+                return@withContext response.candidates.firstOrNull()?.text?.trim().orEmpty()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (PaiosModelHelper.isBusyException(e) && attempt < retryDelaysMs.size && shouldYield?.invoke() != true) {
+                    val waitMs = retryDelaysMs[attempt]
+                    Log.w(TAG, "One-shot model call busy (-101), retry ${attempt + 1}/${retryDelaysMs.size} after ${waitMs}ms")
+                    delay(waitMs)
+                    attempt++
+                } else if (PaiosModelHelper.isPolicyCheckException(e) &&
+                    !retriedPolicyFallback &&
+                    bitmap == null &&
+                    cleanPrefix != null &&
+                    shouldYield?.invoke() != true
+                ) {
+                    retriedPolicyFallback = true
+                    Log.w(TAG, "[POLICY FALLBACK RETRY] One-shot call retrying without prefix instructions")
+                    activeRequest = PaiosModelHelper.buildRequest(
+                        prompt = userText,
+                        instructions = null,
+                        image = null,
+                        maxTokens = clampedTokens,
+                        temperature = temperatureValue,
+                        enableThinking = false,
+                        useNativeSystemInstruction = false,
+                        useThinkingCapability = false,
+                        candidateCount = 1
+                    )
+                } else {
+                    Log.w(TAG, "One-shot model call failed: ${e.message}")
+                    return@withContext ""
+                }
+            }
+        }
+        ""
+    }
+
+    private fun schedulePostTurnVisualSummary(
+        bitmap: Bitmap,
+        userPrompt: String,
+        assistantReply: String,
+        turnId: Long,
+    ) {
+        visualSummaryJob?.cancel()
+        visualSummaryJob = activityScope.launch(Dispatchers.IO) {
+            if (overlayTurnSequence != turnId || isDismissing) return@launch
+            val summary = runOneShotModelCall(
+                promptPrefixText = "Summarize the attached image factually in 1-2 concise sentences for future conversation memory. Focus on visible subjects, text, and key details.",
+                userText = "User asked: $userPrompt\nAssistant answered: ${assistantReply.take(400)}",
+                bitmap = bitmap,
+                maxTokens = 160,
+                temperatureValue = 0.2f,
+                shouldYield = { overlayTurnSequence != turnId || isDismissing },
+            )
+            if (summary.isNotBlank() && overlayTurnSequence == turnId && !isDismissing) {
+                withContext(Dispatchers.Main) {
+                    if (overlayTurnSequence == turnId && !isDismissing) {
+                        activeVisualNote = summary.take(480)
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun executeMeshToolCall(tool: String, app: String, arguments: JSONObject): String {
         val rawApp = if (app.isNotBlank()) app else "paios"
         val canonApp = canonicalAppId(rawApp)
-        if (canonApp != packageName && canonApp != "page.puzzak.paios") {
-            if (!isExtensionEnabledInPrefs(canonApp)) {
-                Log.w(TAG, "Extension '$canonApp' is disabled in PAIOS settings.")
-                return JSONObject().apply {
-                    put("status", "error")
-                    put("message", "Extension '$canonApp' is disabled in PAIOS settings.")
-                }.toString()
-            }
+        val isSelfApp = canonApp == packageName || canonApp == "page.puzzak.paios"
+        if (!isSelfApp && !isExtensionEnabledInPrefs(canonApp)) {
+            Log.w(TAG, "Extension '$canonApp' is disabled in PAIOS settings.")
+            return JSONObject().apply {
+                put("status", "error")
+                put("message", "Extension '$canonApp' is disabled in PAIOS settings.")
+            }.toString()
         }
-        val authority = discoveredAuthorities[canonApp] ?: "$canonApp.mesh"
 
+        if (InternalToolsHelper.isInternalTool(tool)) {
+            // For documentation queries when Flutter is alive, prefer its synced/cached doc store first;
+            // otherwise fall through cleanly to InternalToolsHelper.
+            if (tool.equals("query_aicore_documentation", ignoreCase = true) && isSelfApp) {
+                val authority = discoveredAuthorities[canonApp] ?: "$canonApp.mesh"
+                try {
+                    val uri = Uri.parse("content://$authority")
+                    val callPayload = JSONObject().apply {
+                        put("jsonrpc", "2.0")
+                        put("id", "call-${System.currentTimeMillis()}")
+                        put("method", tool)
+                        put("params", arguments)
+                    }.toString()
+                    val extras = Bundle().apply {
+                        putString("payload", callPayload)
+                        putString("call", callPayload)
+                    }
+                    val resBundle = contentResolver.call(uri, "call_tool", callPayload, extras)
+                    val resStr = resBundle?.getString("response")
+                    if (!resStr.isNullOrBlank() && !resStr.contains("HEADLESS_OVERLAY_REQUIRED")) {
+                        val parsed = JSONObject(resStr)
+                        val resultNode = parsed.opt("result")
+                        if (resultNode != null) {
+                            return resultNode.toString()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Cached doc ContentProvider fallback to InternalToolsHelper: ${e.message}")
+                }
+            }
+            return executeBuiltInTool(tool, arguments)
+        }
+
+        val authority = discoveredAuthorities[canonApp] ?: "$canonApp.mesh"
         try {
             val uri = Uri.parse("content://$authority")
             val callPayload = JSONObject().apply {
@@ -3532,96 +4902,35 @@ Available tool schemas:
         return executeBuiltInTool(tool, arguments)
     }
 
-    private fun executeBuiltInTool(tool: String, arguments: JSONObject): String {
-        return when (tool) {
-            "query_aicore_documentation" -> {
-                val query = arguments.optString("query", "").trim()
-                queryDocumentation(query)
-            }
-            "get_battery_status" -> {
-                getBatteryStatusJson()
-            }
-            else -> {
-                JSONObject().apply {
-                    put("status", "error")
-                    put("message", "Tool '$tool' not supported in offline fallback")
-                }.toString()
+    private suspend fun executeBuiltInTool(tool: String, arguments: JSONObject): String {
+        if (InternalToolsHelper.isInternalTool(tool)) {
+            return withContext(Dispatchers.IO) {
+                InternalToolsHelper.executeInternalTool(
+                    context = this@MeshOverlayActivity,
+                    toolName = tool,
+                    argsJson = arguments,
+                    readerCallback = { text, question ->
+                        runOneShotModelCall(
+                            promptPrefixText = "You extract factual answers from Wikipedia excerpts. Answer concisely in 2-4 factual sentences using only the provided text.",
+                            userText = "Question: $question\n\nWikipedia excerpt:\n$text",
+                            maxTokens = 160,
+                            temperatureValue = 0.2f,
+                        )
+                    }
+                )
             }
         }
-    }
-
-    private fun queryDocumentation(query: String): String {
-        return try {
-            val docText = assets.open("docs/genai.md.txt").bufferedReader().use { it.readText() }
-            val qTerms = query.lowercase(Locale.ROOT).split(Regex("\\s+")).filter { it.length > 2 }
-
-            val sections = docText.split(Regex("(?=## )"))
-            var bestSection = ""
-            var bestScore = 0
-
-            for (sec in sections) {
-                val secLower = sec.lowercase(Locale.ROOT)
-                val lines = sec.lines()
-                val title = lines.firstOrNull { it.startsWith("##") } ?: ""
-                val titleLower = title.lowercase(Locale.ROOT)
-
-                var score = 0
-                for (term in qTerms) {
-                    if (titleLower.contains(term)) score += 10
-                    if (secLower.contains(term)) score += 2
-                }
-                if (score > bestScore) {
-                    bestScore = score
-                    bestSection = sec
-                }
-            }
-
-            val content = if (bestScore > 0 && bestSection.isNotBlank()) {
-                bestSection.trim().take(1800)
-            } else {
-                docText.take(1500)
-            }
-
-            JSONObject().apply {
-                put("found", true)
-                put("query", query)
-                put("content", content)
-            }.toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "queryDocumentation error: ${e.message}", e)
-            JSONObject().apply {
-                put("found", false)
-                put("error", e.message)
-            }.toString()
-        }
-    }
-
-    private fun getBatteryStatusJson(): String {
-        return try {
-            val bm = getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-            val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-            val isCharging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val status = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS) ?: -1
-                status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
-                    status == android.os.BatteryManager.BATTERY_STATUS_FULL
-            } else false
-            JSONObject().apply {
-                put("battery_level", "$level%")
-                put("is_charging", isCharging)
-                put("status", if (isCharging) "Charging" else "Discharging")
-            }.toString()
-        } catch (e: Exception) {
-            JSONObject().apply {
-                put("error", e.message)
-            }.toString()
-        }
+        return JSONObject().apply {
+            put("status", "error")
+            put("message", "Tool '$tool' not supported in offline fallback")
+        }.toString()
     }
 
     private fun closeInteractiveSession() {
         PaiosVoiceInteractionSession.dismissActiveSession()
 
         // Auto-archive assistant session to SharedPreferences if messages were exchanged
-        if (sessionMessages.isNotEmpty()) {
+        if (sessionMessages.isNotEmpty() && !skipPendingArchiveOnDismiss) {
             try {
                 val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 val autoArchive = prefs.getBoolean("flutter.autoArchiveAssistantChats", true)
@@ -3644,15 +4953,23 @@ Available tool schemas:
         }
 
         // Explicitly clear all assist state on session close
+        visualSummaryJob?.cancel()
+        overlayTurnSequence++
         latestAssistBitmap = null
         latestAssistScreenText = null
         latestAssistCallerPkg = null
         currentBitmap = null
         attachedBitmaps.clear()
+        userBitmaps.clear()
         activeSessionBitmap = null
         screenContextBitmap = null
+        pendingCameraPhotoFile?.let { file ->
+            try { if (file.exists()) file.delete() } catch (_: Exception) {}
+        }
+        pendingCameraPhotoFile = null
         conversationHistoryPrompt = ""
         visualContextMemory = ""
+        activeVisualNote = ""
         contextData = ""
         sessionMessages.clear()
 
@@ -3701,10 +5018,53 @@ Available tool schemas:
                         }
                         if (bmp != null) {
                             withContext(Dispatchers.Main) {
-                                attachGalleryBitmap(bmp)
+                                attachUserBitmap(bmp)
                             }
                         }
                     }
+                }
+            }
+        } else if (requestCode == REQUEST_CODE_BUBBLE_CAMERA) {
+            val photoFile = pendingCameraPhotoFile
+            pendingCameraPhotoFile = null
+            if (resultCode == RESULT_OK) {
+                activityScope.launch {
+                    val bmp = withContext(Dispatchers.IO) {
+                        try {
+                            if (photoFile != null && photoFile.exists() && photoFile.length() > 0L) {
+                                decodeVisualBitmap(null, photoFile.absolutePath, downsampleSetting)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                val thumb = data?.extras?.get("data") as? Bitmap
+                                if (thumb != null && downsampleSetting &&
+                                    (thumb.width > MAX_DOWNSAMPLE_DIMENSION || thumb.height > MAX_DOWNSAMPLE_DIMENSION)
+                                ) {
+                                    val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(thumb.width, thumb.height).toFloat()
+                                    Bitmap.createScaledBitmap(
+                                        thumb,
+                                        (thumb.width * scale).toInt().coerceAtLeast(1),
+                                        (thumb.height * scale).toInt().coerceAtLeast(1),
+                                        true
+                                    )
+                                } else {
+                                    thumb
+                                }
+                            }
+                        } finally {
+                            photoFile?.let { file ->
+                                try { if (file.exists()) file.delete() } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                    if (bmp != null) {
+                        withContext(Dispatchers.Main) {
+                            attachUserBitmap(bmp)
+                        }
+                    }
+                }
+            } else {
+                photoFile?.let { file ->
+                    try { if (file.exists()) file.delete() } catch (_: Exception) {}
                 }
             }
         }
@@ -3761,7 +5121,17 @@ Available tool schemas:
         activeSheetAnimator?.cancel()
         activeSheetAnimator = null
         activeStreamJob?.cancel()
+        visualSummaryJob?.cancel()
+        overlayTurnSequence++
         activityScope.cancel()
+        val oldModel = synchronized(modelClientLock) {
+            val prev = cachedResolvedClient?.model
+            cachedResolvedClient = null
+            prev
+        }
+        if (oldModel != null) {
+            runCatching { oldModel.close() }
+        }
         if (activeInstanceRef?.get() === this) {
             activeInstanceRef = null
         }
@@ -3770,8 +5140,13 @@ Available tool schemas:
         latestAssistCallerPkg = null
         currentBitmap = null
         attachedBitmaps.clear()
+        userBitmaps.clear()
         activeSessionBitmap = null
         screenContextBitmap = null
+        pendingCameraPhotoFile?.let { file ->
+            try { if (file.exists()) file.delete() } catch (_: Exception) {}
+        }
+        pendingCameraPhotoFile = null
         super.onDestroy()
         if (!callbackFired) {
             if (isInteractiveMode) {
@@ -3813,6 +5188,7 @@ Available tool schemas:
         INSIGHT,
         EXTRACT,
         ADD_PHOTO,
+        CAMERA,
         SEND
     }
 
@@ -3952,6 +5328,33 @@ Available tool schemas:
                         lineTo(cx + r * 0.65f, cy + r * 0.52f)
                     }
                     canvas.drawPath(mtn, strokePaint)
+                }
+
+                M3IconType.CAMERA -> {
+                    val left = cx - r * 0.85f
+                    val right = cx + r * 0.85f
+                    val top = cy - r * 0.42f
+                    val bottom = cy + r * 0.72f
+                    val cr = r * 0.22f
+                    val bodyPath = Path().apply {
+                        moveTo(left + cr, top)
+                        lineTo(cx - r * 0.36f, top)
+                        lineTo(cx - r * 0.22f, cy - r * 0.70f)
+                        lineTo(cx + r * 0.22f, cy - r * 0.70f)
+                        lineTo(cx + r * 0.36f, top)
+                        lineTo(right - cr, top)
+                        quadTo(right, top, right, top + cr)
+                        lineTo(right, bottom - cr)
+                        quadTo(right, bottom, right - cr, bottom)
+                        lineTo(left + cr, bottom)
+                        quadTo(left, bottom, left, bottom - cr)
+                        lineTo(left, top + cr)
+                        quadTo(left, top, left + cr, top)
+                        close()
+                    }
+                    canvas.drawPath(bodyPath, strokePaint)
+                    canvas.drawCircle(cx, cy + r * 0.15f, r * 0.32f, strokePaint)
+                    canvas.drawCircle(cx + r * 0.50f, cy - r * 0.14f, r * 0.08f, fillPaint)
                 }
 
                 M3IconType.SEND -> {

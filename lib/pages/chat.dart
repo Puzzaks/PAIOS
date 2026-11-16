@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geminilocal/pages/settings.dart';
 import 'package:geminilocal/pages/settings/chat.dart';
+import 'package:geminilocal/pages/settings/logs.dart';
 import 'package:provider/provider.dart';
 import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
@@ -26,7 +28,22 @@ class ChatPageState extends State<ChatPage> {
       child: LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             double scaffoldWidth = constraints.maxWidth;
+            final bool isCompactHeight = constraints.maxHeight < 540;
             return Consumer<AIEngine>(builder: (context, engine, child) {
+              final scheme = Theme.of(context).colorScheme;
+              final textTheme = Theme.of(context).textTheme;
+              final statusStr = engine.modelInfo["status"]?.toString().toLowerCase();
+              final availableVal = engine.modelInfo["available"];
+              final statusCodeVal = engine.modelInfo["statusCode"];
+              final bool modelReportedUnavailable = engine.modelInfo.isNotEmpty &&
+                  (statusStr == "unavailable" ||
+                      availableVal == false ||
+                      availableVal?.toString().toLowerCase() == "false" ||
+                      statusCodeVal == 0 ||
+                      statusCodeVal?.toString() == "0");
+              final bool aiCoreUnavailable =
+                  !engine.isAiCoreAvailable || modelReportedUnavailable;
+              final bool showStatusBanner = aiCoreUnavailable || engine.isError;
               return Scaffold(
                 appBar: AppBar(
                   leading: Padding(
@@ -73,7 +90,7 @@ class ChatPageState extends State<ChatPage> {
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            SizedBox(height: 10,),
+                            SizedBox(height: isCompactHeight ? 4 : 10),
                             Expanded(
                               child: Card(
                                 clipBehavior: Clip.hardEdge,
@@ -85,7 +102,7 @@ class ChatPageState extends State<ChatPage> {
                                 ),
                                 color: Theme.of(context).colorScheme.onPrimaryFixed,
                                 child: SizedBox(
-                                  width: scaffoldWidth - 30,
+                                  width: scaffoldWidth > 30 ? scaffoldWidth - 30 : scaffoldWidth,
                                   child: Stack(
                                     children: [
                                       MotionBlurContainer(
@@ -137,6 +154,9 @@ class ChatPageState extends State<ChatPage> {
                                                           aiChunk: "",
                                                           lastUser: "",
                                                           dict: engine.dict,
+                                                          isLoading: false,
+                                                          assistantAuthor: engine.assistantAuthorLabel,
+                                                          userAuthor: engine.dict.value("chat_author_you"),
                                                       ),
                                                     ),
                                                     text.infoShort(
@@ -153,27 +173,16 @@ class ChatPageState extends State<ChatPage> {
                                                         conversation: engine.context,
                                                         context: context,
                                                         aiChunk: engine.responseText,
+                                                        aiThoughtChunk: engine.currentThoughtChunk,
                                                         lastUser: engine.lastPrompt,
                                                         pendingUserImagePath: engine.chatData.lastImagePath,
-                                                         dict: engine.dict,
-                                                    ),
-                                                    // Chip shown ONLY between continuation rounds (waiting, not streaming new content)
-                                                    if (engine.isContinuing && engine.responseText == engine.combinedResponse)
-                                                      Align(
-                                                        alignment: Alignment.centerLeft,
-                                                        child: Padding(
-                                                          padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
-                                                          child: Chip(
-                                                            avatar: SizedBox(
-                                                              width: 14,
-                                                              height: 14,
-                                                              child: CircularProgressIndicator(strokeWidth: 2),
-                                                            ),
-                                                            label: Text(engine.dict.value("model_continuing")),
-                                                            visualDensity: VisualDensity.compact,
-                                                            padding: EdgeInsets.zero,
-                                                        ),
-                                                      ),
+                                                        dict: engine.dict,
+                                                        isLoading: engine.isLoading,
+                                                        isContinuing: engine.isContinuing && engine.isLoading,
+                                                        assistantAuthor: engine.assistantAuthorLabel,
+                                                        userAuthor: engine.dict.value("chat_author_you"),
+                                                        streamingMessageTime: engine.streamingMessageTime,
+                                                        streamingUserMessageTime: engine.streamingUserMessageTime,
                                                     ),
                                                   ],
                                                 ),
@@ -261,27 +270,153 @@ class ChatPageState extends State<ChatPage> {
                                   ),
                                 ),
                               ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  vertical: 10,
-                                  horizontal: 20
+                            if (showStatusBanner)
+                              Padding(
+                                padding: EdgeInsets.fromLTRB(16, isCompactHeight ? 4 : 8, 16, 0),
+                                child: Card(
+                                  elevation: 0,
+                                  color: scheme.errorContainer,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  clipBehavior: Clip.hardEdge,
+                                  child: ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                      maxHeight: isCompactHeight
+                                          ? constraints.maxHeight * 0.28
+                                          : double.infinity,
+                                    ),
+                                    child: SingleChildScrollView(
+                                      padding: isCompactHeight
+                                          ? const EdgeInsets.fromLTRB(12, 8, 12, 6)
+                                          : const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Row(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Icon(
+                                                aiCoreUnavailable
+                                                    ? Icons.phonelink_erase_rounded
+                                                    : Icons.error_outline_rounded,
+                                                color: scheme.onErrorContainer,
+                                                size: 22,
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      aiCoreUnavailable
+                                                          ? engine.dict.value("chat_aicore_unavailable_title")
+                                                          : engine.dict.value("chat_error_title"),
+                                                      style: textTheme.titleSmall?.copyWith(
+                                                        color: scheme.onErrorContainer,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 2),
+                                                    Text(
+                                                      aiCoreUnavailable
+                                                          ? engine.dict.value("chat_aicore_unavailable_desc")
+                                                          : (engine.status.isNotEmpty
+                                                              ? engine.status
+                                                              : engine.dict.value("chat_aicore_unavailable_desc")),
+                                                      style: textTheme.bodySmall?.copyWith(
+                                                        color: scheme.onErrorContainer,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          SizedBox(height: isCompactHeight ? 2 : 6),
+                                          Wrap(
+                                            spacing: 6,
+                                            runSpacing: 2,
+                                            children: [
+                                              TextButton.icon(
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: scheme.onErrorContainer,
+                                                  visualDensity: VisualDensity.compact,
+                                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                ),
+                                                icon: const Icon(Icons.refresh_rounded, size: 18),
+                                                label: Text(engine.dict.value("btn_recheck_status")),
+                                                onPressed: () {
+                                                  HapticFeedback.lightImpact();
+                                                  engine.modelDownloadLog.clear();
+                                                  engine.checkEngine();
+                                                },
+                                              ),
+                                              TextButton.icon(
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: scheme.onErrorContainer,
+                                                  visualDensity: VisualDensity.compact,
+                                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                ),
+                                                icon: const Icon(Icons.bug_report_outlined, size: 18),
+                                                label: Text(engine.dict.value("btn_open_diagnostics")),
+                                                onPressed: () {
+                                                  Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (context) => const LogsPage(),
+                                                      settings: const RouteSettings(name: 'LogsPage'),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                              TextButton.icon(
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: scheme.onErrorContainer,
+                                                  visualDensity: VisualDensity.compact,
+                                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                                ),
+                                                icon: const Icon(Icons.settings_outlined, size: 18),
+                                                label: Text(engine.dict.value("settings")),
+                                                onPressed: () {
+                                                  Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (context) => const SettingsPage(),
+                                                      settings: const RouteSettings(name: 'SettingsPage'),
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
+                            Padding(
+                              padding: isCompactHeight
+                                  ? const EdgeInsets.symmetric(vertical: 4, horizontal: 16)
+                                  : const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
                               child: TextField(
                                 controller: engine.prompt,
-                                autofocus: true,
+                                autofocus: !aiCoreUnavailable,
                                 onChanged: (change){engine.scrollChatlog(Duration(milliseconds: 250));},
-                                onTap: () async {
+                                onTap: aiCoreUnavailable ? null : () async {
                                   engine.scrollChatlog(Duration(milliseconds: 250));
                                   await Future.delayed(Duration(milliseconds: 500));
                                   engine.scrollChatlog(Duration(milliseconds: 500));
                                 },
-                                readOnly: engine.isLoading || engine.isContinuing,
+                                readOnly: aiCoreUnavailable || engine.isLoading || engine.isContinuing,
                                 decoration: InputDecoration(
                                   isDense: true,
                                   prefixIcon: IconButton(
                                     icon: const Icon(Icons.add_photo_alternate_outlined, size: 24),
                                     tooltip: engine.dict.value("attach_image"),
-                                    onPressed: (engine.isLoading || engine.isContinuing)
+                                    onPressed: (aiCoreUnavailable || engine.isLoading || engine.isContinuing)
                                         ? null
                                         : () {
                                             HapticFeedback.lightImpact();
@@ -300,15 +435,19 @@ class ChatPageState extends State<ChatPage> {
                                       : IconButton(
                                     icon: Icon(Icons.send_rounded, size: 25,),
                                     tooltip: engine.dict.value("generate"),
-                                    onPressed: () {
-                                      HapticFeedback.lightImpact();
-                                      engine.generateStream();
-                                    },
+                                    onPressed: aiCoreUnavailable
+                                        ? null
+                                        : () {
+                                            HapticFeedback.lightImpact();
+                                            engine.generateStream();
+                                          },
                                   ),
                                   border: OutlineInputBorder(
                                       borderRadius: BorderRadius.all(Radius.circular(20))
                                   ),
-                                  hintText: engine.dict.value("prompt"),
+                                  hintText: aiCoreUnavailable
+                                      ? engine.dict.value("chat_composer_unavailable_hint")
+                                      : engine.dict.value("prompt"),
                                   alignLabelWithHint: true,
                                   helperText: engine.isLoading && !(engine.responseText == "")
                                       ? engine.dict.value("generating_hint")

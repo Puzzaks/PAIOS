@@ -37,3 +37,10 @@ android/.kotlin/sessions/kotlin-compiler-11069125661880765564.salive
 .idea/caches/deviceStreaming.xml
 .idea/deviceManager.xml
 /.tmp.driveupload
+
+# Play Store credentials and temporary release notes
+android/play-service-account.json
+*service-account*.json
+gen-lang-client-*.json
+build/nightly_release_notes.md
+build/play_release_notes.txt

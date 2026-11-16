@@ -3,6 +3,7 @@ import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:geminilocal/pages/chat.dart';
 import 'package:geminilocal/pages/chats.dart';
 import 'package:geminilocal/pages/intro.dart';
 import 'package:geminilocal/pages/support/elements.dart';
@@ -14,11 +15,15 @@ import 'firebase_options.dart';
 
 
 
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    ).timeout(const Duration(seconds: 4));
+  } catch (_) {}
   runApp(ChangeNotifierProvider(
     create: (context) => AIEngine(),
     child: const MyApp(),
@@ -32,17 +37,53 @@ class MyApp extends StatefulWidget {
 }
 
 class MyAppState extends State<MyApp> {
+  AIEngine? _engine;
 
-@override
+  void _openAssistantChat() {
+    void pushChat() {
+      final nav = appNavigatorKey.currentState;
+      if (nav == null || !mounted) return;
+      nav.popUntil((route) => route.isFirst);
+      nav.push(
+        MaterialPageRoute(
+          builder: (_) => const ChatPage(),
+          settings: const RouteSettings(name: 'ChatPage'),
+        ),
+      );
+    }
+
+    if (appNavigatorKey.currentState != null) {
+      pushChat();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => pushChat());
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
     WidgetsFlutterBinding.ensureInitialized();
-    Provider.of<AIEngine>(context, listen: false).start();
+    final engine = Provider.of<AIEngine>(context, listen: false);
+    _engine = engine;
+    engine.onOpenAssistantChat = _openAssistantChat;
+    engine.start();
+  }
 
+  @override
+  void dispose() {
+    if (_engine?.onOpenAssistantChat == _openAssistantChat) {
+      _engine?.onOpenAssistantChat = null;
+    }
+    super.dispose();
   }
   @override
   Widget build(BuildContext context) {
-    FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+    FirebaseAnalytics? analytics;
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        analytics = FirebaseAnalytics.instance;
+      }
+    } catch (_) {}
     final defaultLightColorScheme = ColorScheme.fromSwatch(
         primarySwatch: Colors.teal,
     );
@@ -73,13 +114,15 @@ class MyAppState extends State<MyApp> {
         prefs.setInt('theme_color_surface', activeDark.surface.toARGB32());
         prefs.setInt('theme_color_background', activeDark.surface.toARGB32());
         prefs.setInt('theme_color_on_surface', activeDark.onSurface.toARGB32());
-      });
+      }).catchError((_) {});
       return MaterialApp(
+        navigatorKey: appNavigatorKey,
         navigatorObservers: [
-          FirebaseAnalyticsObserver(
-            analytics: analytics,
-            nameExtractor: (settings) => settings.name,
-          ),
+          if (analytics != null)
+            FirebaseAnalyticsObserver(
+              analytics: analytics,
+              nameExtractor: (settings) => settings.name,
+            ),
         ],
         theme: themeData(lightColorScheme ?? defaultLightColorScheme),
         darkTheme: themeData(darkColorScheme ?? defaultDarkColorScheme),
@@ -95,6 +138,11 @@ class MyAppState extends State<MyApp> {
                 double scaffoldWidth = constraints.maxWidth;
                 return Consumer<AIEngine>(builder: (context, engine, child) {
                   engine.cards = Cards(context: context);
+                  if (engine.appStarted && engine.hasPendingOpenAssistantChat) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      engine.flushPendingAssistantChatNavigation();
+                    });
+                  }
                   return AnimatedCrossFade(
                       alignment: Alignment.center,
                       duration: const Duration(milliseconds: 500),

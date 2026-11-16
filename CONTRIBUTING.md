@@ -8,7 +8,7 @@ Thank you for your interest in contributing! PAIOS is a Flutter application desi
 To help you navigate the codebase, here are the key components:
 - **Core Logic**: `lib/engine.dart` (`AIEngine`) is the central state management provider. It handles initialization, AI generation streams, and app-wide state.
 - **AI Interaction**: `lib/parts/gemini.dart` wraps the raw API calls to the local model.
-- **Prompt Engineering**: `lib/parts/prompt.dart` constructs the prompts sent to the model (system prompt + user history + context). The **Master Prompt** itself is located at `assets/system_prompt.txt`.
+- **Prompt Engineering**: `lib/parts/prompt.dart` constructs the prompts sent to the model (system prompt + user history + context). The **Master Prompt** itself is located at `assets/prompts/system_default.md`.
 - **UI**: All screens are located in `lib/pages/`. `chat.dart` manages the individual chat interface.
 
 ### Running Locally

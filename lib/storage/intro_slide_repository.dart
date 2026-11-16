@@ -16,10 +16,11 @@ class IntroSlideRepository {
   IntroSlideRepository({required this.notifyEngine, this.logEvent});
 
   Future<void> initFromHive(String url) async {
-    final box = Hive.box('paios_storage');
+    final Box<dynamic>? box =
+        Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
 
     // Step 1: Load Cached Hive override if available
-    final String? cached = box.get("cached_intro_slides_json");
+    final String? cached = box?.get("cached_intro_slides_json");
     if (cached != null && cached.isNotEmpty) {
       try {
         final decoded = jsonDecode(cached);
@@ -45,7 +46,7 @@ class IntroSlideRepository {
     }
 
     // Step 2: Non-blocking background network refresh from GitHub SWR
-    if (!kDebugMode && url.isNotEmpty) {
+    if (!kDebugMode && url.isNotEmpty && box != null) {
       unawaited(_refreshSlidesInBackground(url, box));
     }
   }
@@ -64,12 +65,13 @@ class IntroSlideRepository {
           .timeout(_httpTimeout);
 
       if (response.statusCode == 200) {
-        final decoded = jsonDecode(response.body);
+        final String body = utf8.decode(response.bodyBytes);
+        final decoded = jsonDecode(body);
         if (decoded is List) {
           slides = List<Map<String, dynamic>>.from(
             decoded.map((e) => Map<String, dynamic>.from(e as Map)),
           );
-          await box.put("cached_intro_slides_json", response.body);
+          await box.put("cached_intro_slides_json", body);
           notifyEngine();
         }
       }

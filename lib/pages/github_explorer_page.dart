@@ -625,7 +625,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                                 children: [
                                   const SizedBox(height: 2),
                                   Text(
-                                    'Opened by ${issue.author} вЂў ${issue.commentsCount} comments',
+                                    'Opened by ${issue.author} • ${issue.commentsCount} comments',
                                     style: const TextStyle(fontSize: 12),
                                   ),
                                   if (issue.labels.isNotEmpty) ...[
@@ -778,7 +778,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                             size: 16,
                           ),
                           label: Text(
-                            '${asset.name} ($sizeMb MB вЂў ${asset.downloadCount} dl)',
+                            '${asset.name} ($sizeMb MB • ${asset.downloadCount} dl)',
                             style: const TextStyle(fontSize: 11),
                           ),
                           onPressed: () => _safeLaunchUrl(asset.downloadUrl),
@@ -1246,7 +1246,7 @@ class _IssueDetailsSheetState extends State<_IssueDetailsSheet> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Opened by ${issue.author} вЂў ${issue.commentsCount} comments',
+                'Opened by ${issue.author} • ${issue.commentsCount} comments',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),

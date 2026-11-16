@@ -95,6 +95,15 @@
         <meta-data
             android:name="firebase_crashlytics_collection_enabled"
             android:value="false" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/assistant_file_paths" />
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
@@ -104,7 +113,13 @@
     <queries>
         <package android:name="com.google.android.aicore" />
         <intent>
+            <action android:name="com.android.settings.action.IA_SETTINGS" />
+        </intent>
+        <intent>
             <action android:name="com.google.android.aicore.action.SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />

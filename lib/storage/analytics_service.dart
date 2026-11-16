@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
@@ -13,30 +14,68 @@ class AnalyticsService {
   AnalyticsService({required this.notifyEngine});
 
   Future<void> startAnalytics() async {
-    final box = Hive.box('paios_storage');
-    await box.put("analytics", true);
+    try {
+      if (Hive.isBoxOpen('paios_storage')) {
+        final box = Hive.box('paios_storage');
+        await box.put("analytics", true);
+      }
+    } catch (_) {}
     analyticsEnabled = true;
-    
-    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterError;
-    await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true);
-    await FirebaseAnalytics.instance.setConsent();
-    await Firebase.app().setAutomaticDataCollectionEnabled(true);
-    await Firebase.app().setAutomaticResourceManagementEnabled(true);
-    analyticsDone = true;
-    
-    await log("application", "info", "Enabling analytics");
+
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterError;
+        await Future.wait([
+          FirebaseAnalytics.instance
+              .setAnalyticsCollectionEnabled(true)
+              .timeout(const Duration(seconds: 2)),
+          FirebaseAnalytics.instance
+              .setConsent()
+              .timeout(const Duration(seconds: 2)),
+          Firebase.app()
+              .setAutomaticDataCollectionEnabled(true)
+              .timeout(const Duration(seconds: 2)),
+          Firebase.app()
+              .setAutomaticResourceManagementEnabled(true)
+              .timeout(const Duration(seconds: 2)),
+        ]);
+        analyticsDone = true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print("Analytics init failed or timed out: $e");
+      }
+    }
+
+    unawaited(log("application", "info", "Enabling analytics"));
   }
 
   Future<void> stopAnalytics() async {
-    final box = Hive.box('paios_storage');
-    await box.put("analytics", false);
+    try {
+      if (Hive.isBoxOpen('paios_storage')) {
+        final box = Hive.box('paios_storage');
+        await box.put("analytics", false);
+      }
+    } catch (_) {}
     analyticsEnabled = false;
-    
-    await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(false);
-    await Firebase.app().setAutomaticDataCollectionEnabled(false);
-    await Firebase.app().setAutomaticResourceManagementEnabled(false);
-    
-    await log("application", "info", "Disabling analytics");
+
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        await Future.wait([
+          FirebaseAnalytics.instance
+              .setAnalyticsCollectionEnabled(false)
+              .timeout(const Duration(seconds: 2)),
+          Firebase.app()
+              .setAutomaticDataCollectionEnabled(false)
+              .timeout(const Duration(seconds: 2)),
+          Firebase.app()
+              .setAutomaticResourceManagementEnabled(false)
+              .timeout(const Duration(seconds: 2)),
+        ]);
+      }
+    } catch (_) {}
+
+    unawaited(log("application", "info", "Disabling analytics"));
   }
 
   Future<void> log(String name, String type, String message, {bool sendRemote = true}) async {
@@ -67,21 +106,27 @@ class AnalyticsService {
         }
       }
     }
-    
+
     // Bubble up to engine so UI can see the new logs
     notifyEngine();
 
-    if (sendRemote && analyticsEnabled && analyticsDone) {
-      try {
-        await FirebaseAnalytics.instance.logEvent(
-          name: name,
-          parameters: <String, Object>{'type': type, 'message': message},
-        );
-      } catch (e) {
-        if (kDebugMode) {
-          print("Analytics failed. Not waiting anymore. Error: $e");
-        }
-      }
+    if (sendRemote &&
+        analyticsEnabled &&
+        analyticsDone &&
+        Firebase.apps.isNotEmpty) {
+      unawaited(
+        FirebaseAnalytics.instance
+            .logEvent(
+              name: name,
+              parameters: <String, Object>{'type': type, 'message': message},
+            )
+            .timeout(const Duration(seconds: 2))
+            .catchError((e) {
+          if (kDebugMode) {
+            print("Analytics failed. Not waiting anymore. Error: $e");
+          }
+        }),
+      );
     }
   }
 
@@ -111,26 +156,28 @@ class AnalyticsService {
     );
 
     // 2. Dispatch standardized atomic event to GA4
-    if (analyticsEnabled && analyticsDone) {
+    if (analyticsEnabled && analyticsDone && Firebase.apps.isNotEmpty) {
       try {
-        await FirebaseAnalytics.instance.logEvent(
-          name: 'ai_generation_completed',
-          parameters: <String, Object>{
-            'status': success ? 'success' : 'error',
-            'is_error': success ? 0 : 1,          // Metric: Sum
-            'is_success': success ? 1 : 0,        // Metric: Sum
-            'generation_count': 1,               // Metric: Sum (The true denominator!)
-            'error_type': errorType,             // Dimension: "none", "timeout", "model_busy", "context_overflow", "npu_unavailable"
-            'error_code': errorCode,             // Metric: native code
-            'finish_reason': finishReason,       // Dimension: "stop", "max_tokens", "timeout", "error"
-            'latency_ms': latencyMs,             // Metric: Avg
-            'tokens_generated': tokensGenerated, // Metric: Sum
-            'tokens_per_sec': double.parse(tokensPerSec.toStringAsFixed(2)),
-            'model_version': modelVersion,       // Dimension: "nano-v3", "nano-v2"
-            'prompt_id': promptId,               // Dimension: active prompt id
-            'is_multimodal': isMultimodal ? 1 : 0,
-          },
-        );
+        await FirebaseAnalytics.instance
+            .logEvent(
+              name: 'ai_generation_completed',
+              parameters: <String, Object>{
+                'status': success ? 'success' : 'error',
+                'is_error': success ? 0 : 1, // Metric: Sum
+                'is_success': success ? 1 : 0, // Metric: Sum
+                'generation_count': 1, // Metric: Sum (The true denominator!)
+                'error_type': errorType, // Dimension: "none", "timeout", "model_busy", "context_overflow", "npu_unavailable"
+                'error_code': errorCode, // Metric: native code
+                'finish_reason': finishReason, // Dimension: "stop", "max_tokens", "timeout", "error"
+                'latency_ms': latencyMs, // Metric: Avg
+                'tokens_generated': tokensGenerated, // Metric: Sum
+                'tokens_per_sec': double.parse(tokensPerSec.toStringAsFixed(2)),
+                'model_version': modelVersion, // Dimension: "nano-v3", "nano-v2"
+                'prompt_id': promptId, // Dimension: active prompt id
+                'is_multimodal': isMultimodal ? 1 : 0,
+              },
+            )
+            .timeout(const Duration(seconds: 2));
       } catch (e) {
         if (kDebugMode) print("GA4 ai_generation_completed logging error: $e");
       }
@@ -138,6 +185,7 @@ class AnalyticsService {
   }
 
   Future<void> initFromHive() async {
+    if (!Hive.isBoxOpen('paios_storage')) return;
     final box = Hive.box('paios_storage');
     if (box.containsKey("analytics")) {
       analyticsEnabled = box.get("analytics", defaultValue: true);

@@ -42,7 +42,8 @@
  - **Multiple Chats**: Create, rename, and pin multiple conversations with their own context.
  - **Custom Instructions**: Steer the AI with `[USER INSTRUCTIONS]` for specific personas or tasks.
  - **Context-Aware**: Optional injection of current time/date and app language.
- - **Transparency**: View the actual [System Prompt](assets/system_prompt.txt) used.
+ - **Assistant Mode & Screen Context**: Use PAIOS as Android's default digital assistant. When enabled in Android settings, it automatically reads optional screen context (`Use screenshot` & `AssistStructure` text) for screen-related questions—while ignoring it for unrelated prompts and dropping it whenever you attach a photo or take a picture. See the [FAQ](docs/FAQ.md) for details and privacy controls.
+ - **Transparency**: View the actual [System Prompt](assets/prompts/system_default.md) used.
 
 ### Caveats (Alpha Status)
 PAIOS acts as a client for the underlying Gemini Nano model, which is a developer preview.
@@ -51,6 +52,8 @@ PAIOS acts as a client for the underlying Gemini Nano model, which is a develope
 - **Censorship**: Typing curses or slurs may soft-lock the app if auto-retry is enabled due to internal model filters.
 
 ### Resources
+- **FAQ**: [Frequently Asked Questions](docs/FAQ.md)
+- **Support & Help**: [Support Guide](.github/SUPPORT.md)
 - **Changelog**: [Full history](CHANGELOG.md)
 - **Roadmap**: [Future plans](ROADMAP.md)
 - **Contributing & Translations**: [How to build and help](CONTRIBUTING.md)

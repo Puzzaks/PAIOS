@@ -5,12 +5,19 @@ class GenerationConfig {
   final int? maxTokens;
   final double? temperature;
   final int candidates;
-  const GenerationConfig({this.maxTokens, this.temperature, this.candidates = 1});
+  final bool enableThinking;
+  const GenerationConfig({
+    this.maxTokens,
+    this.temperature,
+    this.candidates = 1,
+    this.enableThinking = false,
+  });
   Map<String, dynamic> toMap() {
     return {
       if (maxTokens != null) 'maxTokens': maxTokens,
-      'candidates': 1,
+      'candidates': candidates,
       if (temperature != null) 'temperature': temperature,
+      'enableThinking': enableThinking,
     };
   }
 }
@@ -22,8 +29,15 @@ class AiEvent {
   final AiResponse? response;
   final String? error;
   final String? reason;
+  final String? thought;
 
-  AiEvent({required this.status, this.response, this.error, this.reason});
+  AiEvent({
+    required this.status,
+    this.response,
+    this.error,
+    this.reason,
+    this.thought,
+  });
 
   factory AiEvent.fromMap(Map<dynamic, dynamic> map) {
     final statusString = map['status'] as String;
@@ -39,6 +53,12 @@ class AiEvent {
             reasonString == 'null' ||
             reasonString == 'UNKNOWN')) {
       reasonString = null;
+    }
+    String? thoughtString =
+        (map['thought'] ?? responseMap?['thought'])?.toString();
+    if (thoughtString != null &&
+        (thoughtString.isEmpty || thoughtString == 'null')) {
+      thoughtString = null;
     }
     AiEventStatus status;
     switch (statusString) {
@@ -65,6 +85,7 @@ class AiEvent {
           : null,
       error: errorString,
       reason: reasonString,
+      thought: thoughtString,
     );
   }
 }
@@ -80,11 +101,11 @@ class AiResponse {
 
   factory AiResponse.fromMap(Map<String, dynamic> map) {
     return AiResponse(
-      text: map['text'] as String,
-      chunk: map['chunk'] as String?,
-      tokenCount: map['tokenCount'] as int?,
-      generationTimeMs: map['generationTimeMs'] as int?,
-      finishReason: map['reason'] as String?,
+      text: (map['text'] ?? '').toString(),
+      chunk: map['chunk']?.toString(),
+      tokenCount: (map['tokenCount'] as num?)?.toInt(),
+      generationTimeMs: (map['generationTimeMs'] as num?)?.toInt(),
+      finishReason: map['reason']?.toString(),
     );
   }
 
@@ -104,24 +125,158 @@ class GeminiNano {
   EventChannel downloadChannel = EventChannel('download_channel');                    /// Status of model
   late Stream<String> statusStream;
 
-  Future<Map<String, String>> getModelInfo() async {
-    try {
-      final Map<dynamic, dynamic>? info = await _methodChannel.invokeMethod('getModelInfo');
-      if (info == null) {
-        return {'status': 'Error', 'version': 'Null response from platform'};
+  Map<String, dynamic> _normalizeModelInfoMap(Map<dynamic, dynamic>? raw) {
+    if (raw == null) {
+      return {
+        'status': 'Error',
+        'available': false,
+        'version': 'Null response from platform',
+      };
+    }
+    final map = <String, dynamic>{};
+    raw.forEach((key, value) {
+      if (key != null && value != null) {
+        map[key.toString()] = value;
       }
-      return info.map((key, value) => MapEntry(key.toString(), value.toString()));
+    });
+    if (map.containsKey('version') && map['version'] != null) {
+      map['version'] = map['version'].toString();
+    }
+    return map;
+  }
+
+  Future<Map<String, dynamic>> getModelInfo({
+    String releaseStage = 'stable',
+    String preference = 'full',
+  }) async {
+    try {
+      final Map<dynamic, dynamic>? info = await _methodChannel.invokeMethod(
+        'getModelInfo',
+        {
+          'releaseStage': releaseStage,
+          'preference': preference,
+        },
+      );
+      return _normalizeModelInfoMap(info);
     } catch (e) {
-      return {'status': 'Error', 'version': e.toString()};
+      return {'status': 'Error', 'available': false, 'version': e.toString()};
     }
   }
 
-  Future<String?> init({String? instructions}) async {
-    final String? status = await _methodChannel.invokeMethod(
+  Future<Map<String, dynamic>> initAiCore({
+    String? instructions,
+    String releaseStage = 'stable',
+    String preference = 'full',
+  }) async {
+    try {
+      final dynamic res = await _methodChannel.invokeMethod(
+        'initAiCore',
+        {
+          if (instructions != null) 'instructions': instructions,
+          'releaseStage': releaseStage,
+          'preference': preference,
+        },
+      );
+      if (res is Map) {
+        return _normalizeModelInfoMap(res);
+      }
+      return await getModelInfo(
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+    } on MissingPluginException {
+      await init(
+        instructions: instructions,
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+      return await getModelInfo(
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+    } catch (e) {
+      return {'status': 'Error', 'available': false, 'version': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> switchModelConfig({
+    required String releaseStage,
+    required String preference,
+  }) async {
+    try {
+      final dynamic res = await _methodChannel.invokeMethod(
+        'switchModelConfig',
+        {
+          'releaseStage': releaseStage,
+          'preference': preference,
+        },
+      );
+      if (res is Map) {
+        return _normalizeModelInfoMap(res);
+      }
+      return await getModelInfo(
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+    } on MissingPluginException {
+      return await getModelInfo(
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+    } catch (e) {
+      return {'status': 'Error', 'available': false, 'version': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> downloadModel({
+    required String releaseStage,
+    required String preference,
+  }) async {
+    try {
+      final dynamic res = await _methodChannel.invokeMethod(
+        'downloadModel',
+        {
+          'releaseStage': releaseStage,
+          'preference': preference,
+        },
+      );
+      if (res is Map) {
+        return _normalizeModelInfoMap(res);
+      }
+      return await getModelInfo(
+        releaseStage: releaseStage,
+        preference: preference,
+      );
+    } catch (e) {
+      return {'status': 'Error', 'available': false, 'version': e.toString()};
+    }
+  }
+
+  Future<String?> init({
+    String? instructions,
+    String releaseStage = 'stable',
+    String preference = 'full',
+  }) async {
+    final dynamic res = await _methodChannel.invokeMethod(
       'init',
-      {'instructions': instructions},
+      {
+        'instructions': instructions,
+        'releaseStage': releaseStage,
+        'preference': preference,
+      },
     );
-    return status;
+    if (res is Map) {
+      final map = _normalizeModelInfoMap(res);
+      final status = map['status']?.toString() ?? '';
+      if (map['available'] == true || status.toLowerCase() == 'available') {
+        return 'Available=Available=0';
+      }
+      if (status.toLowerCase() == 'unavailable') {
+        return 'Error=AICore=Unavailable';
+      }
+      return status.isNotEmpty ? status : 'Available=Available=0';
+    }
+    return res?.toString();
   }
 
   Future<Map<String, dynamic>?> pickImage() async {
@@ -236,6 +391,31 @@ class GeminiNano {
     );
   }
 
+  /// Executes an isolated one-shot on-device inference without modifying active
+  /// session instructions or cancelling any running chat stream.
+  Future<String> generateInternalInference({
+    required String prompt,
+    String? instructions,
+    Uint8List? imageBytes,
+    int maxTokens = 192,
+    double temperature = 0.2,
+  }) async {
+    final int clampedTokens = maxTokens.clamp(1, 256);
+    final String? result = await _methodChannel.invokeMethod<String>(
+      'generateInternalInference',
+      {
+        'prompt': prompt,
+        if (instructions != null && instructions.isNotEmpty)
+          'instructions': instructions,
+        if (imageBytes != null && imageBytes.isNotEmpty)
+          'imageBytes': imageBytes,
+        'maxTokens': clampedTokens,
+        'temperature': temperature,
+      },
+    );
+    return result ?? '';
+  }
+
   Future<void> openAICorePlayStore() async {
     await _methodChannel.invokeMethod('openAICorePlayStore');
   }
@@ -282,6 +462,8 @@ class GeminiNano {
   }
 
   Future<void> dispose() async {
-    await _methodChannel.invokeMethod('dispose');
+    try {
+      await _methodChannel.invokeMethod('dispose');
+    } catch (_) {}
   }
 }

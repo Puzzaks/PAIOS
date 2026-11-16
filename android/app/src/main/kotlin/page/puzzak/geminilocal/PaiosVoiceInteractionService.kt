@@ -269,12 +269,25 @@ class PaiosVoiceInteractionSession(context: Context) : VoiceInteractionSession(c
             val windowCount = structure.windowNodeCount
             for (i in 0 until windowCount) {
                 val winNode = structure.getWindowNodeAt(i)
+                val root = winNode.rootViewNode
+                val rootPkg = root?.idPackage?.trim().orEmpty()
+                if (rootPkg == "com.android.systemui" ||
+                    rootPkg == context.packageName ||
+                    rootPkg == "page.puzzak.paios"
+                ) {
+                    continue
+                }
                 val title = winNode.title?.toString()?.trim()
-                if (!title.isNullOrEmpty() && !title.contains("page.puzzak.paios")) {
+                if (!title.isNullOrEmpty() &&
+                    !title.contains("page.puzzak.paios") &&
+                    !title.equals("StatusBar", ignoreCase = true) &&
+                    !title.equals("NavigationBar", ignoreCase = true) &&
+                    !title.equals("NotificationShade", ignoreCase = true)
+                ) {
                     snippets.add("Window: $title")
                 }
-                winNode.rootViewNode?.let { root ->
-                    collectViewNodeText(root, snippets)
+                root?.let {
+                    collectViewNodeText(it, snippets)
                 }
             }
         }
