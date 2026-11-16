@@ -18,10 +18,11 @@ class PromptRepository {
   PromptRepository({required this.notifyEngine, this.logEvent});
 
   Future<void> initFromHive(String url) async {
-    final box = Hive.box('paios_storage');
+    final Box<dynamic>? box =
+        Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
 
     // ── 1. Load User Prompts from Hive ──────────────────────────────────────
-    final String? storedUserPrompts = box.get("user_prompts");
+    final String? storedUserPrompts = box?.get("user_prompts");
     if (storedUserPrompts != null) {
       try {
         userPrompts = Map<String, dynamic>.from(jsonDecode(storedUserPrompts));
@@ -45,7 +46,7 @@ class PromptRepository {
       if (kDebugMode) print("Error parsing asset prompts: $e");
     }
 
-    final String? cachedIndex = box.get("cached_prompts_index");
+    final String? cachedIndex = box?.get("cached_prompts_index");
     if (cachedIndex != null && cachedIndex.isNotEmpty) {
       try {
         final decoded = jsonDecode(cachedIndex);
@@ -66,7 +67,7 @@ class PromptRepository {
 
     // ── 3. Load Local/Cached Content for Default Prompts Immediately ────────
     for (final String key in defaultPrompts.keys) {
-      String? content = box.get("cached_prompt_$key");
+      String? content = box?.get("cached_prompt_$key");
       if (content == null || content.isEmpty) {
         try {
           content = await rootBundle.loadString('assets/prompts/$key.md');
@@ -78,10 +79,12 @@ class PromptRepository {
     }
 
     // ── 4. Scan SAF directory for new .md files to import ───────────────────
-    await _importFromDirectory();
+    try {
+      await _importFromDirectory().timeout(const Duration(seconds: 2));
+    } catch (_) {}
 
     // ── 5. Non-Blocking Background GitHub Refresh (Release Mode) ────────────
-    if (!kDebugMode && url.isNotEmpty) {
+    if (!kDebugMode && url.isNotEmpty && box != null) {
       unawaited(_refreshPromptsInBackground(url, box, cachedIndex));
     }
   }
@@ -103,7 +106,8 @@ class PromptRepository {
           .get(Uri.parse("$url/assets/prompts/prompts_index.json"))
           .timeout(_httpTimeout);
       if (response.statusCode == 200) {
-        final onlineData = jsonDecode(response.body);
+        final String indexBody = utf8.decode(response.bodyBytes);
+        final onlineData = jsonDecode(indexBody);
         final Map<String, dynamic> onlineIndex = {};
 
         if (onlineData is List) {
@@ -117,10 +121,10 @@ class PromptRepository {
           onlineIndex.addAll(Map<String, dynamic>.from(onlineData));
         }
 
-        if (previousCachedIndex != response.body) {
+        if (previousCachedIndex != indexBody) {
           newPromptsAvailable = true;
         }
-        await box.put("cached_prompts_index", response.body);
+        await box.put("cached_prompts_index", indexBody);
 
         final List<Future<void>> tasks = <Future<void>>[];
         for (final String key in onlineIndex.keys) {
@@ -135,8 +139,9 @@ class PromptRepository {
                   .get(Uri.parse("$url/assets/prompts/$key.md"))
                   .timeout(_httpTimeout);
               if (promptGet.statusCode == 200) {
-                onlineIndex[key]["content"] = promptGet.body;
-                await box.put("cached_prompt_$key", promptGet.body);
+                final String promptBody = utf8.decode(promptGet.bodyBytes);
+                onlineIndex[key]["content"] = promptBody;
+                await box.put("cached_prompt_$key", promptBody);
               }
             } catch (_) {}
           }());

@@ -366,7 +366,7 @@ class DocService with ChangeNotifier {
               .timeout(const Duration(seconds: 4));
 
           if (response.statusCode == 200) {
-            final body = response.body.trim();
+            final body = utf8.decode(response.bodyBytes).trim();
             if (body.isNotEmpty && !_isHtml(body)) {
               if (cacheDir != null) {
                 try {
@@ -429,7 +429,7 @@ class DocService with ChangeNotifier {
               .timeout(const Duration(seconds: 4));
 
           if (response.statusCode == 200) {
-            final body = response.body.trim();
+            final body = utf8.decode(response.bodyBytes).trim();
             if (body.isNotEmpty && !_isHtml(body)) {
               if (cacheDir != null) {
                 try {

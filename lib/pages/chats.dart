@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import 'package:m3x_ui/m3x_ui.dart' show MotionBlurContainer;
 import '../engine.dart';
 import 'support/elements.dart';
+import 'support/model_selector_dialog.dart';
 
 
 class ChatsPage extends StatefulWidget {
@@ -20,6 +21,26 @@ class ChatsPage extends StatefulWidget {
 
 class ChatsPageState extends State<ChatsPage> {
   bool isArchivedExpanded = false;
+
+  String _modelVersionChipLabel(AIEngine engine) {
+    final version = engine.modelInfo["version"]?.toString().trim();
+    if (version != null && version.isNotEmpty && version != "null") {
+      return version;
+    }
+    final status = engine.modelInfo["status"]?.toString().toLowerCase();
+    final available = engine.modelInfo["available"];
+    final statusCode = engine.modelInfo["statusCode"];
+    final bool isUnavailable = !engine.isAiCoreAvailable ||
+        status == "unavailable" ||
+        available == false ||
+        available?.toString().toLowerCase() == "false" ||
+        (engine.modelInfo.isNotEmpty &&
+            (statusCode == 0 || statusCode?.toString() == "0"));
+    if (isUnavailable) {
+      return engine.dict.value("aicore_unavailable");
+    }
+    return engine.dict.value("loading");
+  }
 
   String timeAgo(time) {
     DateTime currentTime = DateTime.now();
@@ -159,9 +180,7 @@ class ChatsPageState extends State<ChatsPage> {
                     enableFeedback: true,
                     tooltip: engine.dict.value("new_chat"),
                     onPressed: engine.isLoading ? () {} : () {
-                      engine.currentChat = "0";
-                      engine.context.clear();
-                      engine.contextSize = 0;
+                      engine.startNewChat();
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -179,30 +198,62 @@ class ChatsPageState extends State<ChatsPage> {
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
                             Text(engine.dict.value("title")),
-                            Padding(
-                              padding: EdgeInsetsGeometry.symmetric(
-                                  vertical: 50,
-                                  horizontal: 10
-                              ),
-                              child: Chip(
-                                label: Text(
-                                  engine.modelInfo["version"]??"Loading...",
-                                  style: TextStyle(
+                            Flexible(
+                              child: Padding(
+                                padding: EdgeInsetsGeometry.symmetric(
+                                    vertical: 50,
+                                    horizontal: 10
+                                ),
+                                child: ActionChip(
+                                  tooltip: engine.dict.value("model_selector_title"),
+                                  onPressed: engine.isSwitchingModelConfig
+                                      ? null
+                                      : () {
+                                          showModelSelectorDialog(
+                                            context,
+                                            engine,
+                                            showModelSettingsLink: true,
+                                          );
+                                        },
+                                  label: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          _modelVersionChipLabel(engine),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 2),
+                                      if (engine.isSwitchingModelConfig)
+                                        const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      else
+                                        const Icon(
+                                          Icons.keyboard_arrow_down_rounded,
+                                          size: 16,
+                                        ),
+                                    ],
                                   ),
-                                ),
-                                labelPadding: EdgeInsets.symmetric(
-                                    horizontal: 5
-                                ),
-                                visualDensity: VisualDensity.compact,
-                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                backgroundColor: Theme.of(context).colorScheme.onPrimaryFixed,
-                                surfaceTintColor: Colors.transparent,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadiusGeometry.circular(20),
-                                    side: BorderSide(
-                                        color: Colors.transparent
-                                    )
+                                  labelPadding: const EdgeInsets.symmetric(
+                                      horizontal: 5
+                                  ),
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  backgroundColor: Theme.of(context).colorScheme.onPrimaryFixed,
+                                  surfaceTintColor: Colors.transparent,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadiusGeometry.circular(20),
+                                      side: const BorderSide(
+                                          color: Colors.transparent
+                                      )
+                                  ),
                                 ),
                               ),
                             ),
@@ -337,9 +388,7 @@ class ChatsPageState extends State<ChatsPage> {
                                   title: engine.isLoading?engine.dict.value("still_generating"):engine.dict.value(engine.chats.isEmpty?"no_chats":"chats_desc").replaceAll("%chatnum%", engine.chats.length.toString()),
                                   subtitle: engine.chats.isEmpty?engine.dict.value("new_chat"):"",
                                   action: engine.chats.isNotEmpty?(){}:engine.isLoading?(){}:(){
-                                    engine.currentChat = "0";
-                                    engine.context.clear();
-                                    engine.contextSize = 0;
+                                    engine.startNewChat();
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(

@@ -15,16 +15,126 @@ class Prompt{
   }
 
   Future<Map> getAppData() async {
-    final info = await PackageInfo.fromPlatform();
-    final output = {
-      "version": info.version,
-      "name": info.appName
-    };
-    return output;
+    try {
+      final info = await PackageInfo.fromPlatform()
+          .timeout(const Duration(seconds: 3));
+      return {
+        "version": info.version,
+        "name": info.appName,
+      };
+    } catch (_) {
+      return {
+        "version": "",
+        "name": "PAIOS",
+      };
+    }
   }
 
   initialize() async {
     appInfo = await getAppData();
+  }
+
+  static const String _attachedImageCue =
+      '[An image is attached to the current user message. Answer directly from what you see in the image.]';
+  static const int defaultContinuationTailChars = 450;
+  static const int defaultContinuationPersonaChars = 240;
+  static const int defaultContinuationQuestionChars = 220;
+
+  static String _replacePlaceholders(
+    String template,
+    Map modelInfo,
+    Map appInfo,
+    String ghUrl,
+  ) {
+    return template
+        .replaceAll("%modelversion%", modelInfo["version"] ?? "Unknown")
+        .replaceAll("%devname%", "Puzzak")
+        .replaceAll("%appname%", appInfo["name"] ?? "PAIOS")
+        .replaceAll("%appversion%", appInfo["version"] ?? "")
+        .replaceAll("%ghrepolink%", ghUrl)
+        .replaceAll(RegExp(r'%\w+%'), '');
+  }
+
+  static String boundHeadAtBoundary(
+    String text,
+    int maxChars, {
+    bool appendEllipsis = true,
+  }) {
+    final trimmed = text.trim();
+    if (maxChars <= 0 || trimmed.isEmpty) return "";
+    if (trimmed.length <= maxChars) return trimmed;
+    final cut = trimmed.substring(0, maxChars);
+    final lastBreak = cut.lastIndexOf(RegExp(r'[\s\n]'));
+    final clean = lastBreak >= (maxChars * 0.6).floor()
+        ? cut.substring(0, lastBreak).trimRight()
+        : cut.trimRight();
+    return appendEllipsis ? "$clean..." : clean;
+  }
+
+  /// Bounds [text] to at most [maxChars] from the end, advancing the start to
+  /// a nearby line or word boundary while keeping the exact trailing characters intact.
+  static String boundTailAtBoundary(
+    String text, {
+    int maxChars = defaultContinuationTailChars,
+  }) {
+    if (maxChars <= 0 || text.isEmpty) return "";
+    if (text.length <= maxChars) return text;
+    final tail = text.substring(text.length - maxChars);
+    final searchLimit = tail.length ~/ 3 < 96 ? tail.length ~/ 3 : 96;
+    for (int i = 0; i < searchLimit; i++) {
+      final ch = tail[i];
+      if (ch == '\n' || ch == ' ' || ch == '\t') {
+        int nextIdx = i + 1;
+        while (nextIdx < tail.length &&
+            (tail[nextIdx] == ' ' || tail[nextIdx] == '\t')) {
+          nextIdx++;
+        }
+        if (nextIdx < tail.length) {
+          return tail.substring(nextIdx);
+        }
+      }
+    }
+    return tail;
+  }
+
+  String _formatHistoryLine(dynamic line) {
+    final rawTime = line["time"]?.toString() ?? "";
+    final epochMs = int.tryParse(rawTime);
+    final timeStr = epochMs != null
+        ? DateFormat('dd/MM/yyyy, HH:mm')
+            .format(DateTime.fromMillisecondsSinceEpoch(epochMs))
+        : rawTime;
+    final imagePath = line["imagePath"]?.toString();
+    final hasImage = imagePath != null && imagePath.trim().isNotEmpty;
+    final imageDescription = line["imageDescription"]?.toString().trim();
+    final hasDescription =
+        imageDescription != null && imageDescription.isNotEmpty;
+    final attachmentSuffix = hasDescription
+        ? " [image attached: $imageDescription]"
+        : (hasImage ? " [image attached]" : "");
+    return "\n - ${line["user"]} ($timeStr) : ${line["message"]}$attachmentSuffix";
+  }
+
+  String _resolveSystemInstructions(String userprompt, Map modelInfo) {
+    final resolved = _replacePlaceholders(userprompt, modelInfo, appInfo, ghUrl);
+    return "## [SYSTEM INSTRUCTIONS]\n$resolved";
+  }
+
+  String _buildContextualData({
+    required bool addTime,
+    required bool shareLocale,
+    required String currentLocale,
+  }) {
+    if (!addTime && !shareLocale) return "";
+    String contextData = "\n\n### [CONTEXTUAL DATA]";
+    if (addTime) {
+      contextData +=
+          "\n - Current Time: ${DateFormat('dd/MM/yyyy HH:mm:ss').format(DateTime.now())}";
+    }
+    if (shareLocale) {
+      contextData += "\n - Language: $currentLocale";
+    }
+    return contextData;
   }
 
   Future<String> generate(
@@ -38,106 +148,135 @@ class Prompt{
     bool ignoreContext = false,
     List<M3xTool>? tools,
     bool includeTools = true,
+    bool hasAttachedImage = false,
   }) async {
     // Used only for title generation — skip everything
     if (ignoreContext) return "";
 
     // ignoreInstructions: bare conversation wrapper only (no system prompt)
     if (ignoreInstructions) {
-      if (chatlog.isEmpty) return "";
+      if (chatlog.isEmpty && !hasAttachedImage) return "";
       String bare = "You are having a conversation with the User.\n"
-          "Don't prepend \"Gemini\" or a timestamp before your answer. Only reply with your answer.\n\n"
-          "### [CHAT HISTORY]";
-      for (var line in chatlog) {
-        bare += "\n - ${line["user"]} (${DateFormat('dd/MM/yyyy, HH:mm').format(DateTime.fromMillisecondsSinceEpoch(int.parse(line["time"])))}) : ${line["message"]}";
+          "Reply directly with your answer without prepending \"Gemini\" or a timestamp.";
+      if (chatlog.isNotEmpty) {
+        bare += "\n\n### [CHAT HISTORY]";
+        for (var line in chatlog) {
+          bare += _formatHistoryLine(line);
+        }
+      }
+      if (hasAttachedImage) {
+        bare += "\n\n$_attachedImageCue";
       }
       return bare;
     }
 
     // ── 1. System instructions block ─────────────────────────────────────────
-    String output = "## [SYSTEM INSTRUCTIONS]\n$userprompt";
+    String output = _resolveSystemInstructions(userprompt, modelInfo);
 
-    // Replace static values that may appear in any prompt (e.g. system_default.md)
-    output = output
-        .replaceAll("%modelversion%", modelInfo["version"] ?? "Unknown")
-        .replaceAll("%devname%", "Puzzak")
-        .replaceAll("%appname%", appInfo["name"] ?? "PAIOS")
-        .replaceAll("%appversion%", appInfo["version"] ?? "")
-        .replaceAll("%ghrepolink%", ghUrl);
+    // ── 2. Optional contextual data ──────────────────────────────────────────
+    output += _buildContextualData(
+      addTime: addTime,
+      shareLocale: shareLocale,
+      currentLocale: currentLocale,
+    );
 
-    // Strip any leftover legacy placeholders so they don't confuse the model
-    output = output.replaceAll(RegExp(r'%\w+%'), '');
-
-
-    if (addTime || shareLocale) {
-      String contextData = "\n\n### [CONTEXTUAL DATA]";
-      if (addTime) {
-        contextData += "\n - Current Time: ${DateFormat('dd/MM/yyyy HH:mm:ss').format(DateTime.now())}";
-      }
-      if (shareLocale) {
-        contextData += "\n - Language: $currentLocale";
-      }
-      output += contextData;
+    // ── 3. Concise positive guidelines ───────────────────────────────────────
+    final List<String> guidelines = [
+      "Respond naturally and concisely to greetings, casual conversation, and general questions.",
+      "Stay truthful and concise; say when you do not know something instead of guessing.",
+    ];
+    if (hasAttachedImage) {
+      guidelines.add("Answer directly using the attached image.");
     }
-
-    // ── 4. Data & instruction rules ───────────────────────────────────────────
-    List<String> rules = [];
     if (shareLocale) {
-      rules.add("You MUST respond ONLY in the $currentLocale language unless the user asks you to switch.");
+      guidelines.add(
+        "Respond in $currentLocale unless the user asks for another language.",
+      );
     }
     if (addTime) {
-      rules.add("You MUST use the \"Current Time\" from [CONTEXTUAL DATA] as your knowledge of the current date and time. Do not volunteer the time unless the user asks.");
-      rules.add("You MUST NOT use Current Time as the date for factual or historical questions.");
-      rules.add("Current Time is only for direct user convenience, e.g. telling the time or answering \"how long ago was...?\".");
+      guidelines.add(
+        "Use Current Time from [CONTEXTUAL DATA] when the user asks about the current date or time.",
+      );
     }
-    if (rules.isNotEmpty) {
-      output += "\n\n## [DATA & INSTRUCTION RULES]";
-      for (var rule in rules) {
-        output += "\n - $rule";
-      }
+    output += "\n\n## [GUIDELINES]";
+    for (final line in guidelines) {
+      output += "\n - $line";
     }
 
-    // ── 4b. Available tools ───────────────────────────────────────────────────
+    // ── 4. Available tools (only when enabled and non-empty) ─────────────────
     if (includeTools && tools != null && tools.isNotEmpty) {
+      final hasWikipediaTools = tools.any(
+        (t) => t.name == 'wikipedia_summary' || t.name == 'wikipedia_details',
+      );
       output += "\n\n### [AVAILABLE TOOLS]"
-          "\nYou have access to external agentic tools provided by connected applications in the M3x mesh."
-          "\n\nCRITICAL TOOL INVOCATION RULES:"
-          "\n1. ONLY invoke a tool when the user's latest message explicitly asks for information, status, or an action that REQUIRES that specific tool."
-          '\n2. NEVER invoke a tool for general knowledge, conceptual questions about AI models, Gemini Nano, your own identity, greetings (e.g. "hi", "hello", "who are you"), pleasantries, or casual conversation. Answer all conceptual, identity, and general knowledge questions directly from your own training without calling any tool.'
-          "\n3. NEVER guess or invoke a tool speculatively. If unsure, respond conversationally."
-          "\n4. NEVER invoke a tool when the user is asking about visual contents, images, photos, UI widgets, screenshots, or apps visible on the screen, or when no tool exists for the requested data. There is NO tool for reading screen apps or images; inspect the attached image directly or answer honestly that no such tool exists."
-          "\n\nWhen a tool is genuinely required by the user's explicit request, respond ONLY with a valid JSON tool call block using double quotes:"
-          '\n```json'
-          '\n{"action": "tool_call", "app": "<app>", "tool": "<tool>", "description": "Checking live data", "arguments": {}}'
-          '\n```'
-          '\nDo not add any text before or after the JSON block.'
-          '\nMake description very short, for example for tool "alerts_get_summary" description can be "Getting Air Raid Alerts".'
-          '\n\nAvailable tool schemas:';
+          "\nUse a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text."
+          '\nWhen calling a tool, respond with ONLY a JSON object using double quotes:'
+          '\n{"tool": "<tool>", "app": "<app>", "args": {}}'
+          '\nIf a tool takes no parameters, set "args": {} (never leave "args": empty).'
+          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required).'
+          '${hasWikipediaTools ? ' Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.' : ''}'
+          "\n\nTools:";
       for (final tool in tools) {
         final appStr = tool.app != null ? ' (app: "${tool.app}")' : '';
         output += "\n - ${tool.name}$appStr: ${tool.description}"
-            "\n   arguments schema: ${jsonEncode(tool.parameters)}";
+            "\n   args schema: ${jsonEncode(tool.parameters)}";
       }
     }
 
     // ── 5. Chat history ───────────────────────────────────────────────────────
     if (chatlog.isNotEmpty) {
       output += "\n\n### [CHAT HISTORY]"
-          "\n - Do NOT quote the \"User:\" or \"Gemini:\" markers — they are context markers for you only."
-          "\n - Focus on the user's LATEST message, using the history only for context.";
+          "\n - Use history for context and focus on the user's latest message.";
       for (var line in chatlog) {
-        output += "\n - ${line["user"]} (${DateFormat('dd/MM/yyyy, HH:mm').format(DateTime.fromMillisecondsSinceEpoch(int.parse(line["time"])))}) : ${line["message"]}";
+        output += _formatHistoryLine(line);
       }
+    }
+
+    if (hasAttachedImage) {
+      output += "\n\n$_attachedImageCue";
     }
 
     return output;
   }
 
-  /// Builds a system prompt for silent continuation of a truncated response.
+  static final RegExp _trailingWordCharRegex = RegExp(
+    r'[\p{L}\p{N}]$',
+    unicode: true,
+  );
+
+  /// If [text] ends inside a letter/digit sequence (no trailing whitespace or
+  /// punctuation) and whitespace appears within [maxTrimChars] from the end,
+  /// returns `(completeTail, partialToken)` where `completeTail` ends right
+  /// after that whitespace and `partialToken` is the trailing token.
+  static ({String completeTail, String partialToken})? splitTrailingPartialWord(
+    String text, {
+    int maxTrimChars = 28,
+  }) {
+    if (text.isEmpty || !_trailingWordCharRegex.hasMatch(text)) {
+      return null;
+    }
+    final minIndex = text.length > maxTrimChars ? text.length - maxTrimChars : 0;
+    for (int i = text.length - 1; i >= minIndex; i--) {
+      final ch = text[i];
+      if (ch == ' ' || ch == '\t' || ch == '\n') {
+        final splitPos = i + 1;
+        if (splitPos < text.length && i > 0) {
+          return (
+            completeTail: text.substring(0, splitPos),
+            partialToken: text.substring(splitPos),
+          );
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /// Builds a compact system prompt for silent continuation of a truncated response.
   ///
-  /// There is NO user turn — the model gets a [CONTINUATION] system directive
-  /// with the original question AND the partial text it already wrote, so it
-  /// can tell when its answer is semantically complete and stop on its own.
+  /// Keeps persona, question, and partial response strictly bounded (tail-only)
+  /// so tight-budget models like Gemini Nano v3 retain maximum output headroom
+  /// across multiple continuation rounds.
   Future<String> generateContinuation(
     String userprompt,
     Map modelInfo,
@@ -146,61 +285,80 @@ class Prompt{
     bool addTime = false,
     bool shareLocale = false,
     String currentLocale = "en",
+    int maxPartialChars = defaultContinuationTailChars,
+    int maxPersonaChars = defaultContinuationPersonaChars,
+    int maxQuestionChars = defaultContinuationQuestionChars,
   }) async {
-    // Same system persona
-    String output = "## [SYSTEM INSTRUCTIONS]\n$userprompt";
-    output = output
-        .replaceAll("%modelversion%", modelInfo["version"] ?? "Unknown")
-        .replaceAll("%devname%", "Puzzak")
-        .replaceAll("%appname%", appInfo["name"] ?? "PAIOS")
-        .replaceAll("%appversion%", appInfo["version"] ?? "")
-        .replaceAll("%ghrepolink%", ghUrl);
-    output = output.replaceAll(RegExp(r'%\w+%'), '');
+    final resolvedPersona = _replacePlaceholders(
+      userprompt,
+      modelInfo,
+      appInfo,
+      ghUrl,
+    );
+    final boundedPersona = boundHeadAtBoundary(
+      resolvedPersona,
+      maxPersonaChars,
+      appendEllipsis: false,
+    );
+    final boundedQuestion = boundHeadAtBoundary(
+      originalQuestion,
+      maxQuestionChars,
+      appendEllipsis: false,
+    );
+    final boundedTail = boundTailAtBoundary(
+      partialText,
+      maxChars: maxPartialChars,
+    );
 
-    if (addTime || shareLocale) {
-      String contextData = "\n\n### [CONTEXTUAL DATA]";
-      if (addTime) {
-        contextData += "\n - Current Time: ${DateFormat('dd/MM/yyyy HH:mm:ss').format(DateTime.now())}";
-      }
-      if (shareLocale) {
-        contextData += "\n - Language: $currentLocale";
-      }
-      output += contextData;
-    }
-
-    List<String> rules = [];
-    if (shareLocale) {
-      rules.add("You MUST respond ONLY in the $currentLocale language unless the user asks you to switch.");
-    }
-    if (addTime) {
-      rules.add("You MUST use the \"Current Time\" from [CONTEXTUAL DATA] as your knowledge of the current date and time. Do not volunteer the time unless the user asks.");
-    }
-    if (rules.isNotEmpty) {
-      output += "\n\n## [DATA & INSTRUCTION RULES]";
-      for (var rule in rules) {
-        output += "\n - $rule";
-      }
-    }
-
-    // System-level continuation — includes the original question so the model
-    // knows WHAT it's answering and can recognise when the answer is complete.
     final trimmedPartial = partialText.trimLeft();
     final isJsonDraft = trimmedPartial.startsWith('{') ||
         trimmedPartial.startsWith('```json') ||
-        trimmedPartial.contains('"action"') && trimmedPartial.contains('"tool"');
-    output += "\n\n## [CONTINUATION]\n"
-        "The user's original question was: \"$originalQuestion\"\n"
-        "Your response was interrupted before completion.\n"
-        "Rules:\n"
-        " - Output ONLY the exact remaining characters/tokens to complete the partial text below.\n"
-        " - Do NOT restart, summarise, or repeat content already in the partial text.\n"
-        " - Do NOT add any preamble, greeting, or acknowledgment.\n"
-        " - Pick up EXACTLY at the final character of the partial text — continue mid-word or mid-JSON if needed.\n"
-        "${isJsonDraft ? ' - The partial text is an incomplete JSON tool call: output ONLY the remaining valid JSON characters (and closing ``` if opened) to complete it, with NO prose.\n' : ' - Once your answer to the original question is complete, STOP. Do not pad or extend.\n'}"
-        "--- PARTIAL TEXT (continue from here) ---\n"
-        "$partialText\n"
-        "--- END OF PARTIAL TEXT ---";
+        RegExp(r'^```(?:json)?\s*\{', caseSensitive: false)
+            .hasMatch(trimmedPartial) ||
+        (trimmedPartial.contains('"tool"') &&
+            (trimmedPartial.contains('"args"') ||
+                trimmedPartial.contains('"action"')));
+    final partialSplit =
+        isJsonDraft ? null : splitTrailingPartialWord(boundedTail);
 
-    return output;
+    final buffer = StringBuffer("## [CONTINUATION]\n");
+    if (boundedPersona.isNotEmpty) {
+      buffer.writeln("Persona: $boundedPersona");
+    }
+    if (shareLocale && currentLocale.trim().isNotEmpty) {
+      buffer.writeln("Language: ${currentLocale.trim()}.");
+    }
+    if (addTime) {
+      buffer.writeln(
+        "Current Time: ${DateFormat('dd/MM/yyyy HH:mm:ss').format(DateTime.now())}",
+      );
+    }
+    if (boundedQuestion.isNotEmpty) {
+      buffer.writeln('Question: "$boundedQuestion"');
+    }
+    buffer.writeln("Partial answer tail:");
+    buffer.writeln(boundedTail);
+    buffer.write("Continue seamlessly from the exact end without repeating.");
+    if (isJsonDraft) {
+      buffer.write(
+        " Do NOT prepend an ellipsis (...) or repeat words. Complete the trailing thought concisely without starting unrelated new sections.",
+      );
+      buffer.write(
+        " This is an incomplete JSON tool call: output ONLY the remaining valid JSON characters (and closing ``` if opened), with NO prose.",
+      );
+    } else if (partialSplit != null) {
+      final completeTailCue = boundTailAtBoundary(
+        partialSplit.completeTail,
+        maxChars: 28,
+      );
+      buffer.write(
+        ' No "...", repeats, or duplicate summary. If "${partialSplit.partialToken}" was cut off, finish cleanly after "$completeTailCue".',
+      );
+    } else {
+      buffer.write(
+        ' Finish the unfinished sentence naturally from the exact tail word without "...", repeating earlier sentences, or starting a duplicate summary paragraph.',
+      );
+    }
+    return buffer.toString();
   }
 }

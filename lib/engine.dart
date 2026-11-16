@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' as md;
+import 'package:flutter/services.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:m3x/m3x.dart' hide Dictionary, AnalyticsService, Cards;
 import 'package:geminilocal/pages/support/elements.dart';
@@ -22,11 +23,209 @@ import 'package:geminilocal/storage/migration.dart';
 import 'package:geminilocal/storage/prompt_repository.dart';
 import 'package:geminilocal/storage/resource_repository.dart';
 import 'package:geminilocal/services/doc_service.dart';
+import 'package:geminilocal/services/internal_tools_service.dart';
+
+class PaiosModelVariant {
+  final String releaseStage;
+  final String preference;
+  final int statusCode;
+  final String status;
+  final bool available;
+  final String? baseModelName;
+  final bool isActive;
+
+  const PaiosModelVariant({
+    required this.releaseStage,
+    required this.preference,
+    required this.statusCode,
+    required this.status,
+    required this.available,
+    this.baseModelName,
+    this.isActive = false,
+  });
+
+  bool get isDownloadable => status == 'downloadable';
+  bool get isDownloading => status == 'downloading';
+  bool get isUnavailable => status == 'unavailable';
+  bool get isSwitchable => !isUnavailable;
+
+  String get authorLabel => AIEngine.formatNanoAuthor({
+        if (baseModelName != null) 'baseModelName': baseModelName,
+      });
+
+  String get internalModelName {
+    final raw = baseModelName?.trim();
+    if (raw == null ||
+        raw.isEmpty ||
+        raw.toLowerCase() == 'null' ||
+        raw.toLowerCase() == 'unknown') {
+      return '$releaseStage-$preference';
+    }
+    final lower = raw.toLowerCase();
+    if (lower.startsWith('nano-')) {
+      return 'gemini-$lower';
+    }
+    if (lower.contains('gemini-')) {
+      return lower;
+    }
+    return lower;
+  }
+
+  PaiosModelVariant copyWith({
+    String? releaseStage,
+    String? preference,
+    int? statusCode,
+    String? status,
+    bool? available,
+    String? baseModelName,
+    bool? isActive,
+  }) {
+    return PaiosModelVariant(
+      releaseStage: releaseStage ?? this.releaseStage,
+      preference: preference ?? this.preference,
+      statusCode: statusCode ?? this.statusCode,
+      status: status ?? this.status,
+      available: available ?? this.available,
+      baseModelName: baseModelName ?? this.baseModelName,
+      isActive: isActive ?? this.isActive,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'releaseStage': releaseStage,
+        'preference': preference,
+        'statusCode': statusCode,
+        'status': status,
+        'available': available,
+        'baseModelName': baseModelName,
+        'internalModelName': internalModelName,
+        'authorLabel': authorLabel,
+        'isActive': isActive,
+        'isSwitchable': isSwitchable,
+        'isDownloadable': isDownloadable,
+        'isDownloading': isDownloading,
+      };
+
+  factory PaiosModelVariant.fromMap(Map<dynamic, dynamic> map) {
+    final stage = AppConfig.normalizeReleaseStage(map['releaseStage']);
+    final pref = AppConfig.normalizePreference(map['preference']);
+    final rawStatus = map['status']?.toString().trim().toLowerCase();
+    final rawCode = map['statusCode'];
+    final int code = rawCode is num
+        ? rawCode.toInt()
+        : switch (rawStatus) {
+            'available' => 3,
+            'downloading' => 2,
+            'downloadable' => 1,
+            _ => (map['available'] == true ? 3 : 0),
+          };
+    final String status = (rawStatus != null &&
+            (rawStatus == 'available' ||
+                rawStatus == 'downloadable' ||
+                rawStatus == 'downloading' ||
+                rawStatus == 'unavailable'))
+        ? rawStatus
+        : switch (code) {
+            3 => 'available',
+            2 => 'downloading',
+            1 => 'downloadable',
+            _ => 'unavailable',
+          };
+    final bool avail = map['available'] is bool
+        ? map['available'] as bool
+        : (status == 'available' || code == 3);
+    final rawName = map['baseModelName']?.toString().trim();
+    final String? name = (rawName != null &&
+            rawName.isNotEmpty &&
+            rawName.toLowerCase() != 'null' &&
+            rawName.toLowerCase() != 'unknown')
+        ? rawName
+        : null;
+    final bool active = map['isActive'] == true;
+    return PaiosModelVariant(
+      releaseStage: stage,
+      preference: pref,
+      statusCode: code,
+      status: status,
+      available: avail,
+      baseModelName: name,
+      isActive: active,
+    );
+  }
+}
+
+class PaiosVariantDownloadState {
+  final String releaseStage;
+  final String preference;
+  final String variantKey;
+  final String status;
+  final int bytesDownloaded;
+  final int totalBytes;
+  final double bytesPerSec;
+  final String? error;
+
+  const PaiosVariantDownloadState({
+    required this.releaseStage,
+    required this.preference,
+    String? variantKey,
+    this.status = 'idle',
+    this.bytesDownloaded = 0,
+    this.totalBytes = 0,
+    this.bytesPerSec = 0.0,
+    this.error,
+  }) : variantKey = variantKey ?? '$releaseStage:$preference';
+
+  double get progress {
+    if (status == 'completed') return 1.0;
+    if (totalBytes <= 0 || bytesDownloaded <= 0) return 0.0;
+    return (bytesDownloaded / totalBytes).clamp(0.0, 1.0);
+  }
+
+  int get remainingBytes {
+    if (totalBytes <= 0) return 0;
+    final diff = totalBytes - bytesDownloaded;
+    return diff > 0 ? diff : 0;
+  }
+
+  bool get isDownloading => status == 'started' || status == 'downloading';
+  bool get isCompleted => status == 'completed';
+  bool get isFailed => status == 'failed';
+
+  PaiosVariantDownloadState copyWith({
+    String? releaseStage,
+    String? preference,
+    String? variantKey,
+    String? status,
+    int? bytesDownloaded,
+    int? totalBytes,
+    double? bytesPerSec,
+    String? error,
+    bool clearError = false,
+  }) {
+    final nextStage = releaseStage ?? this.releaseStage;
+    final nextPref = preference ?? this.preference;
+    return PaiosVariantDownloadState(
+      releaseStage: nextStage,
+      preference: nextPref,
+      variantKey: variantKey ?? '$nextStage:$nextPref',
+      status: status ?? this.status,
+      bytesDownloaded: bytesDownloaded ?? this.bytesDownloaded,
+      totalBytes: totalBytes ?? this.totalBytes,
+      bytesPerSec: bytesPerSec ?? this.bytesPerSec,
+      error: clearError ? null : (error ?? this.error),
+    );
+  }
+}
 
 class AIEngine with md.ChangeNotifier {
   final gemini = GeminiNano();
+  static const MethodChannel _localAiChannel = MethodChannel('flutter_local_ai');
   final toolRegistry = M3xToolRegistry();
   final docService = DocService.instance;
+  late final InternalToolsService internalToolsService =
+      InternalToolsService(isModuleEnabled: isExtensionEnabled);
+  static const MethodChannel _meshHostChannel =
+      MethodChannel('page.puzzak.paios/mesh');
   late final meshClient = M3xMeshClient(
     localRegistry: toolRegistry,
     localAppId: 'paios',
@@ -50,10 +249,25 @@ class AIEngine with md.ChangeNotifier {
     finishReason: "",
   );
   String responseText = "";
+  String currentThoughtChunk = "";
+  String _rawThoughtChunk = "";
+  DateTime? streamingMessageTime;
+  DateTime? streamingUserMessageTime;
   bool isLoading = false;
   bool isAvailable = false;
   bool isInitialized = false;
   bool isInitializing = false;
+  bool isSwitchingModelConfig = false;
+  bool isDownloadingModel = false;
+  static const int maxDownloadErrorRetries = 2;
+  bool _unavailableToastShown = false;
+  int _downloadErrorRetryCount = 0;
+  @visibleForTesting
+  int get downloadErrorRetryCount => _downloadErrorRetryCount;
+  bool _lateNetCheckRunning = false;
+  bool _lateProgressCheckRunning = false;
+  bool _disposed = false;
+  StreamSubscription<dynamic>? _statusSubscription;
   String status = "";
   bool isError = false;
 
@@ -61,6 +275,8 @@ class AIEngine with md.ChangeNotifier {
   String testPrompt = "";
   Map modelInfo = {};
   List modelDownloadLog = [];
+  final Map<String, PaiosVariantDownloadState> variantDownloads = {};
+  final Map<String, List<({int timeMs, int bytes})>> _downloadSpeedSamples = {};
   bool ignoreContext = false;
   bool isContinuing = false;
   bool isGenerating = false;
@@ -69,13 +285,27 @@ class AIEngine with md.ChangeNotifier {
   String _currentSynthesisPrompt = "";
   Uint8List? pendingImageBytes;
   String? pendingImageName;
+  static const int maxContinuations = 10;
+  static const int maxProseContinuations = 3;
+  static const int maxToolJsonContinuations = 1;
+  static const int maxProseSoftStopChars = 1600;
+  static const int maxProseHardStopChars = 2400;
+  static const int maxContinuationChars = 12000;
+  static const int maxNullReasonContinuations = 2;
+  static const int maxStopCutoffContinuations = 1;
+  static const int maxEmptyStreamRetries = 1;
+
   String _lastFinishReason = ""; // captured from streaming events, read at done
   String _combinedResponse = ""; // accumulates across continuation calls
   String get combinedResponse => _combinedResponse; // read-only access for UI
   int _continuationCount = 0;    // how many continuations fired (for logging)
+  int _nullReasonContinuationCount = 0;
+  int _stopCutoffContinuationCount = 0;
+  int _emptyStreamRetryCount = 0;
   int _streamGenerationId = 0;   // invalidates stale onDone/onError callbacks across streams
   bool _activeToolHandling = false;
   bool _forcedFinalSynthesis = false;
+  bool _toolFreeFallbackUsed = false;
   bool _lastToolFailed = false;
   bool _lastToolErrorIsInfra = false;
   String _lastToolErrorText = "";
@@ -88,14 +318,13 @@ class AIEngine with md.ChangeNotifier {
   // Cumulative generation stats across all continuation rounds (exposed to UI)
   int cumulativeGenerationMs = 0;
   int cumulativeTokenCount = 0;
-  // Join-stitching state — resolved once per continuation round on first chunk
-  bool _firstContinuationChunk = true;
-  String _continuationJoinPrefix = "";  // space or newline to insert at join point
-  bool _continuationLowerFirst = false; // lowercase the first char of continuation
-  String _continuationStripPattern = ""; // regex to strip from start of cont text (e.g. duplicate code fence)
 
   final Stopwatch _generationStopwatch = Stopwatch();
   bool _isCurrentSessionMultimodal = false;
+  Uint8List? _turnImageBytesForMemory;
+  String? _turnImagePathForMemory;
+  String? _turnChatIdForMemory;
+  bool _isCapturingVisualMemory = false;
 
   md.ScrollController scroller = md.ScrollController();
 
@@ -181,12 +410,26 @@ class AIEngine with md.ChangeNotifier {
     return canonicalExtensionId(raw);
   }
 
-  /// Checks whether an external mesh extension / package is permitted to run.
+  /// Checks whether an internal or external mesh extension / package is permitted to run.
+  /// Internal modules use `InternalToolsService.defaultEnabledForModule`
+  /// (offline docs/device default `true`, online modules default `false`).
   /// First-party apps (`page.puzzak.*`, `com.puzzak.*`) are enabled by default.
   /// Third-party apps default to the state of `mesh_allow_all_new` (default `false`).
   bool isExtensionEnabled(String appPackage) {
+    final internalMod = InternalToolsService.moduleById(appPackage);
+    if (internalMod != null) {
+      if (Hive.isBoxOpen('paios_storage')) {
+        final box = Hive.box('paios_storage');
+        final key = InternalToolsService.prefKeyForModule(internalMod.id);
+        if (box.containsKey(key)) {
+          return box.get(key) == true;
+        }
+      }
+      return internalMod.defaultEnabled;
+    }
     final canon = canonicalExtensionId(appPackage);
     if (canon == _selfPackageId) return true;
+    if (!Hive.isBoxOpen('paios_storage')) return false;
     final box = Hive.box('paios_storage');
     final key = 'mesh_extension_${canon}_enabled';
     if (box.containsKey(key)) {
@@ -204,18 +447,58 @@ class AIEngine with md.ChangeNotifier {
     return allowAllNew;
   }
 
+  bool isInternalModuleEnabled(String moduleId) {
+    final mod = InternalToolsService.moduleById(moduleId);
+    if (mod == null) return false;
+    return isExtensionEnabled(mod.id);
+  }
+
+  bool isToolModuleEnabled(String toolName) {
+    final mod = InternalToolsService.moduleForTool(toolName);
+    if (mod == null) return true;
+    return isExtensionEnabled(mod.id);
+  }
+
   Future<void> setExtensionEnabled(String appPackage, bool enabled) async {
-    final canon = canonicalExtensionId(appPackage);
-    final box = Hive.box('paios_storage');
-    await box.put('mesh_extension_${canon}_enabled', enabled);
+    final internalMod = InternalToolsService.moduleById(appPackage);
+    final canon = internalMod != null
+        ? internalMod.id
+        : canonicalExtensionId(appPackage);
+    if (Hive.isBoxOpen('paios_storage')) {
+      final box = Hive.box('paios_storage');
+      await box.put('mesh_extension_${canon}_enabled', enabled);
+    }
+    _syncInternalToolRegistrations();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('mesh_extension_${canon}_enabled', enabled);
-      if (canon != appPackage) {
+      if (canon != appPackage && internalMod == null) {
         await prefs.setBool('mesh_extension_${appPackage}_enabled', enabled);
       }
     } catch (_) {}
+    await _syncLocalToolRegistrations();
     notifyListeners();
+  }
+
+  Future<void> _syncInternalModulePreferences() async {
+    try {
+      if (!Hive.isBoxOpen('paios_storage')) return;
+      final box = Hive.box('paios_storage');
+      final prefs = await SharedPreferences.getInstance()
+          .timeout(const Duration(seconds: 2));
+      for (final mod in InternalToolsService.modules) {
+        final key = mod.prefKey;
+        if (box.containsKey(key)) {
+          final val = box.get(key) == true;
+          if (prefs.getBool(key) != val) {
+            await prefs.setBool(key, val);
+          }
+        } else if (prefs.containsKey(key)) {
+          final val = prefs.getBool(key) ?? mod.defaultEnabled;
+          await box.put(key, val);
+        }
+      }
+    } catch (_) {}
   }
 
   bool get allowAllNewExtensions {
@@ -251,9 +534,702 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  bool get isAICoreBeta => (modelInfo["isBeta"] == "true");
-  String get aicorePackageVersion => modelInfo["aicoreVersion"] ?? "Unknown";
-  bool get isAICoreInstalled => (modelInfo["aicoreInstalled"] == "true");
+  bool _modelBool(String key, {bool defaultValue = false}) {
+    if (!modelInfo.containsKey(key) || modelInfo[key] == null) {
+      return defaultValue;
+    }
+    final val = modelInfo[key];
+    if (val is bool) return val;
+    if (val is num) return val != 0;
+    final str = val.toString().trim().toLowerCase();
+    if (str.isEmpty || str == "null") return defaultValue;
+    return str == "true" || str == "1";
+  }
+
+  bool get isAICoreBeta => _modelBool("isBeta");
+  String get aicorePackageVersion =>
+      modelInfo["aicoreVersion"]?.toString() ?? "Unknown";
+  bool get isAICoreInstalled => _modelBool("aicoreInstalled");
+
+  String get modelReleaseStage => config.modelReleaseStage;
+  String get modelPreference => config.modelPreference;
+  bool get enableThinking => config.enableThinking;
+  bool get isNanoV4Active => _modelBool("isNanoV4");
+  bool get isThinkingModeAvailable => _modelBool("isThinkingModeAvailable");
+  bool get isSystemPromptAvailable => _modelBool("isSystemPromptAvailable");
+  bool get isCachingAvailable => _modelBool("isCachingAvailable");
+  bool get fellBackToStable => _modelBool("fellBackToStable");
+  bool get isStableFastAvailable =>
+      _modelBool("stableFastAvailable", defaultValue: true);
+  bool get isPreviewAvailable =>
+      _modelBool("previewAvailable", defaultValue: true);
+  bool get isPreviewFastAvailable =>
+      _modelBool("previewFastAvailable", defaultValue: true);
+  bool get isPreviewFullAvailable =>
+      _modelBool("previewFullAvailable", defaultValue: true);
+  bool get isFastAvailable => _modelBool("fastAvailable", defaultValue: true);
+
+  bool get isFastAvailableForSelectedChannel {
+    if (modelReleaseStage == 'preview') {
+      return modelInfo.containsKey('previewFastAvailable')
+          ? isPreviewFastAvailable
+          : isFastAvailable;
+    }
+    return modelInfo.containsKey('stableFastAvailable')
+        ? isStableFastAvailable
+        : isFastAvailable;
+  }
+
+  bool get isFullAvailableForSelectedChannel {
+    if (modelReleaseStage == 'preview') {
+      return isPreviewFullAvailable;
+    }
+    return true;
+  }
+
+  Future<bool> _syncConfigWithModelCapabilities() async {
+    bool changed = false;
+    final syncedStage = AppConfig.normalizeReleaseStage(
+      modelInfo["releaseStage"] ?? config.modelReleaseStage,
+    );
+    final syncedPref = AppConfig.normalizePreference(
+      modelInfo["preference"] ?? config.modelPreference,
+    );
+
+    if (!fellBackToStable &&
+        syncedStage == config.modelReleaseStage &&
+        syncedPref != config.modelPreference) {
+      config.modelPreference = syncedPref;
+      changed = true;
+    } else if (config.modelReleaseStage == 'stable' &&
+        config.modelPreference == 'fast' &&
+        !isFastAvailableForSelectedChannel) {
+      config.modelPreference = 'full';
+      changed = true;
+    } else if (config.modelReleaseStage == 'preview' &&
+        config.modelPreference == 'full' &&
+        !isFullAvailableForSelectedChannel &&
+        isFastAvailableForSelectedChannel) {
+      config.modelPreference = 'fast';
+      changed = true;
+    }
+
+    if (changed) {
+      await config.saveModelConfig();
+    }
+    return changed;
+  }
+  String get modelFeatureStatus =>
+      (modelInfo["status"]?.toString() ?? "unavailable").toLowerCase();
+
+  bool get _isRawModelInfoUnavailable {
+    if (modelInfo.isEmpty) return false;
+    final statusStr = modelInfo['status']?.toString().trim().toLowerCase();
+    final availableVal = modelInfo['available'];
+    final isExplicitlyFalse = availableVal == false ||
+        availableVal?.toString().trim().toLowerCase() == 'false';
+    final statusCodeVal = modelInfo['statusCode'];
+    final isZeroStatusCode = statusCodeVal == 0 ||
+        statusCodeVal?.toString().trim() == '0';
+    final isDownloadState = statusStr == 'downloadable' ||
+        statusStr == 'downloading' ||
+        statusCodeVal == 1 ||
+        statusCodeVal == 2 ||
+        statusCodeVal?.toString().trim() == '1' ||
+        statusCodeVal?.toString().trim() == '2';
+    return !isDownloadState &&
+        (isExplicitlyFalse ||
+            statusStr == 'unavailable' ||
+            isZeroStatusCode);
+  }
+
+  bool get hasAnySupportedModel {
+    if (modelInfo.containsKey('hasAnySupportedModel') &&
+        modelInfo['hasAnySupportedModel'] != null &&
+        _modelBool('hasAnySupportedModel')) {
+      return true;
+    }
+    return modelVariants.any((v) => !v.isUnavailable);
+  }
+
+  bool get hasAnyAvailableModel {
+    if (modelInfo.containsKey('hasAnyAvailableModel') &&
+        modelInfo['hasAnyAvailableModel'] != null &&
+        _modelBool('hasAnyAvailableModel')) {
+      return true;
+    }
+    return modelVariants.any((v) => v.available);
+  }
+
+  bool get _hasInitializationProbed =>
+      modelInfo.isNotEmpty || modelDownloadLog.isNotEmpty || isInitialized;
+
+  bool get isAiCoreKnownUnavailable {
+    if (!_hasInitializationProbed) return false;
+    if (hasAnySupportedModel) return false;
+    if (_isRawModelInfoUnavailable) return true;
+    if (modelDownloadLog.isNotEmpty) {
+      final last = modelDownloadLog.last;
+      if (last is Map) {
+        final logStatus = last['status']?.toString().trim().toLowerCase();
+        final logInfo = last['info']?.toString().trim().toLowerCase();
+        final logValue = last['value']?.toString().trim().toLowerCase();
+        if (logStatus == 'error' &&
+            (logInfo == 'aicore' || logValue == 'unavailable')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool get isAiCoreAvailable => !isAiCoreKnownUnavailable;
+
+  String _unavailableStatusMessage() {
+    final translated = dict.value("intro_aicore_unsupported_desc");
+    if (translated.isNotEmpty &&
+        translated != "Loading..." &&
+        translated != "intro_aicore_unsupported_desc" &&
+        !translated.startsWith("!!!")) {
+      return translated;
+    }
+    return "Google AICore with Gemini Nano is currently unavailable on this device.";
+  }
+
+  String _unavailableToastText() {
+    final val = dict.value("unavailable");
+    if (val.isEmpty ||
+        val == "Loading..." ||
+        val == "unavailable" ||
+        val.startsWith("!!!")) {
+      return "Gemini Nano is unavailable";
+    }
+    return "Gemini Nano $val";
+  }
+
+  Future<void> _showToast(String msg) async {
+    try {
+      await Fluttertoast.showToast(
+        msg: msg,
+        toastLength: Toast.LENGTH_SHORT,
+        fontSize: 16.0,
+      ).timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+  bool get effectiveEnableThinking =>
+      (isNanoV4Active || isThinkingModeAvailable) ? true : config.enableThinking;
+
+  String get activeModelName {
+    final raw = modelInfo["baseModelName"]?.toString().trim();
+    if (raw != null && raw.isNotEmpty && raw != "null") return raw;
+    return "Gemini Nano";
+  }
+
+  String get activeReleaseStage {
+    final raw = modelInfo["releaseStage"]?.toString().trim();
+    if (raw != null && raw.isNotEmpty && raw != "null") return raw;
+    return config.modelReleaseStage;
+  }
+
+  String get activePreference {
+    final raw = modelInfo["preference"]?.toString().trim();
+    if (raw != null && raw.isNotEmpty && raw != "null") return raw;
+    return config.modelPreference;
+  }
+
+  static final RegExp _nanoV4Regex = RegExp(
+    r'(?:^|[^a-z0-9])(v4|nano[\s\-_]?4)(?:[^a-z0-9]|$)',
+    caseSensitive: false,
+  );
+  static final RegExp _nanoV3Regex = RegExp(
+    r'(?:^|[^a-z0-9])(v3|nano[\s\-_]?3)(?:[^a-z0-9]|$)',
+    caseSensitive: false,
+  );
+  static final RegExp _nanoV2Regex = RegExp(
+    r'(?:^|[^a-z0-9])(v2|nano[\s\-_]?2)(?:[^a-z0-9]|$)',
+    caseSensitive: false,
+  );
+  static final RegExp _generalNanoVersionRegex = RegExp(
+    r'v?(\d+(?:\.\d+)?)',
+    caseSensitive: false,
+  );
+
+  /// Formats a human-friendly assistant author string such as `"Gemini Nano v4"`
+  /// or `"Gemini Nano v3"` from a `modelInfo` capability map.
+  static String formatNanoAuthor(Map? modelInfo) {
+    if (modelInfo == null || modelInfo.isEmpty) return 'Gemini Nano';
+    final rawIsV4 = modelInfo['isNanoV4'];
+    final bool isV4 = rawIsV4 == true ||
+        rawIsV4 == 1 ||
+        rawIsV4?.toString().trim().toLowerCase() == 'true';
+    if (isV4) return 'Gemini Nano v4';
+
+    final statusStr = modelInfo['status']?.toString().trim().toLowerCase() ?? '';
+    final candidates = <String>[
+      modelInfo['baseModelName']?.toString().trim() ?? '',
+      if (statusStr != 'error') modelInfo['version']?.toString().trim() ?? '',
+    ];
+
+    for (final raw in candidates) {
+      if (raw.isEmpty) continue;
+      final lower = raw.toLowerCase();
+      if (lower == 'null' ||
+          lower == 'unknown' ||
+          lower == 'not installed' ||
+          lower.startsWith('null response')) {
+        continue;
+      }
+      if (_nanoV4Regex.hasMatch(raw)) return 'Gemini Nano v4';
+      if (_nanoV3Regex.hasMatch(raw)) return 'Gemini Nano v3';
+      if (_nanoV2Regex.hasMatch(raw)) return 'Gemini Nano v2';
+      final match = _generalNanoVersionRegex.firstMatch(raw);
+      if (match != null) {
+        final ver = match.group(1);
+        if (ver != null && ver.isNotEmpty) {
+          return 'Gemini Nano v$ver';
+        }
+      }
+    }
+    return 'Gemini Nano';
+  }
+
+  String get assistantAuthorLabel => formatNanoAuthor(modelInfo);
+
+  static int _compareVariants(PaiosModelVariant a, PaiosModelVariant b) {
+    final stageA = a.releaseStage == 'stable' ? 0 : 1;
+    final stageB = b.releaseStage == 'stable' ? 0 : 1;
+    if (stageA != stageB) return stageA.compareTo(stageB);
+    final prefA = a.preference == 'full' ? 0 : 1;
+    final prefB = b.preference == 'full' ? 0 : 1;
+    return prefA.compareTo(prefB);
+  }
+
+  static bool _hasVariantDistinction(String internalName) {
+    return internalName.contains('fast') || internalName.contains('full');
+  }
+
+  static bool _isNanoV4InternalName(String internalName) {
+    return _nanoV4Regex.hasMatch(internalName);
+  }
+
+  /// All 4 standard Gemini Nano variants (`stable/full`, `stable/fast`,
+  /// `preview/full`, `preview/fast`) sorted by readiness and preference.
+  List<PaiosModelVariant> get modelVariants {
+    final rawVariants = modelInfo['modelVariants'];
+    if (rawVariants is List && rawVariants.isNotEmpty) {
+      final parsed = rawVariants
+          .whereType<Map>()
+          .map((m) => PaiosModelVariant.fromMap(m))
+          .toList();
+      if (parsed.isNotEmpty) {
+        parsed.sort(_compareVariants);
+        return List.unmodifiable(parsed);
+      }
+    }
+
+    if (modelInfo.isEmpty) return const [];
+
+    final currentStage = AppConfig.normalizeReleaseStage(
+      modelInfo['releaseStage'] ?? config.modelReleaseStage,
+    );
+    final currentPref = AppConfig.normalizePreference(
+      modelInfo['preference'] ?? config.modelPreference,
+    );
+    final rawStatus = modelInfo['status']?.toString().trim().toLowerCase();
+    final activeAvailable = _modelBool('available') || rawStatus == 'available';
+    final activeStatus = (rawStatus != null &&
+            (rawStatus == 'available' ||
+                rawStatus == 'downloadable' ||
+                rawStatus == 'downloading' ||
+                rawStatus == 'unavailable'))
+        ? rawStatus
+        : (activeAvailable ? 'available' : 'unavailable');
+    final activeCode = modelInfo['statusCode'] is num
+        ? (modelInfo['statusCode'] as num).toInt()
+        : switch (activeStatus) {
+            'available' => 3,
+            'downloading' => 2,
+            'downloadable' => 1,
+            _ => 0,
+          };
+    final activeNameRaw = (modelInfo['baseModelName'] ??
+            (rawStatus != 'error' ? modelInfo['version'] : null))
+        ?.toString()
+        .trim();
+    final activeName = (activeNameRaw != null &&
+            activeNameRaw.isNotEmpty &&
+            activeNameRaw.toLowerCase() != 'null' &&
+            activeNameRaw.toLowerCase() != 'unknown')
+        ? activeNameRaw
+        : null;
+
+    PaiosModelVariant buildLegacy(String stage, String pref) {
+      final isCurrent = stage == currentStage && pref == currentPref;
+      if (isCurrent) {
+        return PaiosModelVariant(
+          releaseStage: stage,
+          preference: pref,
+          statusCode: activeCode,
+          status: activeStatus,
+          available: activeCode == 3 || activeStatus == 'available',
+          baseModelName: activeName,
+          isActive: true,
+        );
+      }
+      final bool comboAvailable;
+      if (stage == 'stable' && pref == 'full') {
+        comboAvailable = !_isRawModelInfoUnavailable;
+      } else if (stage == 'stable' && pref == 'fast') {
+        comboAvailable = modelInfo['stableFastAvailable'] == true ||
+            (currentStage == 'stable' && modelInfo['fastAvailable'] == true);
+      } else if (stage == 'preview' && pref == 'full') {
+        comboAvailable = modelInfo['previewFullAvailable'] == true;
+      } else {
+        comboAvailable = modelInfo['previewFastAvailable'] == true ||
+            (currentStage == 'preview' && modelInfo['fastAvailable'] == true);
+      }
+      return PaiosModelVariant(
+        releaseStage: stage,
+        preference: pref,
+        statusCode: comboAvailable ? 3 : 0,
+        status: comboAvailable ? 'available' : 'unavailable',
+        available: comboAvailable,
+        baseModelName: null,
+        isActive: false,
+      );
+    }
+
+    final synthesized = <PaiosModelVariant>[
+      buildLegacy('stable', 'full'),
+      buildLegacy('stable', 'fast'),
+      buildLegacy('preview', 'full'),
+      buildLegacy('preview', 'fast'),
+    ]..sort(_compareVariants);
+    return List.unmodifiable(synthesized);
+  }
+
+  /// Switchable/downloadable model variants in fixed hardware order, collapsing
+  /// duplicate same-stage variants only when `internalModelName` lacks a
+  /// fast/full distinction (e.g. `gemini-nano-v3`), while never collapsing `v4`.
+  List<PaiosModelVariant> get selectorModelVariants {
+    final switchable = modelVariants.where((v) => v.isSwitchable).toList();
+    if (switchable.length <= 1) return List.unmodifiable(switchable);
+
+    final result = <PaiosModelVariant>[];
+    for (final variant in switchable) {
+      final name = variant.internalModelName;
+      final canCollapse =
+          !_hasVariantDistinction(name) && !_isNanoV4InternalName(name);
+      if (canCollapse) {
+        final existingIdx = result.indexWhere(
+          (existing) =>
+              existing.releaseStage == variant.releaseStage &&
+              existing.internalModelName == name &&
+              !_hasVariantDistinction(existing.internalModelName) &&
+              !_isNanoV4InternalName(existing.internalModelName),
+        );
+        if (existingIdx != -1) {
+          final existing = result[existingIdx];
+          if (variant.isActive && !existing.isActive) {
+            result[existingIdx] = existing.copyWith(isActive: true);
+          }
+          continue;
+        }
+      }
+      result.add(variant);
+    }
+    return List.unmodifiable(result);
+  }
+
+  /// Clean sorted list of switchable/downloadable model variants for the
+  /// simplified selector UI.
+  List<Map<String, dynamic>> get availableModelVariants => List.unmodifiable(
+        modelVariants
+            .where((v) => v.isSwitchable)
+            .map((v) => v.toMap())
+            .toList(),
+      );
+
+  Future<void> setEnableThinking(bool value) async {
+    config.enableThinking = value;
+    await config.saveModelConfig();
+    notifyListeners();
+  }
+
+  Future<void> setModelConfiguration({
+    String? releaseStage,
+    String? preference,
+  }) async {
+    if (isLoading) return;
+    if (releaseStage != null) {
+      config.modelReleaseStage = AppConfig.normalizeReleaseStage(releaseStage);
+    }
+    if (preference != null) {
+      config.modelPreference = AppConfig.normalizePreference(preference);
+    } else if (releaseStage != null) {
+      if (config.modelReleaseStage == 'stable' &&
+          config.modelPreference == 'fast' &&
+          modelInfo.containsKey('stableFastAvailable') &&
+          !isStableFastAvailable) {
+        config.modelPreference = 'full';
+      } else if (config.modelReleaseStage == 'preview' &&
+          config.modelPreference == 'full' &&
+          modelInfo.containsKey('previewFullAvailable') &&
+          !isPreviewFullAvailable &&
+          (!modelInfo.containsKey('previewFastAvailable') || isPreviewFastAvailable)) {
+        config.modelPreference = 'fast';
+      }
+    }
+    await config.saveModelConfig();
+
+    isSwitchingModelConfig = true;
+    notifyListeners();
+    try {
+      final updated = await gemini.switchModelConfig(
+        releaseStage: config.modelReleaseStage,
+        preference: config.modelPreference,
+      );
+      if (updated.isNotEmpty &&
+          updated['status']?.toString().toLowerCase() != 'error') {
+        modelInfo = updated;
+        isAvailable = _modelBool("available") || modelFeatureStatus == "available";
+        isInitialized = false;
+        await _syncConfigWithModelCapabilities();
+      } else if (updated['status']?.toString().toLowerCase() == 'error') {
+        await log(
+          "model",
+          "error",
+          "Model config switch returned error: ${updated['version']}",
+          sendRemote: false,
+        );
+      }
+      await log(
+        "model",
+        "info",
+        "Switched model config to ${config.modelReleaseStage}/${config.modelPreference} "
+            "(active: $activeReleaseStage/$activePreference, nanoV4=$isNanoV4Active, "
+            "thinkingAvailable=$isThinkingModeAvailable, fallback=$fellBackToStable)",
+        sendRemote: false,
+      );
+    } catch (e) {
+      await log("model", "error", "Failed to switch model config: $e", sendRemote: false);
+    } finally {
+      isSwitchingModelConfig = false;
+      notifyListeners();
+    }
+  }
+
+  PaiosVariantDownloadState? downloadStateFor(String stage, String pref) {
+    final key =
+        '${AppConfig.normalizeReleaseStage(stage)}:${AppConfig.normalizePreference(pref)}';
+    return variantDownloads[key];
+  }
+
+  Future<void> refreshModelInfo() async {
+    if (_disposed) return;
+    try {
+      final info = await gemini
+          .getModelInfo(
+            releaseStage: config.modelReleaseStage,
+            preference: config.modelPreference,
+          )
+          .timeout(const Duration(seconds: 4));
+      if (_disposed) return;
+      if (info.isNotEmpty) {
+        modelInfo = info;
+        isAvailable = _modelBool("available") || modelFeatureStatus == "available";
+        await _syncConfigWithModelCapabilities();
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> downloadVariant(String releaseStage, String preference) async {
+    final stage = AppConfig.normalizeReleaseStage(releaseStage);
+    final pref = AppConfig.normalizePreference(preference);
+    final key = '$stage:$pref';
+    final previous = variantDownloads[key];
+    final initialTotal =
+        (previous != null && previous.totalBytes > 0) ? previous.totalBytes : usualModelSize;
+
+    _downloadSpeedSamples[key] = [
+      (timeMs: DateTime.now().millisecondsSinceEpoch, bytes: 0),
+    ];
+    variantDownloads[key] = PaiosVariantDownloadState(
+      releaseStage: stage,
+      preference: pref,
+      variantKey: key,
+      status: 'started',
+      bytesDownloaded: 0,
+      totalBytes: initialTotal,
+      bytesPerSec: 0.0,
+    );
+    isDownloadingModel = true;
+    notifyListeners();
+
+    try {
+      if (_statusSubscription == null) {
+        _attachDownloadStatusSubscription(
+          arguments: const {'triggerInit': false},
+        );
+      }
+      final dynamic res = await _localAiChannel.invokeMethod('downloadVariant', {
+        'releaseStage': stage,
+        'preference': pref,
+      });
+      if (_disposed) return;
+      if (res is Map) {
+        final downloadErr = res['downloadError']?.toString().trim();
+        if (downloadErr != null && downloadErr.isNotEmpty) {
+          _downloadSpeedSamples.remove(key);
+          variantDownloads[key] = (variantDownloads[key] ??
+                  PaiosVariantDownloadState(
+                    releaseStage: stage,
+                    preference: pref,
+                    variantKey: key,
+                  ))
+              .copyWith(
+            status: 'failed',
+            bytesPerSec: 0.0,
+            error: downloadErr,
+          );
+        } else {
+          final rawVariants = res['modelVariants'];
+          if (rawVariants is List) {
+            for (final item in rawVariants.whereType<Map>()) {
+              final v = PaiosModelVariant.fromMap(item);
+              if (v.releaseStage == stage &&
+                  v.preference == pref &&
+                  v.available) {
+                final cur = variantDownloads[key];
+                final total = (cur != null && cur.totalBytes > 0)
+                    ? cur.totalBytes
+                    : usualModelSize;
+                _downloadSpeedSamples.remove(key);
+                variantDownloads[key] = PaiosVariantDownloadState(
+                  releaseStage: stage,
+                  preference: pref,
+                  variantKey: key,
+                  status: 'completed',
+                  bytesDownloaded: total,
+                  totalBytes: total,
+                  bytesPerSec: 0.0,
+                );
+                await refreshModelInfo();
+                break;
+              }
+            }
+          }
+        }
+      }
+      await log(
+        "model",
+        "info",
+        "Triggered background downloadVariant for $stage/$pref (active remains ${config.modelReleaseStage}/${config.modelPreference})",
+        sendRemote: false,
+      );
+    } catch (e) {
+      _downloadSpeedSamples.remove(key);
+      variantDownloads[key] = (variantDownloads[key] ??
+              PaiosVariantDownloadState(
+                releaseStage: stage,
+                preference: pref,
+                variantKey: key,
+              ))
+          .copyWith(
+        status: 'failed',
+        bytesPerSec: 0.0,
+        error: e.toString(),
+      );
+      await log(
+        "model",
+        "error",
+        "Failed to download variant $stage/$pref: $e",
+        sendRemote: false,
+      );
+    } finally {
+      isDownloadingModel = variantDownloads.values.any((s) => s.isDownloading);
+      notifyListeners();
+    }
+  }
+
+  Future<void> downloadSelectedModel() async {
+    if (isDownloadingModel) return;
+    isDownloadingModel = true;
+    notifyListeners();
+    try {
+      final updated = await gemini.downloadModel(
+        releaseStage: config.modelReleaseStage,
+        preference: config.modelPreference,
+      );
+      if (updated.isNotEmpty) {
+        modelInfo = updated;
+        isAvailable = _modelBool("available") || modelFeatureStatus == "available";
+      }
+      await log(
+        "model",
+        "info",
+        "Triggered downloadModel for ${config.modelReleaseStage}/${config.modelPreference}, status=$modelFeatureStatus",
+        sendRemote: false,
+      );
+    } catch (e) {
+      await log("model", "error", "Failed to download model: $e", sendRemote: false);
+    } finally {
+      isDownloadingModel = false;
+      notifyListeners();
+    }
+  }
+
+  static final RegExp _ctrlToolCallPrefixRegex = RegExp(
+    r'<ctrl\d+>\s*call:([a-zA-Z0-9_.:-]+)\s*\{',
+    caseSensitive: false,
+  );
+  static final RegExp _strayCtrlTagRegex = RegExp(
+    r'<ctrl\d+>',
+    caseSensitive: false,
+  );
+
+  static String _sanitizeThoughtChunk(String input) {
+    if (input.isEmpty) return '';
+    final out = StringBuffer();
+    int cursor = 0;
+    for (final match in _ctrlToolCallPrefixRegex.allMatches(input)) {
+      if (match.start < cursor) continue;
+      final openBrace = match.end - 1;
+      final closeBrace = _findBalancedBraceEnd(input, openBrace);
+      if (closeBrace == -1) continue;
+      out.write(input.substring(cursor, match.start));
+      int after = closeBrace + 1;
+      final tailMatch = RegExp(r'^\s*<ctrl\d+>', caseSensitive: false)
+          .firstMatch(input.substring(after));
+      if (tailMatch != null) {
+        after += tailMatch.end;
+      }
+      cursor = after;
+    }
+    out.write(input.substring(cursor));
+    return out
+        .toString()
+        .replaceAll(_strayCtrlTagRegex, '')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
+  }
+
+  void _clearThoughtChunk() {
+    _rawThoughtChunk = "";
+    currentThoughtChunk = "";
+  }
+
+  void _appendThoughtChunk(String? incoming) {
+    final trimmed = incoming?.trim();
+    if (trimmed == null || trimmed.isEmpty) return;
+    if (_rawThoughtChunk.isEmpty || trimmed.startsWith(_rawThoughtChunk)) {
+      _rawThoughtChunk = trimmed;
+    } else if (!_rawThoughtChunk.endsWith(trimmed)) {
+      _rawThoughtChunk = "$_rawThoughtChunk\n\n$trimmed";
+    }
+    currentThoughtChunk = _sanitizeThoughtChunk(_rawThoughtChunk);
+  }
 
   Map get chats => chatData.chats;
   String get currentChat => chatData.currentChat;
@@ -273,6 +1249,18 @@ class AIEngine with md.ChangeNotifier {
   
   List<Map<String, dynamic>> get logsList => logs.cast<Map<String, dynamic>>();
 
+  /// Callback invoked when an assistant overlay session is opened in the full app.
+  VoidCallback? onOpenAssistantChat;
+  bool _pendingOpenAssistantChat = false;
+  bool get hasPendingOpenAssistantChat => _pendingOpenAssistantChat;
+
+  void flushPendingAssistantChatNavigation() {
+    if (_pendingOpenAssistantChat && appStarted && onOpenAssistantChat != null) {
+      _pendingOpenAssistantChat = false;
+      onOpenAssistantChat!.call();
+    }
+  }
+
   /// Subscription to manage the active AI stream
   StreamSubscription<AiEvent>? _aiSubscription;
 
@@ -281,6 +1269,12 @@ class AIEngine with md.ChangeNotifier {
   /// This junk is to update all pages in case we have a modal that is focused in which case setState will not update content underneath it
   void genericRefresh() {
     notifyListeners();
+  }
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
   }
 
   Future<void> endFirstLaunch() => config.endFirstLaunch();
@@ -312,6 +1306,10 @@ class AIEngine with md.ChangeNotifier {
     } catch (_) {}
   }
 
+  @visibleForTesting
+  Future<void> handleIncomingAssistantChatForTest(Map<String, dynamic> payload) =>
+      _handleIncomingAssistantChat(payload);
+
   Future<void> _handleIncomingAssistantChat(Map<String, dynamic> payload) async {
     try {
       final rawMessages = payload['messages'];
@@ -327,11 +1325,28 @@ class AIEngine with md.ChangeNotifier {
         final newChatId = await chatData.importAssistantChat(
           conversation,
           isArchived: isArchived,
+          defaultAssistantAuthor: assistantAuthorLabel,
         );
         if (unarchived && newChatId.isNotEmpty) {
           currentChat = newChatId;
-          context = List.from(conversation);
+          final rawHistory = chats[newChatId]?["history"];
+          if (rawHistory is String && rawHistory.isNotEmpty) {
+            try {
+              final decoded = jsonDecode(rawHistory);
+              context = decoded is List ? decoded : List.from(conversation);
+            } catch (_) {
+              context = List.from(conversation);
+            }
+          } else {
+            context = List.from(conversation);
+          }
           contextSize = int.tryParse(chats[newChatId]?["tokens"] ?? "0") ?? 0;
+          if (onOpenAssistantChat != null && appStarted) {
+            notifyListeners();
+            onOpenAssistantChat!.call();
+            return;
+          }
+          _pendingOpenAssistantChat = true;
         }
         notifyListeners();
       }
@@ -356,6 +1371,7 @@ class AIEngine with md.ChangeNotifier {
                 await chatData.importAssistantChat(
                   msgs,
                   isArchived: unarchived ? false : config.autoArchiveAssistantChats,
+                  defaultAssistantAuthor: assistantAuthorLabel,
                 );
               }
             }
@@ -385,6 +1401,7 @@ class AIEngine with md.ChangeNotifier {
   }
 
   scrollChatlog(Duration speed) {
+    if (!scroller.hasClients) return;
     scroller.animateTo(
       scroller.position.maxScrollExtent,
       duration: speed,
@@ -463,9 +1480,97 @@ class AIEngine with md.ChangeNotifier {
       ),
     );
 
-    docService.registerMeshTool(toolRegistry);
-    await meshClient.startListening();
-    await meshClient.syncDeclaredTools();
+    await _syncLocalToolRegistrations(startListener: true);
+  }
+
+  void _syncInternalToolRegistrations() {
+    for (final mod in InternalToolsService.modules) {
+      if (!isExtensionEnabled(mod.id)) {
+        for (final spec in mod.tools) {
+          toolRegistry.unregister(spec.name);
+        }
+        continue;
+      }
+      for (final spec in mod.tools) {
+        if (!isToolModuleEnabled(spec.name)) {
+          toolRegistry.unregister(spec.name);
+          continue;
+        }
+        if (spec.name == 'query_aicore_documentation') {
+          docService.registerMeshTool(toolRegistry);
+          continue;
+        }
+        if (spec.name == 'get_battery_status') {
+          toolRegistry.register(
+            M3xTool(
+              name: spec.name,
+              app: spec.app,
+              description: spec.description,
+              parameters: spec.parameters,
+              handler: (args) async {
+                try {
+                  final res = await _meshHostChannel.invokeMapMethod<String, dynamic>(
+                    'getBatteryStatus',
+                  );
+                  final level = res?['level'] ?? -1;
+                  final charging = res?['charging'] == true;
+                  final batteryStatus = res?['status']?.toString() ??
+                      (charging ? 'Charging' : 'Discharging');
+                  return {
+                    'level': level,
+                    'battery_level':
+                        (level is int && level >= 0) ? '$level%' : 'unknown',
+                    'charging': charging,
+                    'is_charging': charging,
+                    'status': batteryStatus,
+                  };
+                } catch (e) {
+                  return {
+                    'error': e.toString(),
+                    'message': 'Unable to read device battery status: $e',
+                  };
+                }
+              },
+            ),
+          );
+          continue;
+        }
+        toolRegistry.register(
+          M3xTool(
+            name: spec.name,
+            app: spec.app,
+            description: spec.description,
+            parameters: spec.parameters,
+            handler: (args) => internalToolsService.executeOnlineTool(
+              spec.name,
+              args,
+              fallbackQuestion: lastPrompt,
+              readerAgent: spec.name == 'wikipedia_details'
+                  ? (text, question) => gemini.generateInternalInference(
+                        prompt: 'Question: $question\n\nWikipedia excerpt:\n$text',
+                        instructions:
+                            'Extract only the concise facts that answer the user\'s question from this Wikipedia excerpt.',
+                        maxTokens: 160,
+                        temperature: 0.2,
+                      )
+                  : null,
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncLocalToolRegistrations({bool startListener = false}) async {
+    _syncInternalToolRegistrations();
+    if (startListener) {
+      try {
+        await meshClient.startListening().timeout(const Duration(seconds: 2));
+      } catch (_) {}
+    }
+    try {
+      await meshClient.syncDeclaredTools().timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   Future<void> ensureMeshToolsDiscovered({bool forceRefresh = false}) {
@@ -499,83 +1604,144 @@ class AIEngine with md.ChangeNotifier {
   }
 
   Future<void> start() async {
-    await M3x.init();
     try {
-      final info = await PackageInfo.fromPlatform();
+      await M3x.init().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
+      final info = await PackageInfo.fromPlatform()
+          .timeout(const Duration(seconds: 3));
       if (info.packageName.isNotEmpty) {
         _resolvedPackageName = info.packageName;
       }
     } catch (_) {}
-    await MigrationService.initiateMigration();
-    await logger.initFromHive();
-    await config.initFromHive();
-    await docService.initialize();
-    
-    await log("init", "info", "Starting the app engine");
-    await log("init", "info", "Starting the translations engine");
-    dict = Dictionary(path: "assets/translations", url: "https://raw.githubusercontent.com/${config.repo}/main");
-    await dict.setup(log: logger.log, onUpdated: genericRefresh);
-    await log("init", "info", "Checking Gemini Nano status");
-    await checkEngine();
-    await log("init", "info", "Initializing the Prompt engine");
+    try {
+      await MigrationService.initiateMigration()
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {}
+    try {
+      await logger.initFromHive().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
+      await config.initFromHive().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
+      await _syncInternalModulePreferences()
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
+      await docService.initialize().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+
+    unawaited(log("init", "info", "Starting the app engine"));
+    unawaited(log("init", "info", "Starting the translations engine"));
+    dict = Dictionary(
+      path: "assets/translations",
+      url: "https://raw.githubusercontent.com/${config.repo}/main",
+    );
+    try {
+      await dict
+          .setup(log: logger.log, onUpdated: genericRefresh)
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(log("init", "info", "Checking Gemini Nano status"));
+    try {
+      await checkEngine().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(log("init", "info", "Initializing the Prompt engine"));
     promptEngine = Prompt(ghUrl: "https://github.com/${config.repo}");
-    await promptData.initFromHive("https://raw.githubusercontent.com/${config.repo}/main");
-    await promptEngine.initialize();
-    await log("init", "info", "Initializing the Resource repository");
-    await resourceData.initFromHive("https://raw.githubusercontent.com/${config.repo}/main");
-    await log("init", "info", "Initializing Intro Slides repository");
-    await introSlideData.initFromHive("https://raw.githubusercontent.com/${config.repo}/main");
-    
-    await log(
-      "init",
-      "info",
-      "Firebase analytics: ${analytics ? "Enabled" : "Disabled"}",
+    try {
+      await promptData
+          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    try {
+      await promptEngine.initialize().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(log("init", "info", "Initializing the Resource repository"));
+    try {
+      await resourceData
+          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(log("init", "info", "Initializing Intro Slides repository"));
+    try {
+      await introSlideData
+          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {}
+
+    unawaited(
+      log(
+        "init",
+        "info",
+        "Firebase analytics: ${analytics ? "Enabled" : "Disabled"}",
+      ),
     );
 
-    await chatData.initFromHive();
-    await log(
-      "init",
-      "info",
-      "Add DateTime to prompt: ${addCurrentTimeToRequests ? "Enabled" : "Disabled"}",
+    try {
+      await chatData.initFromHive().timeout(const Duration(seconds: 3));
+    } catch (_) {}
+    unawaited(
+      log(
+        "init",
+        "info",
+        "Add DateTime to prompt: ${addCurrentTimeToRequests ? "Enabled" : "Disabled"}",
+      ),
     );
-    await log(
-      "init",
-      "info",
-      "Add app locale to prompt: ${shareLocale ? "Enabled" : "Disabled"}",
+    unawaited(
+      log(
+        "init",
+        "info",
+        "Add app locale to prompt: ${shareLocale ? "Enabled" : "Disabled"}",
+      ),
     );
-    await log(
-      "init",
-      "info",
-      "Retry on error: ${errorRetry ? "Enabled" : "Disabled"}",
+    unawaited(
+      log(
+        "init",
+        "info",
+        "Retry on error: ${errorRetry ? "Enabled" : "Disabled"}",
+      ),
     );
-    await log(
-      "init",
-      "info",
-      "Ignore instructions: ${ignoreInstructions ? "Enabled" : "Disabled"}",
+    unawaited(
+      log(
+        "init",
+        "info",
+        "Ignore instructions: ${ignoreInstructions ? "Enabled" : "Disabled"}",
+      ),
     );
 
     meshClient.enabled = config.enableMesh;
-    await _registerLocalTools();
+    try {
+      await _registerLocalTools().timeout(const Duration(seconds: 3));
+    } catch (_) {}
 
     appStarted = true;
-    await log("init", "info", "App initiation complete");
-    await syncActivePersonaToNative();
+    notifyListeners();
+    unawaited(log("init", "info", "App initiation complete"));
+
+    unawaited(syncActivePersonaToNative());
 
     gemini.setAssistantChatHandler((payload) async {
       await _handleIncomingAssistantChat(payload);
     });
-    final initialAssistant = await gemini.getInitialAssistantChat();
-    if (initialAssistant != null) {
-      await _handleIncomingAssistantChat(initialAssistant);
-    }
-    await _checkPendingAssistantChatsFromPrefs();
-
-    notifyListeners();
+    try {
+      final initialAssistant = await gemini
+          .getInitialAssistantChat()
+          .timeout(const Duration(seconds: 2));
+      if (initialAssistant != null) {
+        await _handleIncomingAssistantChat(initialAssistant);
+      }
+    } catch (_) {}
+    try {
+      await _checkPendingAssistantChatsFromPrefs()
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    flushPendingAssistantChatNavigation();
 
     if (config.enableMesh) {
       unawaited(ensureMeshToolsDiscovered());
     } else {
-      await log("init", "info", "Agentic Mesh disabled by user configuration");
+      unawaited(log("init", "info", "Agentic Mesh disabled by user configuration"));
     }
 
     // Post-launch background documentation synchronization (Tier 3 SWR on each launch)
@@ -583,41 +1749,58 @@ class AIEngine with md.ChangeNotifier {
   }
 
   void addDownloadLog(String log) {
+    final parts = log.split("=");
     modelDownloadLog.add({
-      "status": log.split("=")[0],
-      "info": log.split("=")[1],
-      "value": log.split("=")[2],
+      "status": parts.isNotEmpty ? parts[0] : log,
+      "info": parts.length > 1 ? parts[1] : "",
+      "value": parts.length > 2 ? parts[2] : "",
       "time": DateTime.now().millisecondsSinceEpoch,
     });
     notifyListeners();
   }
 
   lateNetCheck() async {
-    while (firstLaunch) {
-      final connectivityResult = await (Connectivity().checkConnectivity());
-      if (!connectivityResult.contains(ConnectivityResult.wifi)) {
-        if (modelDownloadLog.isNotEmpty) {
-          if (!(modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
-              "waiting_network")) {
-            if (modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
-                "downloading_model") {
-              addDownloadLog(
-                "Download=waiting_network=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}",
-              );
+    if (_lateNetCheckRunning) return;
+    _lateNetCheckRunning = true;
+    try {
+      while (firstLaunch && !_disposed) {
+        if (isAiCoreKnownUnavailable &&
+            modelFeatureStatus != 'downloading' &&
+            modelFeatureStatus != 'downloadable') {
+          return;
+        }
+        try {
+          final connectivityResult = await Connectivity()
+              .checkConnectivity()
+              .timeout(const Duration(seconds: 2));
+          if (_disposed) return;
+          if (!connectivityResult.contains(ConnectivityResult.wifi)) {
+            if (modelDownloadLog.isNotEmpty) {
+              if (!(modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
+                  "waiting_network")) {
+                if (modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
+                    "downloading_model") {
+                  addDownloadLog(
+                    "Download=waiting_network=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}",
+                  );
+                }
+              }
+            }
+          } else {
+            if (modelDownloadLog.isNotEmpty) {
+              if ((modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
+                  "waiting_network")) {
+                addDownloadLog(
+                  "Download=downloading_model=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}",
+                );
+              }
             }
           }
-        }
-      } else {
-        if (modelDownloadLog.isNotEmpty) {
-          if ((modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
-              "waiting_network")) {
-            addDownloadLog(
-              "Download=downloading_model=${modelDownloadLog[modelDownloadLog.length - 1]["value"]}",
-            );
-          }
-        }
+        } catch (_) {}
+        await Future.delayed(const Duration(seconds: 2));
       }
-      await Future.delayed(Duration(seconds: 2));
+    } finally {
+      _lateNetCheckRunning = false;
     }
   }
 
@@ -649,121 +1832,518 @@ class AIEngine with md.ChangeNotifier {
   }
 
   lateProgressCheck() async {
-    Map lastUpdate = {};
-    while (firstLaunch) {
-      await Future.delayed(Duration(seconds: 15));
-      if (lastUpdate == {}) {
+    if (_lateProgressCheckRunning) return;
+    _lateProgressCheckRunning = true;
+    try {
+      Map lastUpdate = {};
+      while (firstLaunch && !_disposed) {
+        if (isAiCoreKnownUnavailable &&
+            modelFeatureStatus != 'downloading' &&
+            modelFeatureStatus != 'downloadable') {
+          return;
+        }
+        await Future.delayed(const Duration(seconds: 15));
+        if (_disposed) return;
+        if (isAiCoreKnownUnavailable &&
+            modelFeatureStatus != 'downloading' &&
+            modelFeatureStatus != 'downloadable') {
+          return;
+        }
+        if (lastUpdate.isEmpty) {
+          if (modelDownloadLog.isNotEmpty) {
+            lastUpdate = modelDownloadLog[modelDownloadLog.length - 1];
+          }
+        }
         if (modelDownloadLog.isNotEmpty) {
-          lastUpdate = modelDownloadLog[modelDownloadLog.length - 1];
+          if (lastUpdate == modelDownloadLog[modelDownloadLog.length - 1]) {
+            /// Nothing changed in the last 15 seconds, assume we have restarted and are not getting updates; We must restart the checkEngine. So...
+            unawaited(checkEngine(isAutoRetry: true));
+            await log(
+              "model",
+              "warning",
+              "Stopped getting model download events",
+            );
+          } else {
+            lastUpdate = modelDownloadLog[modelDownloadLog.length - 1];
+          }
         }
       }
-      if (modelDownloadLog.isNotEmpty) {
-        if (lastUpdate == modelDownloadLog[modelDownloadLog.length - 1]) {
-          /// Nothing changed in the last 15 seconds, assume we have restarted and are not getting updates; We must restart the checkEngine. So...
-          checkEngine();
-          await log(
-            "model",
-            "warning",
-            "Stopped getting model download events",
-          );
-        } else {
-          lastUpdate = modelDownloadLog[modelDownloadLog.length - 1];
-        }
-      }
+    } finally {
+      _lateProgressCheckRunning = false;
     }
   }
 
-  Future<void> checkEngine() async {
+  Future<void> checkEngine({bool isAutoRetry = false}) async {
+    if (_disposed) return;
+    if (!isAutoRetry) {
+      _downloadErrorRetryCount = 0;
+      _unavailableToastShown = false;
+    }
     if (modelDownloadLog.isEmpty) {
       lateNetCheck();
       lateProgressCheck();
     }
     modelDownloadLog.clear();
-    gemini.statusStream = gemini.downloadChannel.receiveBroadcastStream().map(
+    unawaited(() async {
+      try {
+        final info = await gemini
+            .getModelInfo(
+              releaseStage: config.modelReleaseStage,
+              preference: config.modelPreference,
+            )
+            .timeout(const Duration(seconds: 4));
+        if (_disposed) return;
+        if (info.isNotEmpty) {
+          modelInfo = info;
+          isAvailable = _modelBool("available") || modelFeatureStatus == "available";
+          await _syncConfigWithModelCapabilities();
+          notifyListeners();
+        }
+      } catch (_) {}
+    }());
+    await _statusSubscription?.cancel();
+    _attachDownloadStatusSubscription();
+  }
+
+  void _attachDownloadStatusSubscription({dynamic arguments}) {
+    final rawDownloadStream = arguments == null
+        ? gemini.downloadChannel.receiveBroadcastStream()
+        : gemini.downloadChannel.receiveBroadcastStream(arguments);
+    gemini.statusStream = rawDownloadStream.map(
       (dynamic event) => event.toString(),
     );
-    gemini.statusStream.listen(
-      (String downloadStatus) async {
-        switch (downloadStatus.split("=")[0]) {
-          case "Available":
-            modelInfo = await gemini.getModelInfo();
-            if (modelInfo["version"] == null) {
-              await log(
-                "model",
-                "warning",
-                "Model version was not reported, trying again",
-              );
-              await Future.delayed(Duration(seconds: 2));
-              checkEngine();
-            } else {
-              if (modelInfo["status"] == "Available") {
-                addDownloadLog("Available=Available=0");
-                await log("model", "info", "Model is ready");
-              } else {
-                if (downloadStatus.split("=")[1] == "Download") {
-                  if (!(modelDownloadLog[modelDownloadLog.length - 1]["info"] ==
-                      "waiting_network")) {
-                    addDownloadLog("Download=downloading_model=0");
-                    await log("model", "info", "Downloading model");
-                  }
-                } else {
-                  addDownloadLog(downloadStatus);
-                }
-              }
-            }
-            break;
-          case "Download":
-            if (modelDownloadLog.isEmpty) {
-              addDownloadLog(downloadStatus);
-            } else {
-              if (!modelDownloadLog[modelDownloadLog.length - 1]["value"]
-                  .contains("error")) {
-                await log(
-                  "model",
-                  "info",
-                  "Downloading, ${convertSize(int.parse(modelDownloadLog[modelDownloadLog.length - 1]["value"]), false)}",
-                );
-                if (int.parse(downloadStatus.split("=")[2]) >
-                    int.parse(
-                      modelDownloadLog[modelDownloadLog.length - 1]["value"],
-                    )) {
-                  addDownloadLog(downloadStatus);
-                }
-              }
-            }
-            break;
-          case "Error":
-            addDownloadLog(downloadStatus);
-            await log("model", "error", downloadStatus.split("=")[2]);
-            if (downloadStatus.split("=")[2].contains("1-DOWNLOAD_ERROR")) {
-              checkEngine();
-            } else {
-              Fluttertoast.showToast(
-                msg: "Gemini Nano ${dict.value("unavailable")}",
-                toastLength: Toast.LENGTH_SHORT,
-                fontSize: 16.0,
-              );
-            }
-            break;
-          default:
-            addDownloadLog(downloadStatus);
-        }
+    _statusSubscription = rawDownloadStream.listen(
+      (dynamic event) async {
+        await _handleDownloadChannelEvent(event);
       },
       onError: (e) async {
-        await log("model", "error", e);
+        await log("model", "error", e.toString());
         analyzeError("Received new status: ", e);
       },
       onDone: () {
-        notifyListeners();
+        if (!_disposed) {
+          notifyListeners();
+        }
       },
     );
+  }
+
+  static int? _parseIntField(dynamic raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) return int.tryParse(raw.trim());
+    return null;
+  }
+
+  static String _normalizeDownloadStatus(dynamic raw) {
+    final s = raw?.toString().trim().toLowerCase() ?? '';
+    switch (s) {
+      case 'started':
+      case 'download_started':
+      case 'downloadstarted':
+        return 'started';
+      case 'downloading':
+      case 'progress':
+      case 'download_progress':
+      case 'downloadprogress':
+        return 'downloading';
+      case 'completed':
+      case 'available':
+      case 'download_completed':
+      case 'downloadcompleted':
+        return 'completed';
+      case 'failed':
+      case 'error':
+      case 'download_failed':
+      case 'downloadfailed':
+        return 'failed';
+      case 'idle':
+        return 'idle';
+      default:
+        return s.isEmpty ? 'downloading' : s;
+    }
+  }
+
+  double _computeSlidingWindowSpeed(String key, int bytesDownloaded) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final samples = _downloadSpeedSamples.putIfAbsent(key, () => []);
+    if (samples.isNotEmpty && bytesDownloaded < samples.last.bytes) {
+      samples.clear();
+    }
+    samples.add((timeMs: nowMs, bytes: bytesDownloaded));
+
+    // Keep roughly a 1-second sliding window while retaining an anchor sample
+    // so speed stays stable across irregular update intervals.
+    while (samples.length > 2 &&
+        (nowMs - samples.first.timeMs) > 1000 &&
+        (nowMs - samples[1].timeMs) >= 1000) {
+      samples.removeAt(0);
+    }
+
+    if (samples.length < 2) {
+      return variantDownloads[key]?.bytesPerSec ?? 0.0;
+    }
+    final dtMs = samples.last.timeMs - samples.first.timeMs;
+    final dBytes = samples.last.bytes - samples.first.bytes;
+    if (dtMs <= 0 || dBytes < 0) {
+      return variantDownloads[key]?.bytesPerSec ?? 0.0;
+    }
+    return (dBytes * 1000.0) / dtMs;
+  }
+
+  @visibleForTesting
+  Future<void> handleDownloadChannelEvent(dynamic event) =>
+      _handleDownloadChannelEvent(event);
+
+  Future<void> _handleDownloadChannelEvent(dynamic event) async {
+    if (_disposed) return;
+    if (event is Map) {
+      await _handleStructuredDownloadEvent(Map<dynamic, dynamic>.from(event));
+      return;
+    }
+    final rawStr = event?.toString() ?? '';
+    final trimmed = rawStr.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map) {
+          await _handleStructuredDownloadEvent(decoded);
+          return;
+        }
+      } catch (_) {}
+    }
+    await handleDownloadStatus(rawStr);
+  }
+
+  Future<void> _handleStructuredDownloadEvent(Map<dynamic, dynamic> map) async {
+    if (_disposed) return;
+    final rawVariantKey = map['variantKey']?.toString().trim() ?? '';
+    String? rawStage = map['releaseStage']?.toString();
+    String? rawPref = map['preference']?.toString();
+    if ((rawStage == null || rawStage.trim().isEmpty) &&
+        rawVariantKey.contains(':')) {
+      final parts = rawVariantKey.split(':');
+      rawStage = parts[0];
+      if ((rawPref == null || rawPref.trim().isEmpty) && parts.length > 1) {
+        rawPref = parts[1];
+      }
+    }
+    final stage = AppConfig.normalizeReleaseStage(
+      rawStage ?? config.modelReleaseStage,
+    );
+    final pref = AppConfig.normalizePreference(
+      rawPref ?? config.modelPreference,
+    );
+    final key = rawVariantKey.isNotEmpty ? rawVariantKey : '$stage:$pref';
+
+    final statusNorm = _normalizeDownloadStatus(map['status']);
+    final incomingBytes = _parseIntField(
+      map['bytes'] ?? map['bytesDownloaded'] ?? map['totalBytesDownloaded'],
+    );
+    final incomingTotal = _parseIntField(
+      map['bytesToDownload'] ?? map['totalBytes'],
+    );
+    final previous = variantDownloads[key];
+
+    final int resolvedTotalBytes;
+    if (incomingTotal != null && incomingTotal > 0) {
+      resolvedTotalBytes = incomingTotal;
+    } else if (previous != null && previous.totalBytes > 0) {
+      resolvedTotalBytes = previous.totalBytes;
+    } else {
+      resolvedTotalBytes = usualModelSize;
+    }
+
+    final int resolvedBytes =
+        incomingBytes ?? previous?.bytesDownloaded ?? 0;
+
+    switch (statusNorm) {
+      case 'started':
+        _downloadSpeedSamples[key] = [
+          (timeMs: DateTime.now().millisecondsSinceEpoch, bytes: resolvedBytes),
+        ];
+        variantDownloads[key] = PaiosVariantDownloadState(
+          releaseStage: stage,
+          preference: pref,
+          variantKey: key,
+          status: 'started',
+          bytesDownloaded: resolvedBytes,
+          totalBytes: resolvedTotalBytes,
+          bytesPerSec: 0.0,
+        );
+        isDownloadingModel = true;
+        if (modelDownloadLog.isEmpty ||
+            modelDownloadLog.last['info'] != 'downloading_model') {
+          addDownloadLog('Download=downloading_model=$resolvedBytes');
+        } else {
+          notifyListeners();
+        }
+        break;
+
+      case 'downloading':
+        final speed = _computeSlidingWindowSpeed(key, resolvedBytes);
+        variantDownloads[key] = PaiosVariantDownloadState(
+          releaseStage: stage,
+          preference: pref,
+          variantKey: key,
+          status: 'downloading',
+          bytesDownloaded: resolvedBytes,
+          totalBytes: resolvedTotalBytes,
+          bytesPerSec: speed,
+        );
+        isDownloadingModel = true;
+        final lastVal = modelDownloadLog.isNotEmpty
+            ? (modelDownloadLog.last['value']?.toString() ?? '')
+            : '';
+        final parsedLast = int.tryParse(lastVal);
+        if (modelDownloadLog.isEmpty ||
+            (!lastVal.contains('error') &&
+                (parsedLast == null || resolvedBytes > parsedLast))) {
+          addDownloadLog('Download=downloading_model=$resolvedBytes');
+        } else {
+          notifyListeners();
+        }
+        break;
+
+      case 'completed':
+        _downloadSpeedSamples.remove(key);
+        final finalBytes =
+            resolvedBytes > 0 ? resolvedBytes : resolvedTotalBytes;
+        variantDownloads[key] = PaiosVariantDownloadState(
+          releaseStage: stage,
+          preference: pref,
+          variantKey: key,
+          status: 'completed',
+          bytesDownloaded: finalBytes,
+          totalBytes: resolvedTotalBytes,
+          bytesPerSec: 0.0,
+        );
+        isDownloadingModel =
+            variantDownloads.values.any((s) => s.isDownloading);
+        addDownloadLog('Available=Download=0');
+        await refreshModelInfo();
+        break;
+
+      case 'failed':
+        _downloadSpeedSamples.remove(key);
+        final errMsg = (map['error'] ?? map['message'] ?? 'Download failed')
+            .toString()
+            .trim();
+        variantDownloads[key] = PaiosVariantDownloadState(
+          releaseStage: stage,
+          preference: pref,
+          variantKey: key,
+          status: 'failed',
+          bytesDownloaded: resolvedBytes,
+          totalBytes: resolvedTotalBytes,
+          bytesPerSec: 0.0,
+          error: errMsg,
+        );
+        isDownloadingModel =
+            variantDownloads.values.any((s) => s.isDownloading);
+        addDownloadLog('Error=Download=$errMsg');
+        break;
+
+      default:
+        variantDownloads[key] = (previous ??
+                PaiosVariantDownloadState(
+                  releaseStage: stage,
+                  preference: pref,
+                  variantKey: key,
+                ))
+            .copyWith(
+          status: statusNorm,
+          bytesDownloaded: resolvedBytes,
+          totalBytes: resolvedTotalBytes,
+        );
+        isDownloadingModel =
+            variantDownloads.values.any((s) => s.isDownloading);
+        notifyListeners();
+    }
+  }
+
+  @visibleForTesting
+  Future<void> handleDownloadStatus(String downloadStatus) async {
+    if (_disposed) return;
+    final parts = downloadStatus.split("=");
+    final activeKey = '$activeReleaseStage:$activePreference';
+    switch (parts[0]) {
+      case "Available":
+      case "available":
+        modelInfo = await gemini
+            .getModelInfo(
+              releaseStage: config.modelReleaseStage,
+              preference: config.modelPreference,
+            )
+            .timeout(
+              const Duration(seconds: 4),
+              onTimeout: () => <String, dynamic>{},
+            );
+        if (_disposed) return;
+        final bool reportedAvailable = _modelBool("available") ||
+            hasAnyAvailableModel ||
+            modelFeatureStatus == "available";
+        if (reportedAvailable) {
+          isAvailable = true;
+          _downloadErrorRetryCount = 0;
+          _unavailableToastShown = false;
+          _downloadSpeedSamples.remove(activeKey);
+          final prev = variantDownloads[activeKey];
+          if (prev != null && (prev.isDownloading || prev.isFailed)) {
+            final total = prev.totalBytes > 0 ? prev.totalBytes : usualModelSize;
+            variantDownloads[activeKey] = prev.copyWith(
+              status: 'completed',
+              bytesDownloaded: total,
+              totalBytes: total,
+              bytesPerSec: 0.0,
+              clearError: true,
+            );
+          }
+          isDownloadingModel =
+              variantDownloads.values.any((s) => s.isDownloading);
+          addDownloadLog("Available=Available=0");
+          await log("model", "info", "Model is ready");
+          notifyListeners();
+        } else if (modelInfo["version"] == null) {
+          if (_downloadErrorRetryCount < maxDownloadErrorRetries) {
+            _downloadErrorRetryCount++;
+            await log(
+              "model",
+              "warning",
+              "Model version was not reported, trying again ($_downloadErrorRetryCount/$maxDownloadErrorRetries)",
+            );
+            await Future.delayed(const Duration(seconds: 2));
+            if (!_disposed) {
+              await checkEngine(isAutoRetry: true);
+            }
+          } else {
+            isAvailable = false;
+            notifyListeners();
+          }
+        } else {
+          final subState = parts.length > 1 ? parts[1] : "";
+          if (subState == "Download") {
+            if (modelDownloadLog.isEmpty ||
+                modelDownloadLog.last["info"] != "waiting_network") {
+              addDownloadLog("Download=downloading_model=0");
+              await log("model", "info", "Downloading model");
+            }
+          } else {
+            addDownloadLog(downloadStatus);
+          }
+        }
+        break;
+      case "Download":
+        final parsedIncoming =
+            parts.length > 2 ? int.tryParse(parts[2]) : null;
+        if (parsedIncoming != null) {
+          final prev = variantDownloads[activeKey];
+          final total = (prev != null && prev.totalBytes > 0)
+              ? prev.totalBytes
+              : usualModelSize;
+          final speed = _computeSlidingWindowSpeed(activeKey, parsedIncoming);
+          variantDownloads[activeKey] = PaiosVariantDownloadState(
+            releaseStage: activeReleaseStage,
+            preference: activePreference,
+            variantKey: activeKey,
+            status: 'downloading',
+            bytesDownloaded: parsedIncoming,
+            totalBytes: total,
+            bytesPerSec: speed,
+          );
+          isDownloadingModel = true;
+        }
+        if (modelDownloadLog.isEmpty) {
+          addDownloadLog(downloadStatus);
+        } else {
+          final lastVal = modelDownloadLog.last["value"]?.toString() ?? "";
+          if (!lastVal.contains("error")) {
+            final parsedLast = int.tryParse(lastVal);
+            if (parsedLast != null) {
+              await log(
+                "model",
+                "info",
+                "Downloading, ${convertSize(parsedLast, false)}",
+              );
+            }
+            if (parsedIncoming != null &&
+                (parsedLast == null || parsedIncoming > parsedLast)) {
+              addDownloadLog(downloadStatus);
+            }
+          }
+        }
+        break;
+      case "Error":
+        final errInfo = parts.length > 1 ? parts[1] : "";
+        final errDetail = parts.length > 2 ? parts[2] : downloadStatus;
+        if (variantDownloads.containsKey(activeKey) &&
+            variantDownloads[activeKey]!.isDownloading) {
+          _downloadSpeedSamples.remove(activeKey);
+          variantDownloads[activeKey] = variantDownloads[activeKey]!.copyWith(
+            status: 'failed',
+            bytesPerSec: 0.0,
+            error: errDetail,
+          );
+          isDownloadingModel =
+              variantDownloads.values.any((s) => s.isDownloading);
+        }
+        addDownloadLog(downloadStatus);
+        await log("model", "error", errDetail);
+        if (errDetail.contains("1-DOWNLOAD_ERROR")) {
+          if (_downloadErrorRetryCount < maxDownloadErrorRetries) {
+            _downloadErrorRetryCount++;
+            await log(
+              "model",
+              "warning",
+              "Download error ($errDetail); retrying ($_downloadErrorRetryCount/$maxDownloadErrorRetries)",
+              sendRemote: false,
+            );
+            await checkEngine(isAutoRetry: true);
+          } else {
+            isAvailable = false;
+            notifyListeners();
+            if (!firstLaunch && !_unavailableToastShown) {
+              _unavailableToastShown = true;
+              await _showToast(_unavailableToastText());
+            }
+          }
+        } else if (errInfo == "AICore" || errDetail == "Unavailable") {
+          isAvailable = false;
+          notifyListeners();
+          if (!firstLaunch && !_unavailableToastShown) {
+            _unavailableToastShown = true;
+            await _showToast(_unavailableToastText());
+          }
+        } else {
+          if (!_unavailableToastShown) {
+            _unavailableToastShown = true;
+            await _showToast(_unavailableToastText());
+          }
+        }
+        break;
+      default:
+        addDownloadLog(downloadStatus);
+    }
   }
 
   /// Saves the last exchange (user prompt + AI response) to Hive via ChatRepository.
   /// The response text lives on the engine; the repository handles everything else.
   Future<void> addToContext() async {
-    await chatData.addToContext(responseText);
+    final committedResponse = responseText;
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+    final aiTime = streamingMessageTime ?? DateTime.now();
+    final userTime = streamingUserMessageTime ?? aiTime;
     responseText = "";
+    _clearThoughtChunk();
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
+    await chatData.addToContext(
+      committedResponse,
+      thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+      author: assistantAuthorLabel,
+      userTime: userTime,
+      aiTime: aiTime,
+    );
   }
 
   /// Persists the current in-memory chats map to Hive via ChatRepository.
@@ -780,11 +2360,13 @@ class AIEngine with md.ChangeNotifier {
     if (chat != null && (chat["name"] == null || chat["name"] == "" || chat["name"] == "Still loading")) {
       unawaited(() async {
         try {
+          if (_disposed) return;
           String composeConversation = "";
           for (var line in chatData.context) {
             composeConversation = "$composeConversation\n - ${line["message"]}";
           }
           final title = await generateChatTitle(composeConversation);
+          if (_disposed) return;
           if (title.isNotEmpty && title != "Still loading" && chatData.chats.containsKey(currentChatId)) {
             chatData.chats[currentChatId]!["name"] = title;
             await chatData.saveChats();
@@ -867,7 +2449,12 @@ class AIEngine with md.ChangeNotifier {
   Future<String> generateTitle(String input) async {
     ignoreContext = true;
     String newTitle = "";
-    await gemini.init().then((initStatus) async {
+    await gemini
+        .init(
+          releaseStage: config.modelReleaseStage,
+          preference: config.modelPreference,
+        )
+        .then((initStatus) async {
       ignoreContext = false;
       if (initStatus == null) {
         analyzeError(
@@ -897,12 +2484,41 @@ class AIEngine with md.ChangeNotifier {
   }
 
 
-  Future<void> clearContext() async {
-    await chatData.clearContext();
-    responseText = "";
+  void startNewChat() {
+    currentChat = "0";
+    context.clear();
+    contextSize = 0;
+    if (!isLoading && !isGenerating && !isContinuing && !_isSynthesizing) {
+      _clearTurnVisualMemory();
+      prompt.clear();
+      responseText = "";
+      _clearThoughtChunk();
+      lastPrompt = "";
+      pendingImageBytes = null;
+      pendingImageName = null;
+      chatData.lastImagePath = null;
+      chatData.lastImageDescription = null;
+      streamingMessageTime = null;
+      streamingUserMessageTime = null;
+      isError = false;
+      status = "";
+    }
+    notifyListeners();
   }
 
-  Future<void> initEngine({bool includeTools = true}) async {
+  Future<void> clearContext() async {
+    _clearTurnVisualMemory();
+    await chatData.clearContext();
+    responseText = "";
+    _clearThoughtChunk();
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
+  }
+
+  Future<void> initEngine({
+    bool includeTools = true,
+    bool hasAttachedImage = false,
+  }) async {
     if (isInitializing) return;
     isInitializing = true;
     isError = false;
@@ -920,9 +2536,15 @@ class AIEngine with md.ChangeNotifier {
       }
 
       final externalTools = toolRegistry.tools.where((t) {
-        if (t.name == 'query_aicore_documentation') return true;
+        if (t.name == 'query_local_ai' || t.name == 'get_ai_status') {
+          return false;
+        }
+        final internalMod = InternalToolsService.moduleForTool(t.name);
+        if (internalMod != null) {
+          return isExtensionEnabled(internalMod.id);
+        }
         final extId = canonicalToolExtensionId(t);
-        if (extId == _selfPackageId || t.name == 'query_local_ai' || t.name == 'get_ai_status') {
+        if (extId == _selfPackageId) {
           return false;
         }
         if (extId.isNotEmpty && !isExtensionEnabled(extId)) {
@@ -943,9 +2565,16 @@ class AIEngine with md.ChangeNotifier {
             ignoreContext: ignoreContext,
             tools: externalTools,
             includeTools: includeTools,
+            hasAttachedImage: hasAttachedImage,
           )
           .then((instruction) async {
-            await gemini.init(instructions: instruction).then((
+            await gemini
+                .init(
+                  instructions: instruction,
+                  releaseStage: config.modelReleaseStage,
+                  preference: config.modelPreference,
+                )
+                .then((
               initStatus,
             ) async {
               if (initStatus == null) {
@@ -963,6 +2592,18 @@ class AIEngine with md.ChangeNotifier {
                 if (initStatus.contains("Error")) {
                   await log("model", "error", initStatus, sendRemote: false);
                   analyzeError("Initialization", initStatus);
+                  if (initStatus.contains("AICore") &&
+                      initStatus.contains("Unavailable")) {
+                    status = _unavailableStatusMessage();
+                    if (modelInfo.isEmpty) {
+                      modelInfo = {
+                        "status": "unavailable",
+                        "available": false,
+                        "statusCode": 0,
+                      };
+                    }
+                    notifyListeners();
+                  }
                 } else {
                   await log("model", "info", "Model initialized successfully", sendRemote: false);
                   isAvailable = true;
@@ -980,12 +2621,22 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
+  void _resetTurnLifecycleFlags() {
+    isLoading = false;
+    isGenerating = false;
+    isContinuing = false;
+    _isSynthesizing = false;
+    _activeToolHandling = false;
+    _forcedFinalSynthesis = false;
+  }
+
   /// Sets the error state
   void analyzeError(String action, dynamic e) {
     isAvailable = false;
     isError = true;
     isInitialized = false;
     isInitializing = false;
+    _resetTurnLifecycleFlags();
     status = "Error during $action: ${e.toString()}";
     notifyListeners();
   }
@@ -1014,8 +2665,15 @@ class AIEngine with md.ChangeNotifier {
         addTime: runAddTime,
         shareLocale: runShareLocale,
         currentLocale: dict.value("current_language"),
+        maxQuestionChars: isSynthesis
+            ? 1400
+            : Prompt.defaultContinuationQuestionChars,
       );
-      final initStatus = await gemini.init(instructions: instruction);
+      final initStatus = await gemini.init(
+        instructions: instruction,
+        releaseStage: config.modelReleaseStage,
+        preference: config.modelPreference,
+      );
       if (initStatus == null || initStatus.contains("Error")) {
         await log("model", "error", "Continuation init failed: $initStatus", sendRemote: false);
         analyzeError("ContinuationInit", initStatus ?? "null");
@@ -1055,12 +2713,12 @@ class AIEngine with md.ChangeNotifier {
 
   String _mapFinishReason(String? rawReason) {
     switch (rawReason) {
-      case "-100":
-        return "stop";
       case "0":
-        return "max_tokens";
+        return "stop";
       case "1":
-        return "timeout";
+        return "max_tokens";
+      case "-100":
+        return "other";
       case null:
       case "":
       case "null":
@@ -1108,9 +2766,40 @@ class AIEngine with md.ChangeNotifier {
 
   /// Cancels any ongoing generation
   Future<void> cancelGeneration() async {
-    final wasLoading = isLoading;
-    _aiSubscription?.cancel();
-    isLoading = false;
+    final wasLoading = isLoading ||
+        isGenerating ||
+        isContinuing ||
+        _isSynthesizing ||
+        _activeToolHandling;
+    _streamGenerationId++;
+    final sub = _aiSubscription;
+    _aiSubscription = null;
+    unawaited(sub?.cancel());
+    _clearTurnVisualMemory();
+    _resetTurnLifecycleFlags();
+    _toolFreeFallbackUsed = false;
+    _combinedResponse = "";
+    _currentSynthesisPrompt = "";
+    _currentUserPromptForSynthesis = "";
+    _lastFinishReason = "";
+    _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
+    _emptyStreamRetryCount = 0;
+    _toolTurnCount = 0;
+    _lastToolCallSignature = "";
+    _recoverableErrorRetries = 0;
+    _lastToolFailed = false;
+    _lastToolErrorIsInfra = false;
+    _lastToolErrorText = "";
+    _lastToolResultPayload = "";
+    _lastToolCall = null;
+    _clearThoughtChunk();
+    responseText = "";
+    lastPrompt = "";
+    chatData.lastImagePath = null;
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
     status = "Generation cancelled";
     notifyListeners();
     scrollChatlog(Duration(milliseconds: 250));
@@ -1130,96 +2819,170 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  Future<void> generateStream() async {
+  Future<void> generateStream({bool isEmptyStreamRetry = false}) async {
     if (prompt.text.isEmpty && pendingImageBytes == null) {
       status = "Please enter your prompt";
       isError = true;
       notifyListeners();
       return;
     }
-    if (isLoading) return; // Don't run if already generating
-
-    // Ensure engine is ready
-    if (!isInitializing) {
-      await initEngine();
+    if (isLoading ||
+        isGenerating ||
+        isContinuing ||
+        _isSynthesizing ||
+        _activeToolHandling) {
+      return; // Don't run if already generating
     }
 
-    // Cancel any old streams
-    await _aiSubscription?.cancel();
-
-    // Capture and persist any attached image before starting stream
-    final Uint8List? attachedImageBytes = pendingImageBytes;
-    String? savedImagePath;
-    if (attachedImageBytes != null) {
-      savedImagePath = await chatData.saveChatImage(attachedImageBytes);
-      chatData.lastImagePath = savedImagePath;
-      pendingImageBytes = null;
-      pendingImageName = null;
+    if (isAiCoreKnownUnavailable) {
+      final oldSub = _aiSubscription;
+      _aiSubscription = null;
+      await oldSub?.cancel();
+      _resetTurnLifecycleFlags();
+      isError = true;
+      status = _unavailableStatusMessage();
+      if (!_unavailableToastShown) {
+        _unavailableToastShown = true;
+        await _showToast(_unavailableToastText());
+      }
+      notifyListeners();
+      return;
     }
 
-    // Set initial state for this new stream
-    _generationStopwatch.reset();
-    _generationStopwatch.start();
-    _isCurrentSessionMultimodal = attachedImageBytes != null || savedImagePath != null;
-
+    // Allocate generation ID and lock active flags BEFORE the first await so
+    // rapid double-taps or cancelGeneration() during saveChatImage/initEngine
+    // cannot double-enter or resurrect a cancelled turn.
+    final int myGenId = ++_streamGenerationId;
+    _resetTurnLifecycleFlags();
+    isLoading = true;
+    isGenerating = true;
+    isError = false;
+    _toolFreeFallbackUsed = false;
     _toolTurnCount = 0;
     _lastToolCallSignature = "";
-    _forcedFinalSynthesis = false;
-    _activeToolHandling = false;
     _lastToolFailed = false;
     _lastToolErrorIsInfra = false;
     _lastToolErrorText = "";
     _lastToolResultPayload = "";
     _lastToolCall = null;
     _recoverableErrorRetries = 0;
-    final int myGenId = ++_streamGenerationId;
-    bool receivedTerminalEvent = false;
-
-    isLoading = true;
-    isGenerating = true;
-    isError = false;
+    if (!isEmptyStreamRetry) {
+      _emptyStreamRetryCount = 0;
+    }
     responseText = "";
+    _clearThoughtChunk();
     _lastFinishReason = ""; // reset for new generation
     _combinedResponse = ""; // reset accumulator
-    isContinuing = false;
-    _isSynthesizing = false;
+    _currentSynthesisPrompt = "";
+    _currentUserPromptForSynthesis = "";
     _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     cumulativeGenerationMs = 0;
     cumulativeTokenCount = 0;
+    streamingUserMessageTime = DateTime.now();
+    streamingMessageTime = DateTime.now();
     status = "Sending prompt...";
     notifyListeners();
+
+    // Cancel any old streams
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    // Capture and persist any attached image before initializing/starting stream
+    final Uint8List? attachedImageBytes = pendingImageBytes;
+    String? savedImagePath;
+    if (attachedImageBytes != null) {
+      savedImagePath = await chatData.saveChatImage(attachedImageBytes);
+      if (myGenId != _streamGenerationId || _disposed) return;
+      chatData.lastImagePath = savedImagePath;
+      pendingImageBytes = null;
+      pendingImageName = null;
+      _turnImageBytesForMemory = attachedImageBytes;
+      _turnImagePathForMemory = savedImagePath;
+      _turnChatIdForMemory = chatData.currentChat;
+    } else {
+      _clearTurnVisualMemory();
+    }
+
+    final String? imagePath = savedImagePath;
+    final bool hasAttachedImage =
+        imagePath != null && imagePath.trim().isNotEmpty;
+
+    // Ensure engine is ready with current attachment cue in instructions
+    if (!isInitializing) {
+      await initEngine(hasAttachedImage: hasAttachedImage);
+    }
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    if (isError || (!isInitializing && !isInitialized) || isAiCoreKnownUnavailable) {
+      _resetTurnLifecycleFlags();
+      isError = true;
+      streamingMessageTime = null;
+      streamingUserMessageTime = null;
+      if (isAiCoreKnownUnavailable) {
+        status = _unavailableStatusMessage();
+        if (!_unavailableToastShown) {
+          _unavailableToastShown = true;
+          await _showToast(_unavailableToastText());
+          if (myGenId != _streamGenerationId || _disposed) return;
+        }
+      } else if (status.isEmpty) {
+        status = "Failed to initialize Gemini Nano.";
+      }
+      notifyListeners();
+      return;
+    }
+
+    // Set initial state for this new stream
+    _generationStopwatch.reset();
+    _generationStopwatch.start();
+    _isCurrentSessionMultimodal = attachedImageBytes != null || hasAttachedImage;
+
+    bool receivedTerminalEvent = false;
+    streamingMessageTime = DateTime.now();
 
     double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
     final String effectiveUserPrompt = prompt.text.trim().isNotEmpty
         ? prompt.text.trim()
         : "Describe this image.";
+    final String userTurnPrompt = hasAttachedImage
+        ? "[Image attached to this message]\nUser's request: $effectiveUserPrompt"
+        : "User's request: $effectiveUserPrompt";
 
     final stream = gemini.generateTextEvents(
-      prompt: "User's request: $effectiveUserPrompt",
+      prompt: userTurnPrompt,
       // No maxTokens — let the model generate freely; only OS timeout (reason 1) or natural stop (reason -100) will end it
-      config: GenerationConfig(temperature: runTemperature),
+      config: GenerationConfig(
+        temperature: runTemperature,
+        enableThinking: effectiveEnableThinking,
+      ),
       stream: true,
       imageBytes: attachedImageBytes,
-      imagePath: savedImagePath,
+      imagePath: imagePath,
       downsample: config.downsampleImages,
     );
     lastPrompt = effectiveUserPrompt;
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             isLoading = true;
             responseText = "";
             status = dict.value("waiting_for_AI");
             await log("model", "info", "Waiting for model to initialize", sendRemote: false);
+            if (myGenId != _streamGenerationId || _disposed) return;
             notifyListeners();
             break;
 
           case AiEventStatus.streaming:
             isLoading = true;
+            streamingMessageTime = DateTime.now();
             String? finishReason = event.response?.finishReason;
             // Capture finishReason whenever the API reports one (it won't be on the done event)
             if (finishReason != null && finishReason != "null" && finishReason.isNotEmpty) {
@@ -1230,24 +2993,24 @@ class AIEngine with md.ChangeNotifier {
                 case "0":
                   if (kDebugMode) {
                     print(
+                      "Generation stopped (STOP): Natural stop point of the model.",
+                    );
+                  }
+                  await log("model", "info", "Generation stopped (STOP)", sendRemote: false);
+                  break;
+                case "1":
+                  if (kDebugMode) {
+                    print(
                       "Generation stopped (MAX_TOKENS): The maximum number of output tokens as specified in the request was reached.",
                     );
                   }
                   await log("model", "info", "Generation stopped (MAX_TOKENS)", sendRemote: false);
                   break;
-                case "1":
+                case "-100":
                   if (kDebugMode) {
                     print("Generation stopped (OTHER): Generic stop reason.");
                   }
                   await log("model", "info", "Generation stopped (OTHER)", sendRemote: false);
-                  break;
-                case "-100":
-                  if (kDebugMode) {
-                    print(
-                      "Generation stopped (STOP): Natural stop point of the model.",
-                    );
-                  }
-                  await log("model", "info", "Generation stopped (STOP)", sendRemote: false);
                   break;
                 default:
                   if (kDebugMode) {
@@ -1263,8 +3026,10 @@ class AIEngine with md.ChangeNotifier {
                   );
                   break;
               }
+              if (myGenId != _streamGenerationId || _disposed) return;
             }
             status = "Streaming response...";
+            _appendThoughtChunk(event.thought);
             if (event.response != null) {
               response = event.response!;
               responseText = event.response!.text;
@@ -1272,17 +3037,20 @@ class AIEngine with md.ChangeNotifier {
             try {
               scrollChatlog(Duration(milliseconds: 250));
               await Future.delayed(Duration(milliseconds: 500));
+              if (myGenId != _streamGenerationId || _disposed) return;
               scrollChatlog(Duration(milliseconds: 250));
             } catch (e) {
               if (kDebugMode) {
                 print("Can't scroll: $e");
               }
               await Future.delayed(Duration(milliseconds: 500));
+              if (myGenId != _streamGenerationId || _disposed) return;
             }
             break;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
+            _appendThoughtChunk(event.thought);
             // ── Prominent finishReason debug log ─────────────────────────────
             // NOTE: _lastFinishReason is cached from streaming — the done event also carries fallback reason
             final String? doneReason = _lastFinishReason.isNotEmpty
@@ -1290,9 +3058,9 @@ class AIEngine with md.ChangeNotifier {
                 : event.reason;
             if (kDebugMode) {
               final String friendlyReason = switch (doneReason) {
-                "-100" => "STOP (natural end)",
-                "0"    => "MAX_TOKENS (token budget exhausted)",
-                "1"    => "OTHER (timeout or forced stop)",
+                "0"    => "STOP (natural end)",
+                "1"    => "MAX_TOKENS (token budget exhausted)",
+                "-100" => "OTHER (timeout or forced stop)",
                 null   => "null (no reason reported during streaming)",
                 _      => "UNKNOWN code: $doneReason",
               };
@@ -1301,18 +3069,53 @@ class AIEngine with md.ChangeNotifier {
               print("║  responseText length: ${responseText.length} chars");
               print("╚═══════════════════════════════════════════╝");
             }
-            await log("model", "info", "Generation done. finishReason=$doneReason", sendRemote: false);
+            await log(
+              "model",
+              "info",
+              "Generation done. finishReason=$doneReason (nanoV4=$isNanoV4Active, chars=${responseText.length})",
+              sendRemote: false,
+            );
+            if (myGenId != _streamGenerationId || _disposed) return;
             // ─────────────────────────────────────────────────────────────────
-            if (responseText == "") {
-              if (errorRetry) {
-                if (event.response?.text == null) {
-                  isLoading = false;
-                  isGenerating = false;
-                  Fluttertoast.showToast(
-                    msg: "Unable to generate response.",
-                    toastLength: Toast.LENGTH_SHORT,
-                    fontSize: 16.0,
+            final String rawThoughtForPromotion = _rawThoughtChunk.trim().isNotEmpty
+                ? _rawThoughtChunk
+                : currentThoughtChunk;
+            if (responseText.trim().isEmpty &&
+                rawThoughtForPromotion.trim().isNotEmpty) {
+              final thoughtToolMap = _extractToolCall(
+                rawThoughtForPromotion,
+                userPrompt: effectiveUserPrompt,
+                mutateResponseOnGreeting: false,
+              );
+              if (thoughtToolMap != null) {
+                currentThoughtChunk =
+                    _sanitizeThoughtChunk(rawThoughtForPromotion);
+                responseText = jsonEncode(thoughtToolMap);
+                _combinedResponse = responseText;
+                _emptyStreamRetryCount = 0;
+                _activeToolHandling = true;
+                try {
+                  await _handleToolCall(
+                    thoughtToolMap,
+                    originalPrompt: effectiveUserPrompt,
                   );
+                } finally {
+                  _activeToolHandling = false;
+                }
+                break;
+              }
+            }
+            if (responseText.trim().isEmpty) {
+              if (errorRetry) {
+                if (event.response?.text == null ||
+                    _emptyStreamRetryCount >= maxEmptyStreamRetries) {
+                  _emptyStreamRetryCount = 0;
+                  _resetTurnLifecycleFlags();
+                  _clearThoughtChunk();
+                  responseText = "";
+                  streamingMessageTime = null;
+                  streamingUserMessageTime = null;
+                  await _showToast("Unable to generate response.");
                   await logger.logAiGeneration(
                     success: false,
                     latencyMs: _generationStopwatch.elapsedMilliseconds,
@@ -1324,13 +3127,20 @@ class AIEngine with md.ChangeNotifier {
                     isMultimodal: _isCurrentSessionMultimodal,
                   );
                 } else {
+                  _emptyStreamRetryCount++;
+                  _resetTurnLifecycleFlags();
                   await Future.delayed(Duration(milliseconds: 500));
-                  generateStream();
+                  if (myGenId != _streamGenerationId || _disposed) return;
+                  unawaited(generateStream(isEmptyStreamRetry: true));
+                  return;
                 }
               } else {
-                isLoading = false;
-                isGenerating = false;
+                _emptyStreamRetryCount = 0;
+                _resetTurnLifecycleFlags();
+                _clearThoughtChunk();
                 isError = true;
+                streamingMessageTime = null;
+                streamingUserMessageTime = null;
                 status = "Error";
                 responseText = event.error ?? "Unknown stream error";
                 await log("model", "error", responseText, sendRemote: false);
@@ -1346,7 +3156,24 @@ class AIEngine with md.ChangeNotifier {
                 );
               }
             } else {
-              final toolMap = M3xToolCallParser.extract(responseText);
+              _emptyStreamRetryCount = 0;
+              if (_isPureGreeting(effectiveUserPrompt)) {
+                final stripped = _stripGreetingAccidentalToolBlock(responseText);
+                if (stripped != null) {
+                  await log(
+                    "mesh",
+                    "info",
+                    "Stripped accidental trailing tool JSON after greeting prose.",
+                  );
+                  if (myGenId != _streamGenerationId || _disposed) return;
+                  responseText = stripped;
+                  _combinedResponse = stripped;
+                }
+              }
+              final toolMap = _extractToolCall(
+                responseText,
+                userPrompt: effectiveUserPrompt,
+              );
               if (toolMap != null) {
                 _activeToolHandling = true;
                 try {
@@ -1360,26 +3187,47 @@ class AIEngine with md.ChangeNotifier {
               final bool shouldContinue = _shouldContinueOnDone(doneReason, responseText);
 
               if (shouldContinue) {
-                // Model was cut off by timeout / mid-JSON — snapshot stats, start silent continuation
+                // Model was cut off by timeout / token limit / mid-JSON — snapshot stats, start silent continuation
                 cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
                 cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
+                if (_isMissingFinishReason(doneReason) &&
+                    !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
+                  _nullReasonContinuationCount++;
+                } else if (_isStopFinishReason(doneReason)) {
+                  _stopCutoffContinuationCount++;
+                }
                 _continuationCount++;
                 _combinedResponse = responseText;
-                await log("model", "info", "Response interrupted (reason=$doneReason), triggering continuation #$_continuationCount", sendRemote: false);
+                await log(
+                  "model",
+                  "info",
+                  "Response interrupted (reason=$doneReason, nanoV4=$isNanoV4Active), triggering continuation #$_continuationCount",
+                  sendRemote: false,
+                );
+                if (myGenId != _streamGenerationId || _disposed) return;
                 if (kDebugMode) print("[AUTO-CONTINUE #$_continuationCount] reason=$doneReason");
                 await continueGenerating();
               } else {
-                if (M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
+                final bool invalidTurn1Tool =
+                    M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                        _looksLikeInvalidToolJson(responseText);
+                if (invalidTurn1Tool) {
+                  if (!_toolFreeFallbackUsed &&
+                      !_lastToolFailed &&
+                      _lastToolResultPayload.isEmpty &&
+                      !_isSynthesizing) {
+                    await _triggerToolFreeFallbackAnswer(effectiveUserPrompt);
+                    break;
+                  }
                   await log("mesh", "error", "Discarding incomplete tool call after continuation limit: $responseText");
                   responseText = _buildIncompleteToolFallback();
                 }
                 // Natural stop or cap reached — commit
-                isContinuing = false;
-                isLoading = false;
-                isGenerating = false;
+                _resetTurnLifecycleFlags();
                 status = "Done";
                 await addToContext();
                 prompt.clear();
+                unawaited(_captureVisualMemoryIfNeeded());
 
                 final totalMs = cumulativeGenerationMs + (response.generationTimeMs?.toInt() ?? 0);
                 final totalTokens = cumulativeTokenCount + (response.tokenCount?.toInt() ?? 0);
@@ -1407,13 +3255,19 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.error:
             receivedTerminalEvent = true;
             if (errorRetry) {
+              _resetTurnLifecycleFlags();
               await Future.delayed(Duration(milliseconds: 500));
-              generateStream();
+              if (myGenId != _streamGenerationId || _disposed) return;
+              unawaited(generateStream());
+              return;
             } else {
-              isLoading = false;
-              isGenerating = false;
+              _clearTurnVisualMemory();
+              _resetTurnLifecycleFlags();
               isError = true;
+              streamingMessageTime = null;
+              streamingUserMessageTime = null;
               status = "Error";
+              _clearThoughtChunk();
               responseText = event.error ?? "Unknown stream error";
               await log("model", "error", responseText, sendRemote: false);
               await logger.logAiGeneration(
@@ -1432,13 +3286,18 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isGenerating = false;
+        _resetTurnLifecycleFlags();
         if (errorRetry) {
           await Future.delayed(Duration(milliseconds: 500));
-          generateStream();
+          if (myGenId != _streamGenerationId || _disposed) return;
+          unawaited(generateStream());
+          return;
         } else {
+          _clearThoughtChunk();
+          streamingMessageTime = null;
+          streamingUserMessageTime = null;
           await log("model", "error", e.toString(), sendRemote: false);
           analyzeError("Streaming", e);
           await logger.logAiGeneration(
@@ -1453,22 +3312,7 @@ class AIEngine with md.ChangeNotifier {
           );
         }
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        // Final state update when stream closes unexpectedly without terminal event
-        isLoading = false;
-        isGenerating = false;
-        if (!isError) {
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
   }
 
@@ -1477,16 +3321,929 @@ class AIEngine with md.ChangeNotifier {
     return RegExp(r'```').allMatches(text).length % 2 == 1;
   }
 
-  bool _shouldContinueOnDone(String? reason, String text) {
-    if (_continuationCount >= 4 || text.trim().isEmpty) return false;
-    final upper = reason?.toUpperCase() ?? '';
-    if (reason == "1" || upper == "OTHER" || upper == "MAX_TOKENS") {
+  static final RegExp _leadingEllipsisPattern =
+      RegExp(r'^\s*(?:\.{2,}|…+|\.\s*\.\s*\.)\s*');
+  static final RegExp _trailingEllipsisPattern =
+      RegExp(r'(?:\.{3,}|…+)\s*$');
+  static final RegExp _wordCharRegex = RegExp(r'[\p{L}\p{N}]', unicode: true);
+  static final RegExp _joinBoundaryCharRegex =
+      RegExp(r'[\s,.;:!?\(\)\[\]{}"“”' "'" r'’\-—/…]');
+
+  /// Strips leading continuation ellipses (`...` / `…`) and trailing whitespace
+  /// after them before evaluating joins or appending continuation chunks.
+  static String stripLeadingEllipsis(String chunk) {
+    if (chunk.isEmpty) return chunk;
+    return chunk.replaceFirst(_leadingEllipsisPattern, '');
+  }
+
+  static bool _isValidSuffixPrefixOverlap(
+    String existing,
+    String incoming,
+    int len,
+  ) {
+    if (len <= 0) return false;
+    if (len >= 8) return true;
+    final startIdx = existing.length - len;
+    final startsAtBoundary =
+        startIdx == 0 || _joinBoundaryCharRegex.hasMatch(existing[startIdx - 1]);
+    if (!startsAtBoundary) return false;
+
+    final endsAtBoundary = len == incoming.length ||
+        _joinBoundaryCharRegex.hasMatch(incoming[len]) ||
+        _joinBoundaryCharRegex.hasMatch(incoming[len - 1]);
+    if (endsAtBoundary) return true;
+
+    // Mid-word cutoff completion: e.g. existing ends with "Yud" (len >= 3) and
+    // incoming starts with "Yudkowsky" so "Yud" + "kowsky" => "Yudkowsky".
+    final isMidWordCompletion = len >= 3 &&
+        _wordCharRegex.hasMatch(existing[existing.length - 1]) &&
+        len < incoming.length &&
+        _wordCharRegex.hasMatch(incoming[len]);
+    return isMidWordCompletion;
+  }
+
+  static int _findSuffixPrefixOverlap(
+    String existing,
+    String incoming, {
+    int maxLookback = 240,
+  }) {
+    final limit = existing.length < incoming.length
+        ? existing.length
+        : incoming.length;
+    final maxLen = limit < maxLookback ? limit : maxLookback;
+    for (int len = maxLen; len >= 1; len--) {
+      final suffix = existing.substring(existing.length - len);
+      if (incoming.startsWith(suffix) &&
+          _isValidSuffixPrefixOverlap(existing, incoming, len)) {
+        return len;
+      }
+    }
+    return 0;
+  }
+
+  /// Stitches [incoming] onto [existing] across auto-continuation boundaries,
+  /// normalizing ellipses, deduplicating suffix/prefix overlaps and repeated
+  /// trailing clauses, and joining mid-word cutoffs seamlessly.
+  static String stitchContinuation(String existing, String incoming) {
+    String cleaned = stripLeadingEllipsis(incoming);
+    if (existing.isEmpty) return cleaned;
+    if (cleaned.isEmpty) return existing;
+
+    final trimmedExistingLeft = existing.trimLeft();
+    final bool isJsonOrToolDraft = trimmedExistingLeft.startsWith('{') ||
+        trimmedExistingLeft.startsWith('```json') ||
+        RegExp(r'^```(?:json)?\s*\{', caseSensitive: false)
+            .hasMatch(trimmedExistingLeft) ||
+        M3xToolCallParser.looksLikeIncompleteToolCall(existing);
+    final bool insideCodeBlock = RegExp(r'```').allMatches(existing).length % 2 == 1;
+
+    if (isJsonOrToolDraft) {
+      if (insideCodeBlock) {
+        cleaned = stripLeadingEllipsis(
+          cleaned.replaceFirst(RegExp(r'^```(?:json)?\s*', caseSensitive: false), ''),
+        );
+      }
+      if (cleaned.isEmpty) return existing;
+      final overlap = _findSuffixPrefixOverlap(existing, cleaned);
+      if (overlap >= 4) {
+        return existing + cleaned.substring(overlap);
+      }
+      return existing + cleaned;
+    }
+
+    if (insideCodeBlock) {
+      cleaned = stripLeadingEllipsis(
+        cleaned.replaceFirst(RegExp(r'^```[a-zA-Z0-9]*\n?'), ''),
+      );
+      if (cleaned.isEmpty) return existing;
+      final overlap = _findSuffixPrefixOverlap(existing, cleaned);
+      if (overlap > 0) {
+        return existing + cleaned.substring(overlap);
+      }
+      final sep = (existing.endsWith('\n') || cleaned.startsWith('\n')) ? '' : '\n';
+      return '$existing$sep$cleaned';
+    }
+
+    // Plain prose: strip trailing standalone continuation ellipsis from existing
+    final String baseExisting = existing.replaceFirst(_trailingEllipsisPattern, '');
+    if (baseExisting.isEmpty) return cleaned;
+
+    // 1. Direct suffix-prefix overlap check
+    final int directOverlap = _findSuffixPrefixOverlap(baseExisting, cleaned);
+    if (directOverlap > 0) {
+      final remainder = cleaned.substring(directOverlap);
+      if (remainder.isEmpty) return baseExisting;
+      return baseExisting + remainder;
+    }
+
+    // 2. Trailing-space-trimmed suffix-prefix overlap (e.g. "...to " + "...to\n5.0")
+    final String trimmedBase = baseExisting.trimRight();
+    if (trimmedBase.length < baseExisting.length && trimmedBase.isNotEmpty) {
+      final int trimmedOverlap = _findSuffixPrefixOverlap(trimmedBase, cleaned);
+      if (trimmedOverlap > 0) {
+        final remainder = cleaned.substring(trimmedOverlap);
+        if (remainder.isEmpty) return baseExisting;
+        if (RegExp(r'^\s').hasMatch(remainder)) {
+          return trimmedBase + remainder;
+        }
+        return baseExisting + remainder;
+      }
+    }
+
+    // 3. Repeated trailing clause / sentence rollback within last 280 chars (>= 18 chars)
+    const int minClauseMatch = 18;
+    if (cleaned.length >= minClauseMatch && baseExisting.length >= minClauseMatch) {
+      final int windowStart =
+          baseExisting.length > 280 ? baseExisting.length - 280 : 0;
+      final String probe = cleaned.substring(0, minClauseMatch);
+      int searchFrom = baseExisting.length - minClauseMatch;
+      while (searchFrom >= windowStart) {
+        final int idx = baseExisting.lastIndexOf(probe, searchFrom);
+        if (idx < windowStart) break;
+        final bool startsAtBoundary =
+            idx == 0 || _joinBoundaryCharRegex.hasMatch(baseExisting[idx - 1]);
+        if (startsAtBoundary) {
+          int matchLen = minClauseMatch;
+          final int maxMatch = (baseExisting.length - idx) < cleaned.length
+              ? (baseExisting.length - idx)
+              : cleaned.length;
+          while (matchLen < maxMatch &&
+              matchLen < 240 &&
+              baseExisting[idx + matchLen] == cleaned[matchLen]) {
+            matchLen++;
+          }
+          final String trailingTail = baseExisting.substring(idx + matchLen);
+          if (trailingTail.length <= 28 && !RegExp(r'[.!?]').hasMatch(trailingTail)) {
+            return baseExisting.substring(0, idx) + cleaned;
+          }
+          final String deduped = cleaned.substring(matchLen).trimLeft();
+          if (deduped.isEmpty) return baseExisting;
+          cleaned = deduped;
+          break;
+        }
+        searchFrom = idx - 1;
+      }
+    }
+
+    // 4. Plain prose boundary join
+    final String lastChar = baseExisting[baseExisting.length - 1];
+    final String firstChar = cleaned[0];
+    final bool endsWithBoundary =
+        lastChar == ' ' || lastChar == '\n' || lastChar == '\t';
+    final bool startsWithBoundary =
+        firstChar == ' ' || firstChar == '\n' || firstChar == '\t';
+    final bool endsWithJoiningPunct = lastChar == "'" ||
+        lastChar == '’' ||
+        lastChar == '(' ||
+        lastChar == '[' ||
+        lastChar == '{' ||
+        lastChar == '"' ||
+        lastChar == '“' ||
+        lastChar == '-' ||
+        lastChar == '—' ||
+        lastChar == '/';
+    final bool startsWithDecimal = RegExp(r'^\.\d').hasMatch(cleaned);
+    final bool startsWithPunct =
+        !startsWithDecimal && ',.;:!?)]:"\'’”%'.contains(firstChar);
+
+    if (!endsWithBoundary &&
+        !startsWithBoundary &&
+        !endsWithJoiningPunct &&
+        !startsWithPunct) {
+      return '$baseExisting $cleaned';
+    }
+    return '$baseExisting$cleaned';
+  }
+
+  /// Detects a trailing stutter/repetition loop (3+ consecutive repeats of a
+  /// >=12-char phrase or multi-word sequence like `"and...that"`) and trims
+  /// back to a single occurrence.
+  static ({String text, bool detected}) detectAndTrimStutterLoop(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.length < 24) return (text: text, detected: false);
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) {
+      return (text: text, detected: false);
+    }
+
+    final longRepeat = RegExp(
+      r'(.{12,160}?)(?:\s*\1){2,}$',
+      dotAll: true,
+    ).firstMatch(trimmed);
+    if (longRepeat != null) {
+      final unit = longRepeat.group(1)!;
+      if (RegExp(r'[\p{L}]', unicode: true).allMatches(unit).length >= 2) {
+        return (
+          text: trimmed.substring(0, longRepeat.start) + unit,
+          detected: true,
+        );
+      }
+    }
+
+    final shortWordRepeat = RegExp(
+      r'([\p{L}\p{N}]+(?:(?:\.{2,}|…|\s+|[,;:\-]+)[\p{L}\p{N}]+)+)(?:(?:\s+|[,;:\-…]+)*\1){2,}$',
+      unicode: true,
+      caseSensitive: false,
+    ).firstMatch(trimmed);
+    if (shortWordRepeat != null) {
+      final unit = shortWordRepeat.group(1)!;
+      if (unit.length >= 6 &&
+          RegExp(r'[\p{L}]', unicode: true).allMatches(unit).length >= 2) {
+        return (
+          text: trimmed.substring(0, shortWordRepeat.start) + unit,
+          detected: true,
+        );
+      }
+    }
+
+    return (text: text, detected: false);
+  }
+
+  bool _looksLikeInvalidToolJson(String text) {
+    if (M3xToolCallParser.looksLikeIncompleteToolCall(text)) return true;
+    final trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('```')) return false;
+    return RegExp(
+      r'''["'](?:tool|method)["']\s*:|["']action["']\s*:\s*["']tool(?:_)?call["']''',
+      caseSensitive: false,
+    ).hasMatch(trimmed);
+  }
+
+  static final RegExp _openMidClauseTailRegex = RegExp(r'[,;:\-—(\[\{]$');
+  static final RegExp _contractionApostropheTailRegex = RegExp(r"[A-Za-z0-9]['’]$");
+  static final RegExp _terminalPunctTailRegex = RegExp(r'[.!?…"”’`\)\]。！？]$|"$');
+  static final RegExp _trailingMarkdownWithTerminalRegex = RegExp(r'[.!?…"”’`\)\]。！？][*_]+$');
+  static final RegExp _completeSentenceBoundaryRegex = RegExp(r'[.!?]["”’\)\]*_]*$');
+  static final RegExp _draftToolNameRegex = RegExp(
+    r'''["'](?:tool|method)["']\s*:\s*["']([^"']+)["']''',
+    caseSensitive: false,
+  );
+  static final RegExp _draftEmptyArgsRegex = RegExp(
+    r'''["'](?:args|arguments|params)["']\s*:\s*\{\s*\}''',
+    caseSensitive: false,
+  );
+
+  bool _toolRequiresArguments(String toolName) {
+    final normalized = toolName.trim();
+    if (normalized.isEmpty) return false;
+    final tool = toolRegistry.get(normalized);
+    if (tool != null) {
+      final req = tool.parameters['required'];
+      if (req is List && req.isNotEmpty) return true;
+      final props = tool.parameters['properties'];
+      if (req == null && props is Map && props.isNotEmpty) return true;
+      return false;
+    }
+    final mod = InternalToolsService.moduleForTool(normalized);
+    if (mod != null) {
+      for (final spec in mod.tools) {
+        if (spec.name == normalized.toLowerCase()) {
+          final req = spec.parameters['required'];
+          if (req is List && req.isNotEmpty) return true;
+          final props = spec.parameters['properties'];
+          if (req == null && props is Map && props.isNotEmpty) return true;
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool _isMalformedToolJsonDraft(String text) {
+    if (!M3xToolCallParser.looksLikeIncompleteToolCall(text)) return false;
+    if (_draftEmptyArgsRegex.hasMatch(text)) {
+      final match = _draftToolNameRegex.firstMatch(text);
+      final toolName = match?.group(1) ?? '';
+      if (_toolRequiresArguments(toolName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  int effectiveMaxContinuationsFor(String text) {
+    if (M3xToolCallParser.looksLikeIncompleteToolCall(text)) {
+      return maxToolJsonContinuations;
+    }
+    return _isInsideCodeBlock(text) ? maxContinuations : maxProseContinuations;
+  }
+
+  static bool _endsAtCompleteSentenceBoundary(String text) {
+    if (text.endsWith('\n\n') || RegExp(r'\n\s*\n$').hasMatch(text)) {
       return true;
     }
-    if (!_forcedFinalSynthesis && M3xToolCallParser.looksLikeIncompleteToolCall(text)) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return false;
+    return _completeSentenceBoundaryRegex.hasMatch(trimmed);
+  }
+
+  static bool _isMissingFinishReason(String? reason) {
+    final norm = reason?.trim() ?? '';
+    if (norm.isEmpty) return true;
+    final upper = norm.toUpperCase();
+    return upper == 'NULL' || upper == 'UNKNOWN' || upper == 'FINISH_REASON_UNSPECIFIED';
+  }
+
+  static bool _isStopFinishReason(String? reason) {
+    final norm = reason?.trim() ?? '';
+    if (norm.isEmpty) return false;
+    final upper = norm.toUpperCase();
+    return norm == '0' || upper == 'STOP';
+  }
+
+  static int _countWords(String text) =>
+      text.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+
+  static const Set<String> _danglingTailWords = {
+    'to', 'and', 'or', 'but', 'of', 'the', 'a', 'an', 'with', 'for', 'in',
+    'on', 'at', 'by', 'from', 'into', 'about', 'as', 'that', 'which', 'who',
+    'your', 'its', 'their', 'this', 'these', 'those', 'my', 'our', 'is', 'are',
+    'was', 'were', 'can', 'will', 'would', 'should', 'could', 'may', 'might',
+  };
+
+  static const Set<String> _transitiveIngTailWords = {
+    'ensuring', 'including', 'providing', 'creating', 'making', 'requiring',
+    'involving', 'preventing', 'maintaining', 'developing', 'building',
+    'allowing', 'enabling', 'reducing', 'increasing', 'supporting',
+    'addressing', 'protecting', 'achieving', 'aligning', 'explaining',
+    'illustrating', 'highlighting', 'leading', 'showing', 'demonstrating',
+    'offering', 'using', 'trying', 'seeking', 'getting', 'taking', 'giving',
+    'finding', 'keeping', 'holding', 'leaving', 'bringing',
+  };
+
+  static const Set<String> _ingLeadInWords = {
+    'and', 'or', 'while', 'by', 'for', 'of', 'without', 'to', 'before',
+    'after',
+  };
+
+  static const Set<String> _nonCutoffIngWords = {
+    'morning', 'evening', 'nothing', 'something', 'anything', 'everything',
+    'thing', 'being', 'feeling', 'meaning', 'missing', 'helping', 'asking',
+    'waiting', 'listening', 'coming', 'going', 'working', 'happening',
+    'existing', 'remaining', 'pending', 'lasting', 'willing', 'sharing',
+    'caring', 'understanding', 'looking', 'talking', 'speaking', 'playing',
+    'sleeping', 'running', 'walking', 'living', 'dying', 'ending', 'starting',
+    'beginning', 'changing', 'growing', 'moving', 'standing', 'sitting',
+    'falling', 'rising', 'raining', 'snowing', 'driving', 'traveling',
+    'learning', 'studying', 'relaxing', 'resting', 'celebrating', 'improving',
+    'recovering',
+  };
+
+  static bool _isLikelyTrailingIngParticiple(
+    String lastWord,
+    String penultWord,
+  ) {
+    if (!lastWord.endsWith('ing') || !RegExp(r'^[a-z]+$').hasMatch(lastWord)) {
+      return false;
+    }
+    if (_nonCutoffIngWords.contains(lastWord)) return false;
+    if (_transitiveIngTailWords.contains(lastWord)) return true;
+    return lastWord.length >= 6 && _ingLeadInWords.contains(penultWord);
+  }
+
+  static const Set<String> _danglingPrepositionOrConjunctionWords = {
+    'to', 'and', 'or', 'but', 'of', 'with', 'for', 'in', 'on', 'at', 'by',
+    'from', 'into', 'about', 'as',
+  };
+
+  static bool _endsWithDanglingPrepositionOrConjunction(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return false;
+    final rawWords =
+        trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (rawWords.isEmpty) return false;
+    final lastWord = _normalizeCutoffToken(rawWords.last);
+    return _danglingPrepositionOrConjunctionWords.contains(lastWord);
+  }
+
+  static const Set<String> _prepositionsBeforeDemonstrative = {
+    'with', 'for', 'of', 'in', 'on', 'at', 'by', 'from', 'into', 'about',
+    'to', 'like', 'after', 'before', 'without', 'under', 'over', 'between',
+    'through',
+  };
+
+  static const Set<String> _modifierLeadInWords = {
+    'with', 'for', 'in', 'on', 'at', 'by', 'from', 'into', 'of', 'to',
+    'the', 'a', 'an', 'their', 'its', 'our', 'your', 'some', 'such',
+  };
+
+  static const Set<String> _knownTrailingModifiers = {
+    'advanced', 'potential', 'modern', 'high', 'low', 'new', 'further',
+    'certain', 'extreme', 'major', 'minor', 'critical', 'specific',
+    'similar', 'various', 'several', 'multiple', 'complex', 'large', 'small',
+    'strong', 'weak', 'wide', 'broad', 'narrow', 'direct', 'indirect',
+    'proper', 'primary', 'secondary', 'unique', 'entire', 'exact',
+    'accurate', 'precise', 'heavy', 'unsafe', 'dangerous', 'serious',
+    'severe', 'significant', 'important', 'artificial', 'unintended',
+    'unexpected', 'sophisticated', 'autonomous', 'intelligent',
+    'superintelligent', 'global', 'digital', 'physical', 'mental', 'social',
+    'medical', 'legal', 'moral', 'ethical', 'economic', 'political',
+    'technical', 'practical', 'scientific', 'environmental',
+    'computational', 'additional', 'existing', 'emerging', 'growing',
+    'increasing', 'developing', 'evolving', 'underlying', 'surrounding',
+    'remaining', 'following', 'preceding', 'leading', 'fundamental',
+    'essential', 'vital', 'crucial', 'necessary', 'possible', 'unlikely',
+    'available', 'effective', 'efficient', 'reliable', 'recent', 'current',
+    'previous', 'next', 'different', 'highly', 'extremely', 'increasingly',
+    'particularly', 'especially', 'potentially', 'significantly',
+    'relatively', 'completely', 'fully', 'partially', 'rapidly', 'newly',
+    'widely', 'closely', 'strongly', 'deeply', 'unusually', 'unexpectedly',
+    'critically', 'severely', 'heavily', 'broadly',
+  };
+
+  static const Set<String> _nonModifierAlNouns = {
+    'animal', 'hospital', 'capital', 'journal', 'festival', 'terminal',
+    'general', 'material', 'mineral', 'individual', 'official', 'original',
+    'crystal', 'arrival', 'survival', 'removal', 'approval', 'proposal',
+    'refusal', 'disposal', 'betrayal', 'portrayal', 'funeral', 'cathedral',
+    'scandal', 'sandal', 'mammal', 'manual', 'signal', 'casual', 'visual',
+  };
+
+  static const Set<String> _nonModifierIcNouns = {
+    'public', 'classic', 'critic', 'fabric', 'plastic', 'static', 'metric',
+    'clinic', 'picnic', 'traffic', 'garlic', 'tropic', 'mosaic', 'tunic',
+    'relic', 'attic', 'comic', 'topic', 'music', 'logic', 'magic', 'panic',
+    'basic',
+  };
+
+  static const Set<String> _nonModifierIveNouns = {
+    'native', 'motive', 'archive', 'detective', 'narrative', 'objective',
+    'directive', 'adjective', 'executive', 'initiative', 'alternative',
+    'perspective', 'representative', 'incentive',
+  };
+
+  static const Set<String> _nonModifierBleNouns = {
+    'vegetable', 'syllable', 'parable', 'variable', 'portable', 'timetable',
+    'turntable', 'constable', 'mandible', 'crucible',
+  };
+
+  static const Set<String> _nonModifierRyNouns = {
+    'library', 'january', 'february', 'summary', 'history', 'factory',
+    'category', 'century', 'country', 'victory', 'mystery', 'battery',
+    'gallery', 'surgery', 'delivery', 'recovery', 'discovery', 'scenery',
+    'grocery', 'bakery', 'salary', 'glossary', 'boundary', 'dictionary',
+    'vocabulary', 'secretary', 'commentary', 'documentary', 'anniversary',
+    'territory', 'directory', 'inventory', 'laboratory', 'dormitory',
+    'observatory', 'trajectory', 'accessory', 'memory', 'theory',
+  };
+
+  static const Set<String> _nonModifierNtNouns = {
+    'moment', 'present', 'client', 'student', 'parent', 'patient', 'percent',
+    'incident', 'accident', 'resident', 'president', 'assistant', 'merchant',
+    'servant', 'restaurant', 'elephant', 'account', 'amount', 'extent',
+    'intent', 'consent', 'content', 'talent', 'contestant', 'participant',
+    'consultant', 'accountant', 'defendant', 'applicant', 'inhabitant',
+    'immigrant', 'sergeant', 'lieutenant', 'peasant', 'tenant', 'tyrant',
+    'infant', 'mutant', 'pendant', 'quadrant', 'remnant', 'covenant',
+    'solvent', 'agent', 'opponent', 'component', 'exponent', 'recipient',
+    'coefficient', 'ingredient', 'nutrient', 'gradient', 'quotient', 'orient',
+    'torrent', 'garment', 'segment', 'fragment',
+  };
+
+  static String _normalizeCutoffToken(String raw) => raw
+      .toLowerCase()
+      .replaceAll(RegExp(r'''^["'“‘(\[\{*_`]+|["'”’)\]\},;:*_`]+$'''), '');
+
+  static bool _isLikelyTrailingModifier(String word) {
+    if (word.length < 3 || !RegExp(r'^[a-z]+$').hasMatch(word)) return false;
+    if (_knownTrailingModifiers.contains(word)) return true;
+    if (word.length >= 6 && word.endsWith('ous')) return true;
+    if (word.length >= 6 &&
+        (word.endsWith('ful') || word.endsWith('less'))) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ed') &&
+        !word.endsWith('eed') &&
+        word != 'hundred') {
+      return true;
+    }
+    if (word.length >= 7 &&
+        word.endsWith('al') &&
+        !_nonModifierAlNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ic') &&
+        !_nonModifierIcNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        word.endsWith('ive') &&
+        !_nonModifierIveNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 7 &&
+        (word.endsWith('able') || word.endsWith('ible')) &&
+        !_nonModifierBleNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 7 &&
+        (word.endsWith('ary') || word.endsWith('ory')) &&
+        !_nonModifierRyNouns.contains(word)) {
+      return true;
+    }
+    if (word.length >= 6 &&
+        (word.endsWith('ant') || word.endsWith('ent')) &&
+        !word.endsWith('ment') &&
+        !_nonModifierNtNouns.contains(word)) {
       return true;
     }
     return false;
+  }
+
+  static bool isLikelyMidClauseCutoff(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return false;
+    if (_openMidClauseTailRegex.hasMatch(trimmed)) return true;
+    if (_contractionApostropheTailRegex.hasMatch(trimmed)) return true;
+    if (_trailingMarkdownWithTerminalRegex.hasMatch(trimmed)) return false;
+    if (_terminalPunctTailRegex.hasMatch(trimmed)) return false;
+
+    final rawWords =
+        trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (rawWords.isEmpty) return false;
+
+    final lastWord = _normalizeCutoffToken(rawWords.last);
+    final penultWord = rawWords.length >= 2
+        ? _normalizeCutoffToken(rawWords[rawWords.length - 2])
+        : '';
+
+    if (rawWords.length >= 2 && _danglingTailWords.contains(lastWord)) {
+      final isDemonstrativeObject =
+          (lastWord == 'that' ||
+              lastWord == 'this' ||
+              lastWord == 'these' ||
+              lastWord == 'those') &&
+          _prepositionsBeforeDemonstrative.contains(penultWord);
+      if (!isDemonstrativeObject) {
+        return true;
+      }
+    }
+
+    if (rawWords.length >= 4 &&
+        _modifierLeadInWords.contains(penultWord) &&
+        _isLikelyTrailingModifier(lastWord)) {
+      return true;
+    }
+
+    if (rawWords.length >= 4 &&
+        _isLikelyTrailingIngParticiple(lastWord, penultWord)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  @visibleForTesting
+  bool shouldContinueOnDoneForTest(
+    String? reason,
+    String text, {
+    int? lastRoundAddedNonWs,
+    int? continuationCount,
+    int? nullReasonCount,
+    int? stopCutoffCount,
+    bool? isSynthesis,
+  }) =>
+      _shouldContinueOnDone(
+        reason,
+        text,
+        lastRoundAddedNonWs: lastRoundAddedNonWs,
+        continuationCountOverride: continuationCount,
+        nullReasonCountOverride: nullReasonCount,
+        stopCutoffCountOverride: stopCutoffCount,
+        isSynthesisOverride: isSynthesis,
+      );
+
+  bool _shouldContinueOnDone(
+    String? reason,
+    String text, {
+    int? lastRoundAddedNonWs,
+    int? continuationCountOverride,
+    int? nullReasonCountOverride,
+    int? stopCutoffCountOverride,
+    bool? isSynthesisOverride,
+  }) {
+    final effectiveCount = continuationCountOverride ?? _continuationCount;
+    final effectiveNullCount = nullReasonCountOverride ?? _nullReasonContinuationCount;
+    final effectiveStopCutoffCount =
+        stopCutoffCountOverride ?? _stopCutoffContinuationCount;
+    if (text.trim().isEmpty) return false;
+    if (text.length >= maxContinuationChars) return false;
+    if (lastRoundAddedNonWs != null && lastRoundAddedNonWs <= 0) return false;
+
+    final bool isToolDraft = M3xToolCallParser.looksLikeIncompleteToolCall(text);
+    if (isToolDraft && _isMalformedToolJsonDraft(text)) {
+      return false;
+    }
+    if (effectiveCount >= effectiveMaxContinuationsFor(text)) {
+      return false;
+    }
+
+    final bool insideCodeBlock = _isInsideCodeBlock(text);
+    if (!insideCodeBlock && !isToolDraft) {
+      if (text.length >= maxProseHardStopChars) {
+        return false;
+      }
+      if (text.length >= maxProseSoftStopChars &&
+          _endsAtCompleteSentenceBoundary(text)) {
+        return false;
+      }
+    }
+
+    final norm = reason?.trim() ?? '';
+    final upper = norm.toUpperCase();
+    if (!_isMissingFinishReason(norm)) {
+      if (norm == "1" ||
+          norm == "-100" ||
+          upper == "OTHER" ||
+          upper == "MAX_TOKENS" ||
+          upper == "LIMIT" ||
+          upper.contains("MAX_TOKENS") ||
+          upper.contains("LIMIT")) {
+        return true;
+      }
+      if (_isStopFinishReason(norm)) {
+        if (!isNanoV4Active &&
+            !insideCodeBlock &&
+            !isToolDraft &&
+            effectiveStopCutoffCount < maxStopCutoffContinuations &&
+            text.length < maxProseSoftStopChars) {
+          final trimmed = text.trimRight();
+          final hasHardTokenCut =
+              _contractionApostropheTailRegex.hasMatch(trimmed) ||
+                  _openMidClauseTailRegex.hasMatch(trimmed);
+          if (hasHardTokenCut) {
+            return true;
+          }
+          final int minWords =
+              _endsWithDanglingPrepositionOrConjunction(text) ? 2 : 4;
+          if (_countWords(text) >= minWords &&
+              isLikelyMidClauseCutoff(text)) {
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+
+    if (!_forcedFinalSynthesis && isToolDraft) {
+      return true;
+    }
+
+    if (!isNanoV4Active &&
+        _isMissingFinishReason(norm) &&
+        effectiveNullCount < maxNullReasonContinuations &&
+        isLikelyMidClauseCutoff(text)) {
+      return true;
+    }
+    return false;
+  }
+
+  static final RegExp _pureGreetingTrailingPunctuation =
+      RegExp(r'[!.,?~…]+$');
+  static final RegExp _openingJsonFenceSuffix =
+      RegExp(r'```(?:json)?\s*$', caseSensitive: false);
+  static final RegExp _closingFencePrefix = RegExp(r'^\s*```');
+  static const Set<String> _pureGreetings = {
+    'hi',
+    'hello',
+    'hey',
+    'heyo',
+    'sup',
+    'greetings',
+    'привіт',
+    'добрий день',
+  };
+
+  bool _isPureGreeting(String userPrompt) {
+    final normalized = userPrompt
+        .trim()
+        .toLowerCase()
+        .replaceAll(_pureGreetingTrailingPunctuation, '')
+        .trim();
+    return _pureGreetings.contains(normalized);
+  }
+
+  static int _findBalancedBraceEnd(String text, int startIdx) {
+    int depth = 0;
+    bool inString = false;
+    int stringQuote = 0;
+    bool escapeNext = false;
+
+    for (int i = startIdx; i < text.length; i++) {
+      final code = text.codeUnitAt(i);
+      if (inString) {
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+        if (code == 0x5C /* '\' */) {
+          escapeNext = true;
+          continue;
+        }
+        if (code == stringQuote) {
+          inString = false;
+          stringQuote = 0;
+        }
+        continue;
+      }
+      if (code == 0x22 /* '"' */ || code == 0x27 /* "'" */) {
+        inString = true;
+        stringQuote = code;
+      } else if (code == 0x7B /* '{' */) {
+        depth++;
+      } else if (code == 0x7D /* '}' */) {
+        depth--;
+        if (depth == 0) {
+          return i;
+        }
+      }
+    }
+    return -1;
+  }
+
+  /// Strips an accidental trailing JSON tool-call block (complete or truncated)
+  /// when conversational or refusal prose precedes it. Returns `null` if no
+  /// such block with preceding prose is present.
+  String? _stripGreetingAccidentalToolBlock(String text) {
+    for (int i = 0; i < text.length; i++) {
+      if (text.codeUnitAt(i) != 0x7B /* '{' */) continue;
+
+      final endIdx = _findBalancedBraceEnd(text, i);
+      final bool isToolJson = endIdx != -1
+          ? M3xToolCallParser.extract(text.substring(i, endIdx + 1)) != null
+          : M3xToolCallParser.looksLikeIncompleteToolCall(text.substring(i));
+      if (!isToolJson) {
+        if (endIdx != -1) i = endIdx;
+        continue;
+      }
+
+      int blockStart = i;
+      final fenceMatch =
+          _openingJsonFenceSuffix.firstMatch(text.substring(0, i));
+      if (fenceMatch != null) {
+        blockStart = fenceMatch.start;
+      }
+
+      final before = text.substring(0, blockStart).trimRight();
+      if (before.isEmpty) {
+        return null;
+      }
+
+      if (endIdx == -1) {
+        return before;
+      }
+
+      int blockEnd = endIdx + 1;
+      final closeFence =
+          _closingFencePrefix.firstMatch(text.substring(blockEnd));
+      if (closeFence != null) {
+        blockEnd += closeFence.end;
+      }
+      final after = text.substring(blockEnd).trimLeft();
+      return after.isEmpty ? before : '$before\n\n$after'.trim();
+    }
+    return null;
+  }
+
+  static String _normalizeCtrlObjectToJson(String rawObj) {
+    final out = StringBuffer();
+    int i = 0;
+    while (i < rawObj.length) {
+      final ch = rawObj[i];
+      if (ch == '"' || ch == "'") {
+        final quote = ch;
+        out.write('"');
+        i++;
+        bool escaped = false;
+        while (i < rawObj.length) {
+          final c = rawObj[i];
+          if (escaped) {
+            out.write(c);
+            escaped = false;
+          } else if (c == r'\') {
+            out.write(c);
+            escaped = true;
+          } else if (c == quote) {
+            out.write('"');
+            i++;
+            break;
+          } else if (quote == "'" && c == '"') {
+            out.write(r'\"');
+          } else {
+            out.write(c);
+          }
+          i++;
+        }
+        continue;
+      }
+      if (RegExp(r'[A-Za-z_]').hasMatch(ch)) {
+        final prevNonWs = _lastNonWhitespaceChar(out);
+        if (prevNonWs == '{' || prevNonWs == ',') {
+          int end = i + 1;
+          while (end < rawObj.length &&
+              RegExp(r'[A-Za-z0-9_]').hasMatch(rawObj[end])) {
+            end++;
+          }
+          int afterWs = end;
+          while (afterWs < rawObj.length &&
+              (rawObj[afterWs] == ' ' ||
+                  rawObj[afterWs] == '\t' ||
+                  rawObj[afterWs] == '\n' ||
+                  rawObj[afterWs] == '\r')) {
+            afterWs++;
+          }
+          if (afterWs < rawObj.length && rawObj[afterWs] == ':') {
+            out.write('"');
+            out.write(rawObj.substring(i, end));
+            out.write('"');
+            i = end;
+            continue;
+          }
+        }
+      }
+      out.write(ch);
+      i++;
+    }
+    return out.toString().replaceAll(RegExp(r',\s*([}\]])'), r'$1');
+  }
+
+  static String? _lastNonWhitespaceChar(StringBuffer buf) {
+    final s = buf.toString();
+    for (int i = s.length - 1; i >= 0; i--) {
+      final c = s[i];
+      if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _extractCtrlToolCall(String text) {
+    for (final match in _ctrlToolCallPrefixRegex.allMatches(text)) {
+      final rawName = match.group(1)?.trim() ?? '';
+      if (rawName.isEmpty) continue;
+      final openBrace = match.end - 1;
+      final closeBrace = _findBalancedBraceEnd(text, openBrace);
+      if (closeBrace == -1) continue;
+      final rawArgs = text.substring(openBrace, closeBrace + 1);
+      Map<String, dynamic>? argsMap;
+      try {
+        final decoded = jsonDecode(rawArgs);
+        if (decoded is Map) {
+          argsMap = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {}
+      if (argsMap == null) {
+        try {
+          final normalized = _normalizeCtrlObjectToJson(rawArgs);
+          final decoded = jsonDecode(normalized);
+          if (decoded is Map) {
+            argsMap = Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {}
+      }
+      if (argsMap == null) continue;
+
+      String toolName =
+          rawName.contains(':') ? rawName.split(':').last.trim() : rawName;
+      String? appName;
+      if (toolName.contains('.') &&
+          toolRegistry.get(toolName) == null &&
+          InternalToolsService.moduleForTool(toolName) == null) {
+        final parts = toolName.split('.');
+        if (parts.length == 2 &&
+            (toolRegistry.get(parts[1]) != null ||
+                InternalToolsService.moduleForTool(parts[1]) != null)) {
+          appName = parts[0];
+          toolName = parts[1];
+        }
+      }
+      return <String, dynamic>{
+        'tool': toolName,
+        if (appName != null && appName.isNotEmpty) 'app': appName,
+        'arguments': argsMap,
+      };
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _extractToolCall(
+    String text, {
+    required String userPrompt,
+    bool mutateResponseOnGreeting = true,
+  }) {
+    if (_isPureGreeting(userPrompt)) {
+      final sanitized = _stripGreetingAccidentalToolBlock(text);
+      if (sanitized != null) {
+        if (mutateResponseOnGreeting) {
+          responseText = sanitized;
+          _combinedResponse = sanitized;
+        }
+        return null;
+      }
+    }
+    return M3xToolCallParser.extract(text) ?? _extractCtrlToolCall(text);
   }
 
   bool _isInfrastructureToolError(String message) {
@@ -1523,6 +4280,11 @@ class AIEngine with md.ChangeNotifier {
         .hasMatch(trimmed)) {
       return true;
     }
+    if (RegExp(r'\bfound\s*:\s*true\b', caseSensitive: false).hasMatch(trimmed) &&
+        RegExp(r'\b(extract|description|url|details)\s*:', caseSensitive: false)
+            .hasMatch(trimmed)) {
+      return true;
+    }
     return false;
   }
 
@@ -1536,52 +4298,8 @@ class AIEngine with md.ChangeNotifier {
         low.contains('all systems are operational');
   }
 
-  String _humanizeKey(String raw) {
-    final cleaned = raw.replaceAll('_', ' ').trim();
-    if (cleaned.isEmpty) return raw;
-    return cleaned[0].toUpperCase() + cleaned.substring(1);
-  }
-
   String _formatReadableToolSummary(String toolName, dynamic decoded) {
-    if (decoded is! Map) {
-      return decoded.toString();
-    }
-    final lines = <String>[];
-    decoded.forEach((key, value) {
-      final label = _humanizeKey(key.toString());
-      if (value is Map) {
-        final subParts = value.entries
-            .map((e) => '${_humanizeKey(e.key.toString())}: ${e.value}')
-            .join(', ');
-        if (subParts.isNotEmpty) lines.add('$label: $subParts');
-      } else if (value is List) {
-        if (value.isEmpty) {
-          lines.add('$label: none');
-        } else if (value.first is Map) {
-          lines.add('$label (${value.length}):');
-          for (final item in value.take(5)) {
-            if (item is Map) {
-              final summary = item.entries
-                  .take(4)
-                  .map((e) => '${_humanizeKey(e.key.toString())}: ${e.value}')
-                  .join(', ');
-              lines.add('• $summary');
-            }
-          }
-          if (value.length > 5) {
-            lines.add('• ...and ${value.length - 5} more');
-          }
-        } else {
-          lines.add('$label: ${value.join(', ')}');
-        }
-      } else if (value != null && value.toString().isNotEmpty) {
-        lines.add('$label: $value');
-      }
-    });
-    if (lines.isEmpty) {
-      return 'Completed ${toolName.isNotEmpty ? toolName : 'tool'} with no additional details.';
-    }
-    return lines.join('\n');
+    return InternalToolsService.formatResultForSynthesis(toolName, decoded);
   }
 
   String _buildRecoverableErrorHint(String toolName, String errorMessage) {
@@ -1591,72 +4309,280 @@ class AIEngine with md.ChangeNotifier {
         'or explain the issue clearly if it cannot be resolved.';
   }
 
+  String _dictValueOrFallback(String key, String fallback) {
+    final val = dict.value(key);
+    if (val.isEmpty ||
+        val == "Loading..." ||
+        val == key ||
+        val.startsWith("!!!")) {
+      return fallback;
+    }
+    return val;
+  }
+
   String _buildIncompleteToolFallback() {
     if (_lastToolFailed && _lastToolErrorText.isNotEmpty) {
-      final appLabel = _lastToolCall?.app;
-      final scope = (_lastToolErrorIsInfra && appLabel != null && appLabel.isNotEmpty)
-          ? " from '$appLabel'"
-          : '';
-      return "Unable to retrieve live data$scope: $_lastToolErrorText";
+      final appLabel = _lastToolCall?.app?.trim();
+      final hasInfraApp =
+          _lastToolErrorIsInfra && appLabel != null && appLabel.isNotEmpty;
+      final scope = hasInfraApp ? " from '$appLabel'" : '';
+      final fallback = "Unable to retrieve live data$scope: $_lastToolErrorText";
+      final raw = _dictValueOrFallback('tool_fallback_infra_error', fallback);
+      return raw
+          .replaceAll('{app}', hasInfraApp ? appLabel : 'the connected app')
+          .replaceAll('{error}', _lastToolErrorText);
     }
     if (_lastToolResultPayload.isNotEmpty) {
       try {
         final decoded = jsonDecode(_lastToolResultPayload);
         return _formatReadableToolSummary(_lastToolCall?.tool ?? '', decoded);
       } catch (_) {
-        return "Completed ${_lastToolCall?.tool ?? 'the requested action'}, but could not format the response.";
+        final toolName = _lastToolCall?.tool.trim() ?? '';
+        final toolLabel = toolName.isNotEmpty ? toolName : 'the requested action';
+        final fallback =
+            "Completed $toolLabel, but could not format the response.";
+        final raw =
+            _dictValueOrFallback('tool_fallback_partial_error', fallback);
+        return raw.replaceAll('{tool}', toolLabel);
       }
     }
-    return "The assistant could not complete a valid tool request for this query. Please try rephrasing or try again.";
+    return _dictValueOrFallback(
+      'tool_fallback_invalid_request',
+      "The assistant could not complete a valid tool request for this query. Please try rephrasing or try again.",
+    );
   }
 
-  /// Resolves the join rules between [partial] (accumulated so far) and the
-  /// first [newContent] chunk from the continuation session. Sets the join fields
-  /// so that subsequent streaming chunks are displayed correctly.
-  void _resolveJoin(String partial, String newContent) {
-    if (partial.isEmpty || newContent.isEmpty) return;
-    final String lastChar = partial[partial.length - 1];
-    final String firstChar = newContent[0];
-    final String trimmedPartial = partial.trimLeft();
-    final bool isJsonOrToolDraft = trimmedPartial.startsWith('{') ||
-        trimmedPartial.startsWith('```json') ||
-        M3xToolCallParser.looksLikeIncompleteToolCall(partial);
+  /// Handles unexpected native stream closure without a terminal Done/Error event.
+  void _handleUnexpectedStreamClose(int myGenId, bool receivedTerminalEvent) {
+    if (myGenId != _streamGenerationId ||
+        _disposed ||
+        receivedTerminalEvent ||
+        _activeToolHandling) {
+      return;
+    }
+    _aiSubscription = null;
+    final wasSynthesizing = _isSynthesizing;
+    _resetTurnLifecycleFlags();
 
-    if (isJsonOrToolDraft) {
-      // Preserve exact JSON token boundaries — never inject whitespace or alter case.
-      _continuationJoinPrefix = '';
-      _continuationLowerFirst = false;
-      _continuationStripPattern = _isInsideCodeBlock(partial)
-          ? r'^```(?:json)?\s*'
-          : '';
+    final candidate = responseText.trim().isNotEmpty
+        ? responseText
+        : _combinedResponse;
+    final hasValidPartial = candidate.trim().isNotEmpty &&
+        !M3xToolCallParser.looksLikeIncompleteToolCall(candidate) &&
+        !_looksLikeInvalidToolJson(candidate);
+
+    if (hasValidPartial && !isError) {
+      responseText = candidate;
+      if (wasSynthesizing) {
+        unawaited(
+          _commitSynthesisMessage(
+            candidate,
+            logNote: "Tool synthesis committed after unexpected stream close",
+          ),
+        );
+        return;
+      }
+      status = "Stream complete";
+      unawaited(() async {
+        await addToContext();
+        prompt.clear();
+        unawaited(_captureVisualMemoryIfNeeded());
+        genericRefresh();
+      }());
       return;
     }
 
-    if (_isInsideCodeBlock(partial)) {
-      // We're inside an open code block — the model may have re-opened it.
-      // Ensure a newline separator and strip any duplicate ``` opening.
-      _continuationJoinPrefix = (lastChar == '\n') ? '' : '\n';
-      // Match things like: ```php\n  or  ```\n  or  ``` at start
-      _continuationStripPattern = r'^```[a-zA-Z0-9]*\n?';
-      _continuationLowerFirst = false;
-    } else {
-      // Plain prose join
-      final bool endsWithBoundary = lastChar == ' ' || lastChar == '\n';
-      final bool startsWithBoundary = firstChar == ' ' || firstChar == '\n';
-      if (!endsWithBoundary && !startsWithBoundary) {
-        // No whitespace at join point — add a space
-        _continuationJoinPrefix = ' ';
-        // Only lowercase if the first char is a letter (not a symbol or digit)
-        final bool isLetter = RegExp(r'[A-Z]').hasMatch(firstChar);
-        _continuationLowerFirst = isLetter;
-      }
-      // If partial ends with punctuation like . ! ? the model likely started a
-      // new sentence correctly — leave capitalisation alone.
-      final bool endsWithSentence = '.!?'.contains(lastChar);
-      if (endsWithSentence) {
-        _continuationLowerFirst = false;
-      }
+    responseText = "";
+    lastPrompt = "";
+    _clearThoughtChunk();
+    _combinedResponse = "";
+    _currentSynthesisPrompt = "";
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
+    if (!isError) {
+      status = "Stream complete";
     }
+    genericRefresh();
+  }
+
+  /// Retries Turn-1 once WITHOUT tools when Nano outputs an incomplete or invalid
+  /// tool-call draft for a conceptual/non-tool query.
+  Future<void> _triggerToolFreeFallbackAnswer(String originalUserPrompt) async {
+    _toolFreeFallbackUsed = true;
+    final int myGenId = ++_streamGenerationId;
+    bool receivedTerminalEvent = false;
+
+    _resetTurnLifecycleFlags();
+    _forcedFinalSynthesis = true;
+    isLoading = true;
+    isGenerating = true;
+    isError = false;
+    responseText = "";
+    _clearThoughtChunk();
+    _lastFinishReason = "";
+    _combinedResponse = "";
+    _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
+    streamingMessageTime = DateTime.now();
+    status = "Retrying without tools...";
+    notifyListeners();
+
+    await log(
+      "mesh",
+      "warning",
+      "Tool request invalid/incomplete on turn 1; retrying without tools",
+    );
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    final String? imagePath = chatData.lastImagePath;
+    final bool hasAttachedImage =
+        imagePath != null && imagePath.trim().isNotEmpty;
+
+    await initEngine(includeTools: false, hasAttachedImage: hasAttachedImage);
+    if (myGenId != _streamGenerationId || _disposed) return;
+
+    if (isError || (!isInitializing && !isInitialized) || isAiCoreKnownUnavailable) {
+      _resetTurnLifecycleFlags();
+      responseText = _buildIncompleteToolFallback();
+      status = "Done";
+      await addToContext();
+      prompt.clear();
+      notifyListeners();
+      return;
+    }
+
+    final effectivePrompt = originalUserPrompt.trim().isNotEmpty
+        ? originalUserPrompt.trim()
+        : (lastPrompt.trim().isNotEmpty
+            ? lastPrompt.trim()
+            : "Please answer my previous question.");
+    lastPrompt = effectivePrompt;
+    final userTurnPrompt = hasAttachedImage
+        ? "[Image attached to this message]\nUser's request: $effectivePrompt"
+        : "User's request: $effectivePrompt";
+    final double runTemperature = chatData.chats.containsKey(currentChat) &&
+            chatData.chats[currentChat].containsKey("chatTemperature")
+        ? chatData.chats[currentChat]["chatTemperature"]
+        : temperature;
+
+    final stream = gemini.generateTextEvents(
+      prompt: userTurnPrompt,
+      config: GenerationConfig(
+        temperature: runTemperature,
+        enableThinking: effectiveEnableThinking,
+      ),
+      stream: true,
+      imageBytes: _turnImageBytesForMemory,
+      imagePath: imagePath,
+      downsample: config.downsampleImages,
+    );
+
+    _aiSubscription = stream.listen(
+      (AiEvent event) async {
+        if (myGenId != _streamGenerationId || _disposed) return;
+        switch (event.status) {
+          case AiEventStatus.loading:
+            isLoading = true;
+            responseText = "";
+            status = dict.value("waiting_for_AI");
+            notifyListeners();
+            break;
+
+          case AiEventStatus.streaming:
+            isLoading = true;
+            streamingMessageTime = DateTime.now();
+            status = "Streaming response...";
+            _appendThoughtChunk(event.thought);
+            final String? fr = event.response?.finishReason;
+            if (fr != null && fr != "null" && fr.isNotEmpty) {
+              _lastFinishReason = fr;
+            }
+            if (event.response != null) {
+              response = event.response!;
+              responseText = stripLeadingEllipsis(event.response!.text);
+            }
+            try {
+              scrollChatlog(const Duration(milliseconds: 250));
+            } catch (_) {}
+            break;
+
+          case AiEventStatus.done:
+            receivedTerminalEvent = true;
+            _appendThoughtChunk(event.thought);
+            final String? doneReason = _lastFinishReason.isNotEmpty
+                ? _lastFinishReason
+                : event.reason;
+
+            final bool emittedTool = M3xToolCallParser.extract(responseText) != null ||
+                _extractCtrlToolCall(responseText) != null ||
+                M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                _looksLikeInvalidToolJson(responseText);
+            if (emittedTool || responseText.trim().isEmpty) {
+              await log(
+                "mesh",
+                "error",
+                "Tool-free fallback retry also failed or emitted tool JSON; committing fallback message.",
+              );
+              if (myGenId != _streamGenerationId || _disposed) return;
+              responseText = _buildIncompleteToolFallback();
+              _resetTurnLifecycleFlags();
+              status = "Done";
+              await addToContext();
+              prompt.clear();
+              unawaited(_captureVisualMemoryIfNeeded());
+              break;
+            }
+
+            final bool shouldContinue = _shouldContinueOnDone(doneReason, responseText);
+            if (shouldContinue) {
+              cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
+              cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
+              if (_isMissingFinishReason(doneReason)) {
+                _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(doneReason)) {
+                _stopCutoffContinuationCount++;
+              }
+              _continuationCount++;
+              _combinedResponse = responseText;
+              await continueGenerating();
+            } else {
+              _resetTurnLifecycleFlags();
+              status = "Done";
+              await addToContext();
+              prompt.clear();
+              unawaited(_captureVisualMemoryIfNeeded());
+            }
+            break;
+
+          case AiEventStatus.error:
+            receivedTerminalEvent = true;
+            _resetTurnLifecycleFlags();
+            responseText = _buildIncompleteToolFallback();
+            status = "Done";
+            await addToContext();
+            prompt.clear();
+            break;
+        }
+        genericRefresh();
+      },
+      onError: (e) async {
+        if (myGenId != _streamGenerationId || _disposed) return;
+        receivedTerminalEvent = true;
+        _resetTurnLifecycleFlags();
+        responseText = _buildIncompleteToolFallback();
+        status = "Done";
+        await addToContext();
+        prompt.clear();
+        genericRefresh();
+      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
+    );
   }
 
   /// Continues a generation that was cut off (finishReason 0=MAX_TOKENS or 1=OTHER/timeout).
@@ -1671,19 +4597,19 @@ class AIEngine with md.ChangeNotifier {
     isContinuing = true;
     isGenerating = true;
     _lastFinishReason = "";
-    _firstContinuationChunk = true;   // reset join state for this round
-    _continuationJoinPrefix = "";
-    _continuationLowerFirst = false;
-    _continuationStripPattern = "";
     // Show full accumulated text immediately while continuation fires up
     responseText = _combinedResponse;
     notifyListeners();
 
-    await _aiSubscription?.cancel();
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
+
     // Use the continuation-specific init: system-level [CONTINUATION] directive,
     // no user turn, so the model simply outputs more text without addressing anyone
     await _initForContinuation(_combinedResponse, isSynthesis: isSynthesis);
-    if (myGenId != _streamGenerationId) return;
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
 
@@ -1691,13 +4617,16 @@ class AIEngine with md.ChangeNotifier {
     // This is NOT shown to the user and does NOT appear as a user message in context
     final stream = gemini.generateTextEvents(
       prompt: "Continue.",
-      config: GenerationConfig(temperature: runTemperature), // no token cap
+      config: GenerationConfig(
+        temperature: runTemperature,
+        enableThinking: effectiveEnableThinking,
+      ), // no token cap
       stream: true,
     );
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             status = dict.value("waiting_for_AI");
@@ -1705,47 +4634,87 @@ class AIEngine with md.ChangeNotifier {
             break;
 
           case AiEventStatus.streaming:
+            streamingMessageTime = DateTime.now();
+            final bool hasThought =
+                event.thought != null && event.thought!.trim().isNotEmpty;
+            _appendThoughtChunk(event.thought);
             final String? fr = event.response?.finishReason;
             if (fr != null && fr != "null" && fr.isNotEmpty) {
               _lastFinishReason = fr;
             }
             if (event.response != null) {
               response = event.response!;
-              String contText = event.response!.text;
-              // Resolve join rules once on the first chunk
-              if (_firstContinuationChunk && contText.isNotEmpty) {
-                _firstContinuationChunk = false;
-                _resolveJoin(_combinedResponse, contText);
-              }
-              // Strip duplicate code-fence opening if detected
-              if (_continuationStripPattern.isNotEmpty) {
-                contText = contText.replaceFirst(RegExp(_continuationStripPattern), '');
-              }
-              // Lowercase first char if needed
-              if (_continuationLowerFirst && contText.isNotEmpty) {
-                contText = contText[0].toLowerCase() + contText.substring(1);
-              }
-              // Seamlessly prepend everything accumulated before this call
-              responseText = _combinedResponse + _continuationJoinPrefix + contText;
+              // Dynamically re-stitch cumulative response.text against _combinedResponse
+              // so multi-token overlaps are deduplicated live without freezing on token 1.
+              responseText = stitchContinuation(_combinedResponse, event.response!.text);
+            }
+            if (hasThought || (event.response != null && responseText != _combinedResponse)) {
+              isContinuing = false;
             }
             try { scrollChatlog(Duration(milliseconds: 250)); } catch (_) {}
             break;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
+            _appendThoughtChunk(event.thought);
             final String? contDoneReason = _lastFinishReason.isNotEmpty
                 ? _lastFinishReason
                 : event.reason;
-            // Update the accumulator
-            _combinedResponse = responseText;
+
+            String stitched = stitchContinuation(_combinedResponse, response.text);
+            if (!_isSynthesizing && _isPureGreeting(lastPrompt)) {
+              final stripped = _stripGreetingAccidentalToolBlock(stitched);
+              if (stripped != null) {
+                await log(
+                  "mesh",
+                  "info",
+                  "Stripped accidental trailing tool JSON after greeting prose (continuation).",
+                );
+                if (myGenId != _streamGenerationId || _disposed) return;
+                stitched = stripped;
+              }
+            }
+
+            final stutterCheck = detectAndTrimStutterLoop(stitched);
+            if (stutterCheck.detected) {
+              await log(
+                "model",
+                "warning",
+                "Detected and trimmed continuation stutter loop at round #$_continuationCount.",
+                sendRemote: false,
+              );
+              if (myGenId != _streamGenerationId || _disposed) return;
+              stitched = stutterCheck.text;
+            }
+
+            final int prevNonWs =
+                _combinedResponse.replaceAll(RegExp(r'\s+'), '').length;
+            final int nextNonWs =
+                stitched.replaceAll(RegExp(r'\s+'), '').length;
+            final int netAddedNonWs = nextNonWs - prevNonWs;
+
+            // Update accumulator and displayed responseText consistently
+            _combinedResponse = stitched;
+            responseText = stitched;
+
             // Note: stats are only added to cumulative when RECURSING (see cutAgain branch).
             // On the commit path we leave them in response.x so the UI formula
             // cumulative + response.x is always correct without double-counting.
-            if (kDebugMode) print("[AUTO-CONTINUE DONE] reason=$contDoneReason");
-            await log("model", "info", "Continuation done. finishReason=$contDoneReason", sendRemote: false);
+            if (kDebugMode) print("[AUTO-CONTINUE DONE] reason=$contDoneReason netAddedNonWs=$netAddedNonWs");
+            await log(
+              "model",
+              "info",
+              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=${stutterCheck.detected}, totalChars=${responseText.length})",
+              sendRemote: false,
+            );
+            if (myGenId != _streamGenerationId || _disposed) return;
 
-            bool cutAgain = _shouldContinueOnDone(contDoneReason, responseText);
-            if (response.text.trim().isEmpty) {
+            bool cutAgain = _shouldContinueOnDone(
+              contDoneReason,
+              responseText,
+              lastRoundAddedNonWs: netAddedNonWs,
+            );
+            if (netAddedNonWs <= 0 || stutterCheck.detected) {
               cutAgain = false;
             }
 
@@ -1753,10 +4722,19 @@ class AIEngine with md.ChangeNotifier {
               // Snapshot this session's stats into cumulative before starting the next round
               cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
               cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
+              if (_isMissingFinishReason(contDoneReason) &&
+                  !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
+                _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(contDoneReason)) {
+                _stopCutoffContinuationCount++;
+              }
               _continuationCount++;
               await continueGenerating(isSynthesis: _isSynthesizing);
             } else {
-              final completedToolMap = M3xToolCallParser.extract(responseText);
+              final completedToolMap = _isSynthesizing
+                  ? (M3xToolCallParser.extract(responseText) ??
+                      _extractCtrlToolCall(responseText))
+                  : _extractToolCall(responseText, userPrompt: lastPrompt);
               if (completedToolMap != null) {
                 isContinuing = false;
                 _activeToolHandling = true;
@@ -1775,35 +4753,61 @@ class AIEngine with md.ChangeNotifier {
                 break;
               }
 
-              if (M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+              final bool badToolDraft =
+                  M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
+                      _looksLikeInvalidToolJson(responseText);
+              if (!_isSynthesizing &&
+                  badToolDraft &&
+                  !_toolFreeFallbackUsed &&
+                  !_lastToolFailed &&
+                  _lastToolResultPayload.isEmpty) {
+                await _triggerToolFreeFallbackAnswer(lastPrompt);
+                break;
+              }
+
+              if (badToolDraft ||
                   (_isSynthesizing &&
                       (_looksLikeUnformattedToolEcho(responseText) ||
                           _looksLikeHallucinatedNormalOnError(responseText)))) {
                 await log("mesh", "error", "Discarding incomplete or unformatted tool response after continuation: $responseText");
+                if (myGenId != _streamGenerationId || _disposed) return;
                 responseText = _buildIncompleteToolFallback();
               }
 
               // Commit — cumulative stays as-is; UI shows cumulative + response.x = total
-              isContinuing = false;
-              isLoading = false;
-              isGenerating = false;
+              final wasSynthesizing = _isSynthesizing;
+              _resetTurnLifecycleFlags();
               status = "Done";
 
-              if (_isSynthesizing) {
-                _isSynthesizing = false;
-                await chatData.appendMessage(user: "Gemini", message: responseText);
+              if (wasSynthesizing) {
+                final committedText = responseText;
+                final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+                final commitTime = streamingMessageTime ?? DateTime.now();
+                responseText = "";
+                _clearThoughtChunk();
+                streamingMessageTime = null;
+                streamingUserMessageTime = null;
                 prompt.clear();
                 lastPrompt = "";
                 _currentSynthesisPrompt = "";
+                await chatData.appendMessage(
+                  user: "Gemini",
+                  author: assistantAuthorLabel,
+                  message: committedText,
+                  time: commitTime,
+                  thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+                );
                 await log("mesh", "info", "Tool synthesis complete (via continuation)");
                 await chatData.saveChat(chatData.context, chatID: chatData.currentChat);
                 _checkAndTriggerTitle();
+                unawaited(_captureVisualMemoryIfNeeded());
                 try {
                   scrollChatlog(const Duration(milliseconds: 250));
                 } catch (_) {}
               } else {
                 await addToContext();
                 prompt.clear();
+                unawaited(_captureVisualMemoryIfNeeded());
 
                 final totalMs = cumulativeGenerationMs + (response.generationTimeMs?.toInt() ?? 0);
                 final totalTokens = cumulativeTokenCount + (response.tokenCount?.toInt() ?? 0);
@@ -1824,20 +4828,30 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.error:
             receivedTerminalEvent = true;
-            isContinuing = false;
-            isLoading = false;
-            isGenerating = false;
+            final wasSynthesizing = _isSynthesizing;
+            _resetTurnLifecycleFlags();
             isError = true;
             status = "Error during continuation";
-            if (_isSynthesizing) {
-              _isSynthesizing = false;
+            if (wasSynthesizing) {
               if (_combinedResponse.isNotEmpty &&
                   !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
-                responseText = _combinedResponse;
-                await chatData.appendMessage(user: "Gemini", message: responseText);
+                final committedText = _combinedResponse;
+                responseText = "";
+                final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+                final commitTime = streamingMessageTime ?? DateTime.now();
+                await chatData.appendMessage(
+                  user: "Gemini",
+                  author: assistantAuthorLabel,
+                  message: committedText,
+                  time: commitTime,
+                  thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+                );
                 prompt.clear();
                 lastPrompt = "";
               }
+              _clearThoughtChunk();
+              streamingMessageTime = null;
+              streamingUserMessageTime = null;
               await log("mesh", "error", "Error during tool synthesis continuation");
             } else if (_combinedResponse.isNotEmpty &&
                 !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
@@ -1859,6 +4873,9 @@ class AIEngine with md.ChangeNotifier {
                 isMultimodal: _isCurrentSessionMultimodal,
               );
             } else {
+              _clearThoughtChunk();
+              streamingMessageTime = null;
+              streamingUserMessageTime = null;
               responseText = event.error ?? "Continuation failed";
               await log("model", "error", responseText, sendRemote: false);
               await logger.logAiGeneration(
@@ -1877,20 +4894,30 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isContinuing = false;
-        isLoading = false;
-        isGenerating = false;
-        if (_isSynthesizing) {
-          _isSynthesizing = false;
+        final wasSynthesizing = _isSynthesizing;
+        _resetTurnLifecycleFlags();
+        if (wasSynthesizing) {
           if (_combinedResponse.isNotEmpty &&
               !M3xToolCallParser.looksLikeIncompleteToolCall(_combinedResponse)) {
-            responseText = _combinedResponse;
-            await chatData.appendMessage(user: "Gemini", message: responseText);
+            final committedText = _combinedResponse;
+            responseText = "";
+            final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+            final commitTime = streamingMessageTime ?? DateTime.now();
+            await chatData.appendMessage(
+              user: "Gemini",
+              author: assistantAuthorLabel,
+              message: committedText,
+              time: commitTime,
+              thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+            );
             prompt.clear();
             lastPrompt = "";
           }
+          _clearThoughtChunk();
+          streamingMessageTime = null;
+          streamingUserMessageTime = null;
           await log("mesh", "error", "Synthesis continuation error: $e");
           analyzeError("SynthesisContinuation", e);
         } else {
@@ -1915,6 +4942,9 @@ class AIEngine with md.ChangeNotifier {
               isMultimodal: _isCurrentSessionMultimodal,
             );
           } else {
+            _clearThoughtChunk();
+            streamingMessageTime = null;
+            streamingUserMessageTime = null;
             analyzeError("Continuation", e);
             await logger.logAiGeneration(
               success: false,
@@ -1930,23 +4960,8 @@ class AIEngine with md.ChangeNotifier {
         }
         genericRefresh();
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        if (!isError) {
-          isLoading = false;
-          isGenerating = false;
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
-
   }
 
 
@@ -1959,14 +4974,26 @@ class AIEngine with md.ChangeNotifier {
     isGenerating = false;
     _isSynthesizing = false;
     status = "Done";
-    responseText = message;
-    await chatData.appendMessage(user: "Gemini", message: message);
+    responseText = "";
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+    final commitTime = streamingMessageTime ?? DateTime.now();
+    _clearThoughtChunk();
+    streamingMessageTime = null;
+    streamingUserMessageTime = null;
     prompt.clear();
     lastPrompt = "";
     _currentSynthesisPrompt = "";
+    await chatData.appendMessage(
+      user: "Gemini",
+      author: assistantAuthorLabel,
+      message: message,
+      time: commitTime,
+      thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+    );
     await log("mesh", "info", logNote);
     await chatData.saveChat(chatData.context, chatID: chatData.currentChat);
     _checkAndTriggerTitle();
+    unawaited(_captureVisualMemoryIfNeeded());
     try {
       scrollChatlog(const Duration(milliseconds: 250));
     } catch (_) {}
@@ -2022,6 +5049,7 @@ class AIEngine with md.ChangeNotifier {
     String originalPrompt = "",
     bool isFollowUpTurn = false,
   }) async {
+    final int myGenId = _streamGenerationId;
     _toolTurnCount++;
     final call = M3xToolCall.fromJson(toolMap);
     _lastToolCall = call;
@@ -2033,27 +5061,47 @@ class AIEngine with md.ChangeNotifier {
         : (matchedTool?.packageName ?? matchedTool?.app ?? _selfPackageId);
     final canonEffectiveApp = canonicalExtensionId(effectiveApp);
 
-    _lastToolCallSignature = "${call.tool}:${jsonEncode(call.arguments)}";
+    final effectiveOriginalPrompt = originalPrompt.isNotEmpty
+        ? originalPrompt
+        : (lastPrompt.isNotEmpty ? lastPrompt : prompt.text.trim());
+    final internalMod = InternalToolsService.moduleForTool(call.tool);
+    final Map<String, dynamic> effectiveArgs = internalMod != null
+        ? InternalToolsService.normalizeToolArgs(
+            call.tool,
+            call.arguments,
+            fallbackQuestion: effectiveOriginalPrompt,
+          )
+        : call.arguments;
 
-    await log("mesh", "info", "Detected tool call (#$_toolTurnCount): '${call.tool}' on app: '$effectiveApp' with arguments: ${jsonEncode(call.arguments)}");
+    _lastToolCallSignature = "${call.tool}:${jsonEncode(effectiveArgs)}";
+
+    await log("mesh", "info", "Detected tool call (#$_toolTurnCount): '${call.tool}' on app: '$effectiveApp' with arguments: ${jsonEncode(effectiveArgs)}");
+    if (myGenId != _streamGenerationId || _disposed) return;
+
     status = "Executing ${call.tool}...";
     isLoading = true;
     isGenerating = true;
     _isSynthesizing = true;
     notifyListeners();
 
-    final toolResult = (canonEffectiveApp != _selfPackageId && !isExtensionEnabled(canonEffectiveApp))
+    final bool isPermitted = internalMod != null
+        ? isExtensionEnabled(internalMod.id)
+        : (canonEffectiveApp == _selfPackageId ||
+            isExtensionEnabled(canonEffectiveApp));
+    final toolResult = !isPermitted
         ? M3xToolResult.error(
             id: call.id,
             code: -32001,
-            message: "Extension '$effectiveApp' is disabled in PAIOS settings.",
+            message:
+                "Extension '${internalMod?.id ?? effectiveApp}' is disabled in PAIOS settings.",
           )
         : await meshClient.callTool(
             effectiveApp,
             call.tool,
-            call.arguments,
+            effectiveArgs,
             callId: call.id,
           );
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final String resultPayload;
     String? toolErrorMessage;
@@ -2097,24 +5145,35 @@ class AIEngine with md.ChangeNotifier {
       toolResultEntry = "[TOOL RESULT: $resultPayload]";
       await log("mesh", "info", "Tool '${call.tool}' succeeded: $resultPayload");
     }
+    if (myGenId != _streamGenerationId || _disposed) return;
     _lastToolResultPayload = resultPayload;
-
-    final effectiveOriginalPrompt = originalPrompt.isNotEmpty
-        ? originalPrompt
-        : (lastPrompt.isNotEmpty ? lastPrompt : prompt.text.trim());
 
     if (!isFollowUpTurn) {
       await chatData.appendMessage(
         user: "User",
         message: effectiveOriginalPrompt,
+        time: streamingUserMessageTime,
         imagePath: chatData.lastImagePath,
       );
+      if (myGenId != _streamGenerationId || _disposed) return;
+      streamingUserMessageTime = null;
       chatData.lastImagePath = null;
       lastPrompt = ""; // Clear lastPrompt / mark pending turn committed so it doesn't duplicate in the UI
     }
 
-    await chatData.appendMessage(user: "Gemini", message: responseText);
+    final trimmedThought = _sanitizeThoughtChunk(currentThoughtChunk).trim();
+    await chatData.appendMessage(
+      user: "Gemini",
+      author: assistantAuthorLabel,
+      message: responseText,
+      time: streamingMessageTime,
+      thoughtProcess: trimmedThought.isNotEmpty ? trimmedThought : null,
+    );
+    if (myGenId != _streamGenerationId || _disposed) return;
+    _clearThoughtChunk();
+    streamingMessageTime = null;
     await chatData.appendMessage(user: "System", message: toolResultEntry);
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     // Trigger second-stage continuation/synthesis so Gemini Nano explains the result in natural language.
     // On infrastructure errors or exhausted parameter retries, disable tools so the model reports the failure cleanly.
@@ -2147,16 +5206,23 @@ class AIEngine with md.ChangeNotifier {
     isContinuing = false;
     _isSynthesizing = true;
     responseText = "";
+    _clearThoughtChunk();
     _lastFinishReason = "";
     _continuationCount = 0;
+    _nullReasonContinuationCount = 0;
+    _stopCutoffContinuationCount = 0;
     _combinedResponse = "";
+    streamingMessageTime = DateTime.now();
     notifyListeners();
 
-    await _aiSubscription?.cancel();
+    final prevSub = _aiSubscription;
+    _aiSubscription = null;
+    await prevSub?.cancel();
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     // Re-initialize engine to ensure context includes the tool result (and strip tools if forcing final prose)
-    await initEngine(includeTools: !forceFinalNoTools);
-    if (myGenId != _streamGenerationId) return;
+    await initEngine(includeTools: !forceFinalNoTools, hasAttachedImage: false);
+    if (myGenId != _streamGenerationId || _disposed) return;
 
     final effectivePrompt = userPrompt.isNotEmpty
         ? userPrompt
@@ -2169,6 +5235,20 @@ class AIEngine with md.ChangeNotifier {
       langInstruction = "Respond in the same language as \"$effectivePrompt\".\n";
     }
 
+    bool isNotFoundResult = false;
+    if (toolErrorMessage == null && resultPayload.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(resultPayload);
+        if (decoded is Map && decoded['found'] == false) {
+          isNotFoundResult = true;
+        }
+      } catch (_) {}
+    }
+
+    final String readableToolData = toolErrorMessage == null
+        ? InternalToolsService.formatResultForSynthesis(call.tool, resultPayload)
+        : resultPayload;
+
     if (toolErrorMessage != null && !isRecoverableError) {
       _currentSynthesisPrompt =
           "User question: \"$effectivePrompt\"\n\n"
@@ -2179,23 +5259,30 @@ class AIEngine with md.ChangeNotifier {
     } else if (toolErrorMessage != null && isRecoverableError) {
       _currentSynthesisPrompt =
           "User question: \"$effectivePrompt\"\n\n"
-          "Tool output from ${call.tool}: $resultPayload\n\n"
+          "Tool output from ${call.tool}: $readableToolData\n\n"
           "$langInstruction"
           "${_buildRecoverableErrorHint(call.tool, toolErrorMessage)}";
+    } else if (isNotFoundResult) {
+      _currentSynthesisPrompt =
+          "User question: \"$effectivePrompt\"\n\n"
+          "Lookup note from ${call.tool}: $readableToolData\n\n"
+          "$langInstruction"
+          "The online lookup returned no direct result. Answer the user's question from your own knowledge if possible, or briefly say you couldn't find it."
+          "${forceFinalNoTools ? ' Do not output JSON.' : ' Call a different enabled tool only if clearly needed; never repeat ${call.tool} with the same arguments.'}";
     } else if (forceFinalNoTools) {
       _currentSynthesisPrompt =
           "User question: \"$effectivePrompt\"\n\n"
           "Live data from ${call.tool}:\n"
-          "$resultPayload\n\n"
+          "$readableToolData\n\n"
           "$langInstruction"
-          "Summarize these results clearly in natural, conversational sentences to answer the user's question. Reply in plain prose only.";
+          "Summarize clearly in natural, conversational Markdown (never repeat raw JSON field names like 'found', 'title', 'description', 'extract', or 'url'). Include source links nicely as Markdown links if helpful.";
     } else {
       _currentSynthesisPrompt =
           "User question: \"$effectivePrompt\"\n\n"
           "Live data from ${call.tool}:\n"
-          "$resultPayload\n\n"
+          "$readableToolData\n\n"
           "$langInstruction"
-          "Answer the user's question directly in natural, conversational sentences using the live data above. "
+          "Summarize clearly in natural, conversational Markdown (never repeat raw JSON field names like 'found', 'title', 'description', 'extract', or 'url'). Include source links nicely as Markdown links if helpful. "
           "Call a different tool only if another lookup with different arguments is still needed; never repeat ${call.tool} with the same arguments.";
     }
 
@@ -2205,13 +5292,16 @@ class AIEngine with md.ChangeNotifier {
 
     final stream = gemini.generateTextEvents(
       prompt: _currentSynthesisPrompt,
-      config: GenerationConfig(temperature: runTemperature),
+      config: GenerationConfig(
+        temperature: runTemperature,
+        enableThinking: effectiveEnableThinking,
+      ),
       stream: true,
     );
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         switch (event.status) {
           case AiEventStatus.loading:
             isLoading = true;
@@ -2221,14 +5311,16 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.streaming:
             isLoading = true;
+            streamingMessageTime = DateTime.now();
             status = "Streaming response...";
+            _appendThoughtChunk(event.thought);
             final String? fr = event.response?.finishReason;
             if (fr != null && fr != "null" && fr.isNotEmpty) {
               _lastFinishReason = fr;
             }
             if (event.response != null) {
               response = event.response!;
-              responseText = event.response!.text;
+              responseText = stripLeadingEllipsis(event.response!.text);
               _combinedResponse = responseText;
             }
             try {
@@ -2238,7 +5330,23 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
-            final nextToolMap = M3xToolCallParser.extract(responseText);
+            _appendThoughtChunk(event.thought);
+            var nextToolMap =
+                M3xToolCallParser.extract(responseText) ??
+                    _extractCtrlToolCall(responseText);
+            if (nextToolMap == null && responseText.trim().isEmpty) {
+              final rawThought = _rawThoughtChunk.trim().isNotEmpty
+                  ? _rawThoughtChunk
+                  : currentThoughtChunk;
+              if (rawThought.trim().isNotEmpty) {
+                nextToolMap = _extractCtrlToolCall(rawThought) ??
+                    M3xToolCallParser.extract(rawThought);
+                if (nextToolMap != null) {
+                  currentThoughtChunk = _sanitizeThoughtChunk(rawThought);
+                  responseText = jsonEncode(nextToolMap);
+                }
+              }
+            }
             if (nextToolMap != null) {
               _activeToolHandling = true;
               try {
@@ -2252,15 +5360,34 @@ class AIEngine with md.ChangeNotifier {
             final String? doneReason = _lastFinishReason.isNotEmpty
                 ? _lastFinishReason
                 : event.reason;
+            await log(
+              "model",
+              "info",
+              "Tool synthesis done. finishReason=$doneReason (nanoV4=$isNanoV4Active, chars=${responseText.length})",
+              sendRemote: false,
+            );
+            if (myGenId != _streamGenerationId || _disposed) return;
             final bool shouldContinue = _shouldContinueOnDone(doneReason, responseText);
 
             if (shouldContinue) {
               cumulativeGenerationMs += response.generationTimeMs?.toInt() ?? 0;
               cumulativeTokenCount += response.tokenCount?.toInt() ?? 0;
+              if (_isMissingFinishReason(doneReason) &&
+                  !M3xToolCallParser.looksLikeIncompleteToolCall(responseText)) {
+                _nullReasonContinuationCount++;
+              } else if (_isStopFinishReason(doneReason)) {
+                _stopCutoffContinuationCount++;
+              }
               _continuationCount++;
               _combinedResponse = responseText;
               isContinuing = true;
-              await log("model", "info", "Tool synthesis interrupted (reason=$doneReason), triggering continuation #$_continuationCount", sendRemote: false);
+              await log(
+                "model",
+                "info",
+                "Tool synthesis interrupted (reason=$doneReason, nanoV4=$isNanoV4Active), triggering continuation #$_continuationCount",
+                sendRemote: false,
+              );
+              if (myGenId != _streamGenerationId || _disposed) return;
               if (kDebugMode) print("[AUTO-CONTINUE #$_continuationCount] tool synthesis reason=$doneReason");
               await continueGenerating(isSynthesis: true);
             } else if (!forceFinalNoTools &&
@@ -2270,6 +5397,7 @@ class AIEngine with md.ChangeNotifier {
                 "warning",
                 "Synthesis returned empty or echoed tool wrapper; retrying with tool-free prose synthesis.",
               );
+              if (myGenId != _streamGenerationId || _disposed) return;
               await _triggerToolSynthesis(
                 _lastToolCall ?? call,
                 _lastToolResultPayload,
@@ -2285,6 +5413,7 @@ class AIEngine with md.ChangeNotifier {
                       _looksLikeHallucinatedNormalOnError(responseText);
               final finalMessage =
                   badOutput ? _buildIncompleteToolFallback() : responseText;
+              _forcedFinalSynthesis = false;
               await _commitSynthesisMessage(
                 finalMessage,
                 logNote: badOutput
@@ -2296,12 +5425,12 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.error:
             receivedTerminalEvent = true;
-            isLoading = false;
-            isContinuing = false;
-            isGenerating = false;
-            _isSynthesizing = false;
+            _resetTurnLifecycleFlags();
             isError = true;
             status = "Error";
+            _clearThoughtChunk();
+            streamingMessageTime = null;
+            streamingUserMessageTime = null;
             responseText = event.error ?? "Error during tool synthesis";
             await log("mesh", "error", responseText);
             break;
@@ -2309,41 +5438,111 @@ class AIEngine with md.ChangeNotifier {
         genericRefresh();
       },
       onError: (e) async {
-        if (myGenId != _streamGenerationId) return;
+        if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        isLoading = false;
-        isContinuing = false;
-        isGenerating = false;
-        _isSynthesizing = false;
+        _resetTurnLifecycleFlags();
+        _clearThoughtChunk();
+        streamingMessageTime = null;
+        streamingUserMessageTime = null;
         await log("mesh", "error", "Synthesis error: $e");
         analyzeError("Synthesis", e);
         genericRefresh();
       },
-      onDone: () {
-        if (myGenId != _streamGenerationId ||
-            receivedTerminalEvent ||
-            _activeToolHandling ||
-            isContinuing ||
-            _isSynthesizing) {
-          return;
-        }
-        if (!isError) {
-          isLoading = false;
-          isGenerating = false;
-          status = "Stream complete";
-        }
-        genericRefresh();
-      },
+      onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
+  }
+
+  void _clearTurnVisualMemory() {
+    _turnImageBytesForMemory = null;
+    _turnImagePathForMemory = null;
+    _turnChatIdForMemory = null;
+  }
+
+  Future<void> _captureVisualMemoryIfNeeded() async {
+    final Uint8List? bytes = _turnImageBytesForMemory;
+    final String? imagePath = _turnImagePathForMemory;
+    final String? chatId =
+        (_turnChatIdForMemory != null &&
+                _turnChatIdForMemory!.isNotEmpty &&
+                _turnChatIdForMemory != "0")
+            ? _turnChatIdForMemory
+            : (chatData.currentChat.isNotEmpty && chatData.currentChat != "0"
+                ? chatData.currentChat
+                : null);
+    _clearTurnVisualMemory();
+
+    if (bytes == null ||
+        bytes.isEmpty ||
+        imagePath == null ||
+        imagePath.isEmpty ||
+        chatId == null ||
+        chatId.isEmpty) {
+      return;
+    }
+    if (isGenerating ||
+        isLoading ||
+        _isSynthesizing ||
+        isContinuing ||
+        _isCapturingVisualMemory) {
+      return;
+    }
+
+    _isCapturingVisualMemory = true;
+    try {
+      await Future.delayed(const Duration(milliseconds: 50));
+      if (isGenerating || isLoading || _isSynthesizing || isContinuing) {
+        return;
+      }
+
+      final note = (await gemini.generateInternalInference(
+        imageBytes: bytes,
+        prompt: "Summarize this image for chat memory.",
+        instructions:
+            "Concisely describe the key subjects/scene and transcribe any important readable text verbatim in 2-4 sentences.",
+        maxTokens: 160,
+        temperature: 0.2,
+      ))
+          .trim();
+
+      if (note.isEmpty || isGenerating || isLoading) {
+        return;
+      }
+
+      final updated = await chatData.updateMessageImageDescription(
+        chatId,
+        note,
+        imagePath: imagePath,
+      );
+      if (updated) {
+        await log(
+          "vision",
+          "info",
+          "Cached post-turn visual memory (${note.length} chars) for $imagePath",
+          sendRemote: false,
+        );
+        notifyListeners();
+      }
+    } catch (e) {
+      await log(
+        "vision",
+        "warning",
+        "Post-turn visual memory skipped: $e",
+        sendRemote: false,
+      );
+    } finally {
+      _isCapturingVisualMemory = false;
+    }
   }
 
   /// Clean up resources
   @override
   void dispose() {
+    _disposed = true;
     prompt.dispose();
     instructions.dispose();
+    _statusSubscription?.cancel();
     _aiSubscription?.cancel(); // Cancel stream
-    gemini.dispose(); // Tell native code to clean up
+    unawaited(gemini.dispose()); // Tell native code to clean up
     super.dispose();
   }
 }

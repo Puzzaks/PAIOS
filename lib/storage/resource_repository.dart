@@ -15,10 +15,11 @@ class ResourceRepository {
   ResourceRepository({required this.notifyEngine, this.logEvent});
 
   Future<void> initFromHive(String url) async {
-    final box = Hive.box('paios_storage');
+    final Box<dynamic>? box =
+        Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
 
     // Step 1: Load Bundled fallback first, or Cached Hive override if available
-    final String? cached = box.get("cached_resources_json");
+    final String? cached = box?.get("cached_resources_json");
     if (cached != null && cached.isNotEmpty) {
       try {
         resources = List<Map<String, dynamic>>.from(
@@ -38,7 +39,7 @@ class ResourceRepository {
     }
 
     // Step 2: Non-blocking background network refresh and cache update
-    if (!kDebugMode && url.isNotEmpty) {
+    if (!kDebugMode && url.isNotEmpty && box != null) {
       unawaited(_refreshResourcesInBackground(url, box));
     }
   }
@@ -59,12 +60,13 @@ class ResourceRepository {
           .get(Uri.parse("$url/assets/additional_resources.json"))
           .timeout(_httpTimeout);
       if (response.statusCode == 200) {
+        final String body = utf8.decode(response.bodyBytes);
         final fetched = List<Map<String, dynamic>>.from(
-          (jsonDecode(response.body) as List)
+          (jsonDecode(body) as List)
               .map((e) => Map<String, dynamic>.from(e)),
         );
         resources = fetched;
-        await box.put("cached_resources_json", response.body);
+        await box.put("cached_resources_json", body);
         notifyEngine();
       }
     } catch (e) {

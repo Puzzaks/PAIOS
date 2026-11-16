@@ -10,6 +10,7 @@ import 'package:m3x_ui/m3x_ui.dart' show ChoiceCard, MotionBlurContainer;
 import '../engine.dart';
 import '../storage/intro_slide_repository.dart';
 import 'github_explorer_page.dart';
+import 'settings.dart';
 import 'settings/logs.dart';
 import 'support/elements.dart';
 
@@ -160,6 +161,9 @@ class IntroPageState extends State<IntroPage> {
 
   Future<void> _finish() async {
     final engine = Provider.of<AIEngine>(context, listen: false);
+    if (engine.hasAnySupportedModel && !engine.hasAnyAvailableModel) {
+      return;
+    }
     await engine.endFirstLaunch();
   }
 
@@ -252,16 +256,42 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
   }
 
   bool _isAiCoreSupported(AIEngine engine) {
-    final status = engine.modelInfo["status"]?.toString();
-    if (status == "Unavailable") return false;
-    if (engine.modelDownloadLog.isNotEmpty) {
-      final last = engine.modelDownloadLog.last;
-      if (last["status"] == "Error" &&
-          (last["info"] == "AICore" || last["value"] == "Unavailable")) {
-        return false;
-      }
+    return engine.hasAnySupportedModel;
+  }
+
+  String _dictTemplateOrFallback(
+    AIEngine engine,
+    String key,
+    String fallback,
+  ) {
+    final val = engine.dict.value(key);
+    if (val.isEmpty ||
+        val == 'Loading...' ||
+        val == key ||
+        val.startsWith('!!!')) {
+      return fallback;
     }
-    return true;
+    return val;
+  }
+
+  PaiosVariantDownloadState? _activeOnboardingDownload(AIEngine engine) {
+    PaiosVariantDownloadState? fallback;
+    for (final state in engine.variantDownloads.values) {
+      if (!state.isDownloading) continue;
+      if (state.releaseStage == 'stable') return state;
+      fallback ??= state;
+    }
+    return fallback;
+  }
+
+  PaiosModelVariant? _defaultStableVariant(AIEngine engine) {
+    PaiosModelVariant? fallback;
+    for (final v in engine.modelVariants) {
+      if (v.isUnavailable) continue;
+      if (v.releaseStage == 'stable') return v;
+      fallback ??= v;
+    }
+    return fallback;
   }
 
   IconData _iconForPrompt(String id) {
@@ -298,6 +328,8 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
 
       final totalSlides = slides.length;
       final isLastSlide = _currentPage >= totalSlides - 1;
+      final bool requiresModelDownload =
+          isSupported && !engine.hasAnyAvailableModel;
 
       return Scaffold(
         body: SafeArea(
@@ -339,34 +371,86 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                 ),
               ),
 
+              if (requiresModelDownload && (isLastSlide || _currentPage == 3))
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: scheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.download_for_offline_rounded,
+                          size: 18,
+                          color: scheme.onSecondaryContainer,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _dictTemplateOrFallback(
+                              engine,
+                              'onboarding_download_required',
+                              'Download the default Gemini Nano model to continue.',
+                            ),
+                            style: textTheme.bodySmall?.copyWith(
+                              color: scheme.onSecondaryContainer,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
               // Bottom action bar
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 4, 24, 20),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    !isLastSlide
-                        ? TextButton(
-                            onPressed: () {
-                              _pageController.animateToPage(
-                                totalSlides - 1,
-                                duration: const Duration(milliseconds: 400),
-                                curve: Curves.easeInOutCubic,
-                              );
-                            },
-                            child: Text(engine.dict.value("intro_skip")),
-                          )
-                        : const SizedBox(width: 72),
-                    !isLastSlide
-                        ? FilledButton(
-                            onPressed: () => _nextPage(totalSlides),
-                            child: Text(engine.dict.value("intro_next")),
-                          )
-                        : FilledButton.icon(
-                            onPressed: _finish,
-                            icon: const Icon(Icons.check_rounded),
-                            label: Text(engine.dict.value("intro_get_started")),
-                          ),
+                    Flexible(
+                      child: !isLastSlide && !requiresModelDownload
+                          ? TextButton(
+                              onPressed: () {
+                                _pageController.animateToPage(
+                                  totalSlides - 1,
+                                  duration: const Duration(milliseconds: 400),
+                                  curve: Curves.easeInOutCubic,
+                                );
+                              },
+                              child: Text(
+                                engine.dict.value("intro_skip"),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            )
+                          : const SizedBox(width: 72),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: !isLastSlide
+                          ? FilledButton(
+                              onPressed: () => _nextPage(totalSlides),
+                              child: Text(
+                                engine.dict.value("intro_next"),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            )
+                          : FilledButton.icon(
+                              onPressed: requiresModelDownload ? null : _finish,
+                              icon: const Icon(Icons.check_rounded),
+                              label: Text(
+                                engine.dict.value("intro_get_started"),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                    ),
                   ],
                 ),
               ),
@@ -386,6 +470,63 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
     ColorScheme scheme,
     TextTheme textTheme,
   ) {
+    final bool isModelReady = engine.hasAnyAvailableModel ||
+        engine.isAvailable ||
+        (engine.modelDownloadLog.isNotEmpty &&
+            engine.modelDownloadLog.last["status"] == "Available");
+    final PaiosVariantDownloadState? activeDownload =
+        isModelReady ? null : _activeOnboardingDownload(engine);
+    final PaiosModelVariant? stableVariant = _defaultStableVariant(engine);
+    final bool isDownloadable = !isModelReady &&
+        activeDownload == null &&
+        stableVariant != null &&
+        stableVariant.isDownloadable;
+    final bool isChecking = !isModelReady &&
+        activeDownload == null &&
+        !isDownloadable &&
+        engine.modelInfo.isEmpty &&
+        engine.modelDownloadLog.isEmpty;
+
+    final String slideA4Title = isModelReady
+        ? _dictTemplateOrFallback(
+            engine,
+            'intro_gemini_nano_ready_title',
+            'Gemini Nano Ready',
+          )
+        : isDownloadable
+            ? _dictTemplateOrFallback(
+                engine,
+                'intro_gemini_nano_downloadable_title',
+                'Download Gemini Nano',
+              )
+            : isChecking
+                ? _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_title',
+                    'Checking Model Status',
+                  )
+                : engine.dict.value("intro_gemini_nano_title");
+
+    final String slideA4Desc = isModelReady
+        ? _dictTemplateOrFallback(
+            engine,
+            'intro_gemini_nano_ready_desc',
+            'On-device AI weights are already installed and ready to use.',
+          )
+        : isDownloadable
+            ? _dictTemplateOrFallback(
+                engine,
+                'intro_gemini_nano_downloadable_desc',
+                'Gemini Nano is supported and ready to download onto your device.',
+              )
+            : isChecking
+                ? _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_desc',
+                    'Inspecting on-device AICore model availability...',
+                  )
+                : engine.dict.value("intro_gemini_nano_desc");
+
     return [
       // Slide A-1: 100% On-Device Intelligence
       _buildSlideContainer(
@@ -535,7 +676,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
         ),
       ),
 
-      // Slide A-4: Preparing Gemini Nano (Exact custom card & Relaunch Quirk)
+      // Slide A-4: Preparing / Ready / Downloadable / Checking Gemini Nano
       _buildSlideContainer(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -544,13 +685,13 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             Icon(Icons.psychology_rounded, size: 72, color: scheme.primary),
             const SizedBox(height: 24),
             Text(
-              engine.dict.value("intro_gemini_nano_title"),
+              slideA4Title,
               style: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Text(
-              engine.dict.value("intro_gemini_nano_desc"),
+              slideA4Desc,
               style: textTheme.bodyLarge?.copyWith(
                 color: scheme.onSurfaceVariant,
                 height: 1.4,
@@ -563,8 +704,82 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               context: context,
             ),
             cards.cardGroup([
-              // Active download with byte progress and speed
-              if (engine.modelDownloadLog.isNotEmpty &&
+              // Ready / Already downloaded state (mutually exclusive with download/checking cards)
+              if (isModelReady)
+                CardContents.tapIcon(
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_ready_title',
+                    'Gemini Nano Ready',
+                  ),
+                  subtitle: engine.modelInfo["version"] == null
+                      ? _dictTemplateOrFallback(
+                          engine,
+                          'intro_gemini_nano_ready_status',
+                          'Model is available',
+                        )
+                      : engine.dict
+                          .value("model_available")
+                          .replaceAll("%s", engine.modelInfo["version"].toString()),
+                  icon: Icons.check_circle_rounded,
+                  colorBG: scheme.primaryContainer,
+                  color: scheme.primary,
+                  action: () {},
+                )
+              // Active variant download with live DownloadStarted.bytesToDownload / speed / remaining
+              else if (activeDownload != null) ...[
+                if (activeDownload.totalBytes > 0)
+                  CardContents.progress(
+                    title: engine.dict.value("downloading_model"),
+                    subtitle:
+                        "${_convertSize(activeDownload.bytesDownloaded, false)} / ${_convertSize(activeDownload.totalBytes, false)} (${(activeDownload.progress * 100).toStringAsFixed(1)}%)",
+                    subsubtitle: activeDownload.bytesPerSec > 0
+                        ? _dictTemplateOrFallback(
+                            engine,
+                            'model_download_speed_remaining',
+                            '{speed} • {remaining} remaining',
+                          )
+                            .replaceAll(
+                              '{speed}',
+                              _convertSize(activeDownload.bytesPerSec.round(), true),
+                            )
+                            .replaceAll(
+                              '{remaining}',
+                              _convertSize(activeDownload.remainingBytes, false),
+                            )
+                        : _dictTemplateOrFallback(
+                            engine,
+                            'model_download_remaining',
+                            '{remaining} remaining',
+                          ).replaceAll(
+                            '{remaining}',
+                            _convertSize(activeDownload.remainingBytes, false),
+                          ),
+                    progress: activeDownload.progress,
+                  )
+                else
+                  CardContents.progress(
+                    title: engine.dict.value("downloading_model"),
+                    subtitle: engine.dict.value("aicore_background_download"),
+                    subsubtitle: "",
+                    progress: null,
+                  ),
+              ]
+              // Error state
+              else if (engine.modelDownloadLog.isNotEmpty &&
+                  engine.modelDownloadLog.last["status"] == "Error")
+                CardContents.doubleTap(
+                  title: "Model ${engine.dict.value("unavailable")}",
+                  subtitle: engine.dict.value("whoops"),
+                  action: () async => engine.gemini.openAICorePlayStore(),
+                  secondAction: () {
+                    engine.modelDownloadLog.clear();
+                    engine.checkEngine();
+                  },
+                  icon: Icons.refresh_rounded,
+                )
+              // Legacy log-based download state
+              else if (engine.modelDownloadLog.isNotEmpty &&
                   engine.modelDownloadLog.last["status"] == "Download" &&
                   engine.modelDownloadLog.last["info"] != "Error") ...[
                 if ((int.tryParse(engine.modelDownloadLog.last["value"].toString()) ?? 0) > 0)
@@ -585,41 +800,44 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                     subsubtitle: "",
                     progress: 0.0,
                   ),
-              ],
-
-              // Success / Ready state
-              if (engine.isAvailable ||
-                  (engine.modelDownloadLog.isNotEmpty &&
-                      engine.modelDownloadLog.last["status"] == "Available"))
+              ]
+              // Supported device with 0 downloaded models and no active download yet -> trigger stable download
+              else if (isDownloadable)
                 CardContents.tapIcon(
-                  title: "Gemini Nano Ready",
-                  subtitle: engine.modelInfo["version"] == null
-                      ? engine.dict.value("available")
-                      : engine.dict
-                          .value("model_available")
-                          .replaceAll("%s", engine.modelInfo["version"].toString()),
-                  icon: Icons.check_circle_rounded,
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'onboarding_download_model',
+                    'Download default model',
+                  ),
+                  subtitle: stableVariant.internalModelName,
+                  icon: Icons.download_rounded,
                   colorBG: scheme.primaryContainer,
-                  color: scheme.primary,
-                  action: () {},
-                ),
-
-              // Error state
-              if (engine.modelDownloadLog.isNotEmpty &&
-                  engine.modelDownloadLog.last["status"] == "Error")
-                CardContents.doubleTap(
-                  title: "Model ${engine.dict.value("unavailable")}",
-                  subtitle: engine.dict.value("whoops"),
-                  action: () async => engine.gemini.openAICorePlayStore(),
-                  secondAction: () {
-                    engine.modelDownloadLog.clear();
-                    engine.checkEngine();
+                  color: scheme.onPrimaryContainer,
+                  action: () {
+                    HapticFeedback.lightImpact();
+                    engine.downloadVariant(
+                      stableVariant.releaseStage,
+                      stableVariant.preference,
+                    );
                   },
-                  icon: Icons.refresh_rounded,
-                ),
-
-              // The Relaunch Quirk: empty log or waiting for broadcast (only when model is not already available)
-              if (engine.modelDownloadLog.isEmpty && !engine.isAvailable)
+                )
+              // Probing / inspecting initial AICore status
+              else if (isChecking)
+                CardContents.progress(
+                  title: _dictTemplateOrFallback(
+                    engine,
+                    'checking_model_status',
+                    'Checking model status...',
+                  ),
+                  subtitle: _dictTemplateOrFallback(
+                    engine,
+                    'intro_gemini_nano_checking_desc',
+                    'Inspecting on-device AICore model availability...',
+                  ),
+                  subsubtitle: "",
+                  progress: null,
+                )
+              else if (engine.modelDownloadLog.isEmpty)
                 CardContents.progress(
                   title: engine.dict.value("downloading_model"),
                   subtitle: engine.dict.value("aicore_background_download"),
@@ -645,7 +863,8 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               ),
             ]),
             const SizedBox(height: 12),
-            if (engine.modelDownloadLog.isNotEmpty &&
+            if (!isModelReady &&
+                engine.modelDownloadLog.isNotEmpty &&
                 engine.modelDownloadLog.last["info"] == "downloading_model")
               text.infoShort(
                 title: engine.dict.value("welcome_gtfo"),
@@ -875,7 +1094,11 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               ),
               CardContents.static(
                 title: engine.dict.value("aicore_status"),
-                subtitle: engine.modelInfo["aicoreInstalled"] == "true"
+                subtitle: (engine.modelInfo["aicoreInstalled"] == true ||
+                        engine.modelInfo["aicoreInstalled"]
+                                ?.toString()
+                                .toLowerCase() ==
+                            "true")
                     ? "Installed (Model Inactive)"
                     : engine.dict.value("aicore_unavailable"),
               ),
@@ -911,13 +1134,22 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               ),
             ),
             const SizedBox(height: 8),
-            cards.cardGroup([
-              for (final device in filteredDevices.take(4))
-                CardContents.static(
-                  title: device,
-                  subtitle: "Official AICore / Gemini Nano Tier",
-                ),
-            ]),
+            cards.cardGroup(
+              filteredDevices.isEmpty
+                  ? [
+                      CardContents.static(
+                        title: engine.dict.value("no_matching_devices"),
+                        subtitle: _deviceSearchQuery.trim(),
+                      ),
+                    ]
+                  : [
+                      for (final device in filteredDevices.take(4))
+                        CardContents.static(
+                          title: device,
+                          subtitle: "Official AICore / Gemini Nano Tier",
+                        ),
+                    ],
+            ),
           ],
         ),
       ),
@@ -1036,6 +1268,34 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                   engine.modelDownloadLog.clear();
                   engine.checkEngine();
                 },
+              ),
+
+              // 6. Open Settings
+              CardContents.tapIcon(
+                title: engine.dict.value("btn_open_settings"),
+                subtitle: engine.dict.value("settings_app"),
+                icon: Icons.settings_rounded,
+                colorBG: scheme.secondaryContainer,
+                color: scheme.onSecondaryContainer,
+                action: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const SettingsPage(),
+                      settings: const RouteSettings(name: 'SettingsPage'),
+                    ),
+                  );
+                },
+              ),
+
+              // 7. Continue to App (Explore Settings, Docs, History)
+              CardContents.tapIcon(
+                title: engine.dict.value("btn_continue_to_app"),
+                subtitle: engine.dict.value("btn_continue_to_app_desc"),
+                icon: Icons.arrow_forward_rounded,
+                colorBG: scheme.primaryContainer,
+                color: scheme.onPrimaryContainer,
+                action: _finish,
               ),
             ]),
           ],
