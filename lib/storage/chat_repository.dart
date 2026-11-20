@@ -272,6 +272,7 @@ class ChatRepository {
           });
         }
         chats[chatID]!["history"] = jsonEncode(conversation).toString();
+        chats[chatID]!["messageCount"] = conversation.length;
         chats[chatID]!["updated"] = DateTime.now().millisecondsSinceEpoch.toString();
         chats[chatID]!["tokens"] = contextSize.toString();
         await logEvent("application", "info", "Saving chat. Length: ${contextSize.toString()}");
@@ -294,6 +295,7 @@ class ChatRepository {
         chats[chatID] = {
           "name": newTitle,
           "tokens": contextSize.toString(),
+          "messageCount": conversation.length,
           "pinned": false,
           "isArchived": false,
           "promptId": getDefaultPromptId(),
@@ -307,6 +309,19 @@ class ChatRepository {
     await box.put("chats", jsonEncode(chats));
     notifyEngine();
   }
+
+  /// Saves an archived chat entry (convenience wrapper over [importAssistantChat]).
+  Future<String> saveArchivedChat(
+    List conversation, {
+    String? title,
+    String? defaultAssistantAuthor,
+  }) =>
+      importAssistantChat(
+        conversation,
+        isArchived: true,
+        title: title,
+        defaultAssistantAuthor: defaultAssistantAuthor,
+      );
 
   Future<void> archiveChat(String chatID) async {
     if (!chats.containsKey(chatID)) return;
@@ -383,6 +398,7 @@ class ChatRepository {
     chats[chatID] = {
       "name": chatTitle,
       "tokens": tokensCount.toString(),
+      "messageCount": normalizedConversation.length,
       "pinned": false,
       "isArchived": isArchived,
       "promptId": getDefaultPromptId(),
@@ -499,5 +515,77 @@ class ChatRepository {
     await box.put("context", jsonEncode(context));
     await box.put("contextSize", contextSize);
     notifyEngine();
+  }
+
+  /// Removes an uncommitted image file [imagePath] (and its `chat_<chatId>`
+  /// directory when empty and not present in saved [chats]) if generation is
+  /// cancelled or fails before committing.
+  Future<void> purgeOrphanedTurnImage(
+    String? imagePath, {
+    String? chatId,
+  }) async {
+    try {
+      final path = imagePath?.trim() ?? '';
+      if (path.isNotEmpty) {
+        final referencedInContext = context.any(
+          (m) => m is Map && m["imagePath"]?.toString() == path,
+        );
+        if (!referencedInContext) {
+          final f = File(path);
+          if (await f.exists()) {
+            await f.delete();
+          }
+        }
+      }
+      final effectiveChatId = chatId?.trim() ?? '';
+      if (effectiveChatId.isNotEmpty &&
+          effectiveChatId != "0" &&
+          effectiveChatId != "testing" &&
+          !chats.containsKey(effectiveChatId)) {
+        final baseDir = _resolveBaseStorageDir();
+        final chatImgDir = Directory(
+          '$baseDir${Platform.pathSeparator}chat_images${Platform.pathSeparator}chat_$effectiveChatId',
+        );
+        if (await chatImgDir.exists()) {
+          final entries = await chatImgDir.list().toList();
+          if (entries.isEmpty) {
+            await chatImgDir.delete();
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// Scans `<appDataDir>/chat_images/chat_<id>` post-boot and removes folders
+  /// whose chat ID no longer exists in saved [chats] or active [currentChat].
+  Future<void> cleanupOrphanedChatImages() async {
+    try {
+      final baseDir = _resolveBaseStorageDir();
+      final imagesRoot = Directory(
+        '$baseDir${Platform.pathSeparator}chat_images',
+      );
+      if (!await imagesRoot.exists()) return;
+
+      final Set<String> activeIds = <String>{
+        for (final key in chats.keys) key.toString(),
+        if (currentChat.isNotEmpty &&
+            currentChat != "0" &&
+            currentChat != "testing")
+          currentChat,
+      };
+
+      await for (final entity in imagesRoot.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final folderName = entity.uri.pathSegments
+            .where((s) => s.isNotEmpty)
+            .lastOrNull;
+        if (folderName == null || !folderName.startsWith('chat_')) continue;
+        final chatId = folderName.substring('chat_'.length);
+        if (chatId.isEmpty || activeIds.contains(chatId)) continue;
+        try {
+          await entity.delete(recursive: true);
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 }

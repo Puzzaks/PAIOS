@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geminilocal/engine.dart';
+import 'package:geminilocal/parts/translator.dart';
 import 'package:geminilocal/storage/chat_repository.dart';
 import 'package:geminilocal/storage/file_access_service.dart';
 import 'package:geminilocal/storage/migration.dart';
+import 'package:geminilocal/storage/prompt_repository.dart';
 import 'package:geminilocal/storage/resource_repository.dart';
 import 'package:hive/hive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -109,6 +111,145 @@ void main() {
     );
 
     test(
+      'ResourceRepository.initFromHive loads and sanitizes bundled additional_resources.json when Hive cache is absent',
+      () async {
+        final repo = ResourceRepository(notifyEngine: () {});
+        await repo.initFromHive('');
+
+        expect(repo.resources, isNotEmpty);
+        final serialized = jsonEncode(repo.resources);
+        expect(serialized, isNot(contains('id=page.puzzak.geminilocal')));
+        expect(serialized, contains('id=page.puzzak.paios'));
+      },
+    );
+
+    test(
+      'PromptRepository.getPromptDisplayName and getPromptDisplayDescription localize built-in prompts and preserve custom user prompts',
+      () async {
+        final ukMap = jsonDecode(
+          File('assets/translations/uk.json').readAsStringSync(),
+        ) as Map<String, dynamic>;
+        final enMap = jsonDecode(
+          File('assets/translations/en.json').readAsStringSync(),
+        ) as Map<String, dynamic>;
+        final dict = Dictionary(path: 'assets/translations', url: '')
+          ..locale = 'uk'
+          ..dictionary = <String, dynamic>{
+            'uk': ukMap,
+            'en': enMap,
+          };
+
+        final repo = PromptRepository(notifyEngine: () {});
+        await repo.initFromHive('');
+
+        // Built-in prompts resolve to localized UK strings when Dictionary is provided
+        expect(
+          repo.getPromptDisplayName('system_default', dict),
+          ukMap['prompt_default_name'],
+        );
+        expect(
+          repo.getPromptDisplayDescription('system_default', dict),
+          ukMap['prompt_default_desc'],
+        );
+        expect(
+          repo.getPromptDisplayName('pirate', dict),
+          ukMap['prompt_pirate_name'],
+        );
+        expect(
+          repo.getPromptDisplayDescription('pirate', dict),
+          ukMap['prompt_pirate_desc'],
+        );
+
+        // Falls back to bundled/default metadata when dict is null
+        expect(repo.getPromptDisplayName('system_default'), isNotEmpty);
+        expect(repo.getPromptDisplayDescription('system_default'), isNotEmpty);
+
+        // Custom user prompts always return stored name & description verbatim
+        repo.userPrompts['user_custom_1'] = <String, dynamic>{
+          'id': 'user_custom_1',
+          'name': 'My Custom Persona',
+          'description': 'Custom user description',
+          'content': 'Be concise.',
+        };
+        expect(
+          repo.getPromptDisplayName('user_custom_1', dict),
+          'My Custom Persona',
+        );
+        expect(
+          repo.getPromptDisplayDescription('user_custom_1', dict),
+          'Custom user description',
+        );
+      },
+    );
+
+    test(
+      'ResourceRepository.getResourceDisplayName localizes via i18nKey, translationKey, and legacy name map with safe fallback',
+      () {
+        final ukMap = jsonDecode(
+          File('assets/translations/uk.json').readAsStringSync(),
+        ) as Map<String, dynamic>;
+        final enMap = jsonDecode(
+          File('assets/translations/en.json').readAsStringSync(),
+        ) as Map<String, dynamic>;
+        final dict = Dictionary(path: 'assets/translations', url: '')
+          ..locale = 'uk'
+          ..dictionary = <String, dynamic>{
+            'uk': ukMap,
+            'en': enMap,
+          };
+
+        final repo = ResourceRepository(notifyEngine: () {});
+
+        // Explicit i18nKey / translationKey takes precedence
+        expect(
+          repo.getResourceDisplayName(
+            {'name': 'GitHub Repo', 'i18nKey': 'res_git_title'},
+            dict,
+          ),
+          ukMap['res_git_title'],
+        );
+        expect(
+          repo.getResourceDisplayName(
+            {'name': 'Website', 'translationKey': 'res_website_title'},
+            dict,
+          ),
+          ukMap['res_website_title'],
+        );
+
+        // Legacy _resourceNameKeyMap fallback (gh_repo / in_play_store)
+        expect(
+          repo.getResourceDisplayName(
+            {'name': "Application's GitHub repository"},
+            dict,
+          ),
+          ukMap['gh_repo'],
+        );
+        expect(
+          repo.getResourceDisplayName(
+            {'name': "Application's Google Store page"},
+            dict,
+          ),
+          ukMap['in_play_store'],
+        );
+
+        // Unmapped or null dictionary falls back cleanly to raw resource['name']
+        expect(
+          repo.getResourceDisplayName(
+            {'name': 'Custom Community Guide'},
+            dict,
+          ),
+          'Custom Community Guide',
+        );
+        expect(
+          repo.getResourceDisplayName(
+            {'name': "Application's GitHub repository", 'i18nKey': 'res_git_title'},
+          ),
+          "Application's GitHub repository",
+        );
+      },
+    );
+
+    test(
       'ChatRepository CRUD (saveChat, deleteChat, archive/unarchive & archived assistant chat persistence)',
       () async {
         int notifyCount = 0;
@@ -140,10 +281,25 @@ void main() {
 
         expect(chatRepo.chats.containsKey('chat_101'), isTrue);
         expect(chatRepo.chats['chat_101']['name'], 'Generated Test Title');
+        expect(chatRepo.chats['chat_101']['messageCount'], 2);
         expect(chatRepo.chats['chat_101']['isArchived'], isFalse);
         expect(chatRepo.chats['chat_101']['pinned'], isFalse);
         expect(chatRepo.chats['chat_101']['promptId'], 'default_prompt');
         expect(notifyCount, greaterThan(0));
+
+        // Updating existing chat updates messageCount
+        await chatRepo.saveChat(
+          [
+            ...conversation,
+            <String, dynamic>{
+              'user': 'User',
+              'message': 'Follow-up question',
+              'time': '1700000002000',
+            },
+          ],
+          chatID: 'chat_101',
+        );
+        expect(chatRepo.chats['chat_101']['messageCount'], 3);
 
         // Pinned chats cannot be archived until unpinned
         chatRepo.chats['chat_101']['pinned'] = true;
@@ -167,6 +323,7 @@ void main() {
         expect(archivedId, isNotEmpty);
         expect(chatRepo.chats[archivedId]['isArchived'], isTrue);
         expect(chatRepo.chats[archivedId]['name'], 'Archived Overlay Session');
+        expect(chatRepo.chats[archivedId]['messageCount'], 2);
 
         // Verify reload from Hive preserves both chats
         final reloadedRepo = ChatRepository(
@@ -179,6 +336,8 @@ void main() {
         expect(reloadedRepo.chats.containsKey('chat_101'), isTrue);
         expect(reloadedRepo.chats.containsKey(archivedId), isTrue);
         expect(reloadedRepo.chats[archivedId]['isArchived'], isTrue);
+        expect(reloadedRepo.chats['chat_101']['messageCount'], 3);
+        expect(reloadedRepo.chats[archivedId]['messageCount'], 2);
 
         // Delete chat_101 and verify removal from Hive
         await chatRepo.deleteChat('chat_101');

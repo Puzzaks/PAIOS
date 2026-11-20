@@ -1,6 +1,8 @@
 package page.puzzak.geminilocal
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
@@ -1089,21 +1091,52 @@ object InternalToolsHelper {
         }
     }
 
+    data class BatteryStatusSnapshot(
+        val level: Int,
+        val charging: Boolean,
+        val status: String,
+    )
+
+    fun readBatteryStatusSnapshot(context: Context): BatteryStatusSnapshot {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        var level = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        if (level < 0 && intent != null) {
+            val rawLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            if (rawLevel >= 0 && scale > 0) {
+                level = (rawLevel * 100) / scale
+            }
+        }
+        val statusInt = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) ?: -1
+            } else {
+                -1
+            }
+        val isCharging = statusInt == BatteryManager.BATTERY_STATUS_CHARGING ||
+            statusInt == BatteryManager.BATTERY_STATUS_FULL
+        val statusLabel = when (statusInt) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "Charging"
+            BatteryManager.BATTERY_STATUS_FULL -> "Full"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "Not charging"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "Discharging"
+            else -> if (isCharging) "Charging" else "Discharging"
+        }
+        return BatteryStatusSnapshot(
+            level = level,
+            charging = isCharging,
+            status = statusLabel,
+        )
+    }
+
     private fun getBatteryStatusJson(context: Context): String {
         return try {
-            val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
-            val level = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-            val isCharging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val status = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) ?: -1
-                status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                    status == BatteryManager.BATTERY_STATUS_FULL
-            } else {
-                false
-            }
+            val snapshot = readBatteryStatusSnapshot(context)
             JSONObject().apply {
-                put("battery_level", "$level%")
-                put("is_charging", isCharging)
-                put("status", if (isCharging) "Charging" else "Discharging")
+                put("battery_level", "${snapshot.level}%")
+                put("is_charging", snapshot.charging)
+                put("status", snapshot.status)
             }.toString()
         } catch (e: Exception) {
             JSONObject().apply {

@@ -30,6 +30,14 @@ class AppConfig {
 
   AppConfig({required this.notifyEngine});
 
+  String get githubRepoUrl => 'https://github.com/$repo';
+
+  String rawGithubUrl(String assetPath, {String branch = 'main'}) {
+    final normalizedPath =
+        assetPath.startsWith('/') ? assetPath.substring(1) : assetPath;
+    return 'https://raw.githubusercontent.com/$repo/$branch/$normalizedPath';
+  }
+
   static String normalizeReleaseStage(dynamic value) {
     return value?.toString().trim().toLowerCase() == "preview"
         ? "preview"

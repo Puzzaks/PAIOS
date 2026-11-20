@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:flutter/services.dart';
+import '../parts/translator.dart';
 import 'file_access_service.dart';
 
 class PromptRepository {
@@ -228,6 +229,88 @@ class PromptRepository {
       return defaultPrompts[id]["name"] ?? "System Default";
     }
     return "Unknown Prompt";
+  }
+
+  static const Map<String, List<String>> _promptNameKeys = {
+    'system_default': ['prompt_default_name', 'prompt_system_default_name'],
+    'pirate': ['prompt_pirate_name'],
+    'concise': ['prompt_concise_name'],
+    'creative': ['prompt_creative_name'],
+    'system_old': ['prompt_system_old_name', 'prompt_old_name'],
+  };
+
+  static const Map<String, List<String>> _promptDescKeys = {
+    'system_default': ['prompt_default_desc', 'prompt_system_default_desc'],
+    'pirate': ['prompt_pirate_desc'],
+    'concise': ['prompt_concise_desc'],
+    'creative': ['prompt_creative_desc'],
+    'system_old': ['prompt_system_old_desc', 'prompt_old_desc'],
+  };
+
+  static const Map<String, String> _fallbackPromptNames = {
+    'system_default': 'Default',
+    'pirate': 'Pirate Persona',
+    'concise': 'Concise Assistant',
+    'creative': 'Creative Assistant',
+    'system_old': 'Old prompt',
+  };
+
+  static const Map<String, String> _fallbackPromptDescs = {
+    'system_default': 'Simple PAIOS prompt.',
+    'pirate': 'Answers everything like a pirate.',
+    'concise': 'Short, direct responses.',
+    'creative': 'Imaginative, expressive responses.',
+    'system_old': 'Pre 1.2.0 prompt, made for nano-v2. Barely works.',
+  };
+
+  /// Returns a localized display name for built-in prompts when [dict] has a
+  /// matching key, falling back safely to bundled metadata; custom user prompts
+  /// always return their stored name verbatim.
+  String getPromptDisplayName(String id, [Dictionary? dict]) {
+    if (userPrompts.containsKey(id)) {
+      return userPrompts[id]["name"]?.toString() ?? "Custom Prompt";
+    }
+    if (dict != null) {
+      final keys = _promptNameKeys[id];
+      if (keys != null) {
+        for (final key in keys) {
+          final localized = dict.tryValue(key);
+          if (localized != null) return localized;
+        }
+      }
+    }
+    if (defaultPrompts.containsKey(id)) {
+      final bundledName = defaultPrompts[id]["name"]?.toString();
+      if (bundledName != null && bundledName.isNotEmpty) {
+        return bundledName;
+      }
+    }
+    return _fallbackPromptNames[id] ?? "Unknown Prompt";
+  }
+
+  /// Returns a localized display description for built-in prompts when [dict]
+  /// has a matching key, falling back safely to bundled metadata; custom user
+  /// prompts return their stored description verbatim.
+  String getPromptDisplayDescription(String id, [Dictionary? dict]) {
+    if (userPrompts.containsKey(id)) {
+      return userPrompts[id]["description"]?.toString() ?? "";
+    }
+    if (dict != null) {
+      final keys = _promptDescKeys[id];
+      if (keys != null) {
+        for (final key in keys) {
+          final localized = dict.tryValue(key);
+          if (localized != null) return localized;
+        }
+      }
+    }
+    if (defaultPrompts.containsKey(id)) {
+      final bundledDesc = defaultPrompts[id]["description"]?.toString();
+      if (bundledDesc != null && bundledDesc.isNotEmpty) {
+        return bundledDesc;
+      }
+    }
+    return _fallbackPromptDescs[id] ?? "";
   }
 
   // ── Mutations ─────────────────────────────────────────────────────────────

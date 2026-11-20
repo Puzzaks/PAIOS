@@ -100,7 +100,7 @@ class ModelSettingsContextState extends State<ModelSettingsContext> {
                                 subtitle: engine.dict.value("recommend_changes_gh"),
                                 action: () async {
                                   await launchUrl(
-                                      Uri.parse('https://github.com/Puzzaks/geminilocal'),
+                                      Uri.parse(engine.config.githubRepoUrl),
                                       mode: LaunchMode.externalApplication
                                   );
                                 }

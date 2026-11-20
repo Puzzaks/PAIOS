@@ -14,5 +14,15 @@
     "icon": "alert",
     "status": "Available",
     "url": "https://play.google.com/store/apps/details?id=page.puzzak.alerts"
+  },
+  {
+    "id": "paios_voice_extension",
+    "name": "Speech Services (TinyASR & TTS)",
+    "description": "Standalone offline STT (Rust TinyASR + Silero VAD) & neural TTS extension over Android RecognitionService + M3x Mesh — with multi-language packs including Ukrainian & English.",
+    "package": "page.puzzak.speech",
+    "packageName": "page.puzzak.speech",
+    "icon": "record_voice_over_rounded",
+    "status": "Planned",
+    "url": "https://github.com/Puzzaks/PAIOS/blob/dev/ROADMAP.md"
   }
 ]

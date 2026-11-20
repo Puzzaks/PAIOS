@@ -4,7 +4,9 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../engine.dart';
+import '../../parts/translator.dart';
 import '../../services/doc_service.dart';
+import '../support/elements.dart' show formatTimeAgo;
 
 /// In-App Multi-Page Documentation Explorer & Technical Reference for Google ML Kit GenAI & AICore.
 /// Supports 3-Tier SWR caching, instant offline availability, and cross-page live search.
@@ -99,11 +101,14 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
   Future<void> _onRefreshTapped(DocPage page) async {
     final docService = DocService.instance;
     if (docService.isSyncing) return;
+    final engine = Provider.of<AIEngine>(context, listen: false);
     HapticFeedback.lightImpact();
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Refreshing "${page.title}" from remote...'),
+        content: Text(
+          engine.dict.value("docs_refreshing_toast").replaceAll("%s", page.title),
+        ),
         duration: const Duration(milliseconds: 1000),
       ),
     );
@@ -114,8 +119,8 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
         SnackBar(
           content: Text(
             success
-                ? 'Updated from Google Developers'
-                : 'Using offline bundled "${page.title}"',
+                ? engine.dict.value("docs_updated_remote")
+                : engine.dict.value("docs_using_offline").replaceAll("%s", page.title),
           ),
           duration: const Duration(seconds: 2),
         ),
@@ -137,11 +142,15 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
     }
   }
 
-  String _formatTime(DateTime dt) {
+  String _formatTime(DateTime dt, Dictionary? dict) {
     final now = DateTime.now();
     final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+    if (diff.inMinutes < 1) {
+      return dict != null ? dict.value("just_now") : 'just now';
+    }
+    if (diff.inHours < 1) {
+      return formatTimeAgo(dt, dict);
+    }
     if (diff.inDays < 1) {
       final h = dt.hour.toString().padLeft(2, '0');
       final m = dt.minute.toString().padLeft(2, '0');
@@ -308,8 +317,8 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
               IconButton(
                 icon: const Icon(Icons.open_in_new_rounded),
                 tooltip: currentPage != null
-                    ? 'Open "${currentPage.title}" in Browser'
-                    : 'Official Google Docs',
+                    ? engine.dict.value("docs_open_in_browser").replaceAll("%s", currentPage.title)
+                    : engine.dict.value("docs_official_google_docs"),
                 onPressed: () async {
                   HapticFeedback.lightImpact();
                   final targetUrl = currentPage?.officialUrl ?? 'https://developers.google.com/ml-kit/genai';
@@ -413,7 +422,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Guides & Categories',
+                          engine.dict.value("docs_guides_categories"),
                           style: theme.textTheme.labelMedium?.copyWith(
                             color: colorScheme.onSurfaceVariant,
                             fontWeight: FontWeight.bold,
@@ -428,7 +437,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                                   ? null
                                   : () => _onRefreshTapped(currentPage),
                               child: Tooltip(
-                                message: 'Tap to refresh this guide from remote',
+                                message: engine.dict.value("docs_tap_to_refresh"),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                   decoration: BoxDecoration(
@@ -477,8 +486,8 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                                                 ? '${engine.dict.value("docs_bundled_offline")} ↻'
                                                 : 'Bundled Offline ↻')
                                             : (engine.dict.value("docs_synced").isNotEmpty
-                                                ? '${engine.dict.value("docs_synced")}${currentPage.lastUpdated != null ? " • ${_formatTime(currentPage.lastUpdated!)}" : ""}'
-                                                : 'Synced${currentPage.lastUpdated != null ? " • ${_formatTime(currentPage.lastUpdated!)}" : ""}'),
+                                                ? '${engine.dict.value("docs_synced")}${currentPage.lastUpdated != null ? " • ${_formatTime(currentPage.lastUpdated!, engine.dict)}" : ""}'
+                                                : 'Synced${currentPage.lastUpdated != null ? " • ${_formatTime(currentPage.lastUpdated!, engine.dict)}" : ""}'),
                                         style: theme.textTheme.labelSmall?.copyWith(
                                           fontSize: 11,
                                           fontWeight: FontWeight.w600,
@@ -589,7 +598,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
                     child: Text(
-                      'Search Results for "$_searchQuery" (${searchResults.length})',
+                      engine.dict.value("docs_search_results_for").replaceAll("%s", _searchQuery).replaceAll("%d", searchResults.length.toString()),
                       style: theme.textTheme.labelLarge?.copyWith(
                         color: colorScheme.primary,
                         fontWeight: FontWeight.bold,
@@ -610,7 +619,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                             ),
                             const SizedBox(height: 16),
                             Text(
-                              'No matching documentation found for "$_searchQuery"',
+                              engine.dict.value("docs_no_results_for").replaceAll("%s", _searchQuery),
                               textAlign: TextAlign.center,
                               style: theme.textTheme.bodyLarge?.copyWith(
                                 color: colorScheme.onSurfaceVariant,
@@ -622,7 +631,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                                 HapticFeedback.lightImpact();
                                 _searchCtrl.clear();
                               },
-                              child: const Text('Clear search'),
+                              child: Text(engine.dict.value("docs_clear_search")),
                             ),
                           ],
                         ),
@@ -784,7 +793,7 @@ class _DocExplorerPageState extends State<DocExplorerPage> {
                         },
                         icon: const Icon(Icons.open_in_new_rounded, size: 16),
                         label: Text(
-                          'Open "${currentPage.title}" on Google Developers',
+                          engine.dict.value("docs_open_in_browser").replaceAll("%s", currentPage.title),
                           overflow: TextOverflow.ellipsis,
                         ),
                         style: OutlinedButton.styleFrom(

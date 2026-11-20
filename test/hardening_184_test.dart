@@ -232,6 +232,140 @@ void main() {
       expect(cont, contains('Eliezer '));
     });
 
+    test('Prompt.generate enforces bounded sliding window (maxHistoryChars), compact tool schemas, and preserves active tool results while compacting old turns', () async {
+      final prompt = Prompt(ghUrl: 'https://github.com/Puzzaks/PAIOS');
+
+      // 1. maxHistoryChars drops oldest turns while keeping latest turns and avoiding orphaned Gemini turn
+      final longHistory = <Map<String, dynamic>>[
+        {
+          'user': 'User',
+          'time': '1700000000000',
+          'message': 'FIRST_TURN_MARKER ${List.filled(20, 'alpha').join(' ')}',
+        },
+        {
+          'user': 'Gemini',
+          'time': '1700000001000',
+          'message': 'SECOND_TURN_MARKER ${List.filled(20, 'beta').join(' ')}',
+        },
+        {
+          'user': 'User',
+          'time': '1700000002000',
+          'message': 'LATEST_USER_QUESTION about battery life',
+        },
+      ];
+      final boundedPrompt = await prompt.generate(
+        'Help',
+        longHistory,
+        const {'version': 'nano-v3'},
+        maxHistoryChars: 140,
+      );
+      expect(boundedPrompt, contains('LATEST_USER_QUESTION about battery life'));
+      expect(boundedPrompt, isNot(contains('FIRST_TURN_MARKER')));
+      expect(boundedPrompt, isNot(contains('SECOND_TURN_MARKER')));
+
+      // 2. Compact tool schemas + maxToolSchemaChars budget
+      final toolsPrompt = await prompt.generate(
+        'Help',
+        const [],
+        const {'version': 'nano-v3'},
+        tools: const [
+          M3xTool(
+            name: 'search_tool',
+            app: 'paios',
+            description: 'Search web or encyclopedia for facts.',
+            parameters: {
+              'type': 'object',
+              'required': ['query'],
+              'properties': {
+                'query': {'type': 'string'},
+                'limit': {'type': 'integer'},
+                'mode': {
+                  'type': 'string',
+                  'enum': ['fast', 'accurate'],
+                },
+                'tags': {
+                  'type': 'array',
+                  'items': {'type': 'string'},
+                },
+              },
+            },
+          ),
+          M3xTool(
+            name: 'second_tool_exceeding_budget',
+            app: 'paios',
+            description: 'This second tool should be omitted when maxToolSchemaChars is tight.',
+            parameters: {
+              'type': 'object',
+              'properties': {'x': {'type': 'string'}},
+            },
+          ),
+        ],
+        maxToolSchemaChars: 480,
+      );
+      expect(
+        toolsPrompt,
+        contains('args: {query: string, limit?: integer, mode?: fast|accurate, tags?: array<string>}'),
+      );
+      expect(toolsPrompt, isNot(contains('second_tool_exceeding_budget')));
+
+      // 3. Keeps active trailing tool call + tool result while compacting old turns
+      final oldLongToolResult =
+          '[TOOL RESULT: {"summary": "${List.filled(40, 'historical').join(' ')}"}]';
+      final activeToolResult =
+          '[TOOL RESULT: {"city": "Kyiv", "tempC": 18, "details": "${List.filled(35, 'current').join(' ')}"}]';
+      final toolHistory = <Map<String, dynamic>>[
+        {
+          'user': 'User',
+          'time': '1700000000000',
+          'message': 'OLD_USER_TURN',
+        },
+        {
+          'user': 'Gemini',
+          'time': '1700000001000',
+          'message': '{"tool": "old_tool", "app": "paios", "args": {"query": "OLD_TOOL_CALL_MARKER"}}',
+        },
+        {
+          'user': 'System',
+          'time': '1700000002000',
+          'message': oldLongToolResult,
+        },
+        {
+          'user': 'Gemini',
+          'time': '1700000003000',
+          'message': 'Here is the old answer.',
+        },
+        {
+          'user': 'User',
+          'time': '1700000004000',
+          'message': 'What is the weather in Kyiv right now?',
+        },
+        {
+          'user': 'Gemini',
+          'time': '1700000005000',
+          'message': '{"tool": "weather_forecast", "app": "paios", "args": {"city": "ACTIVE_TOOL_CALL_MARKER"}}',
+        },
+        {
+          'user': 'System',
+          'time': '1700000006000',
+          'message': activeToolResult,
+        },
+      ];
+      final compactedPrompt = await prompt.generate(
+        'Help',
+        toolHistory,
+        const {'version': 'nano-v3'},
+        maxHistoryChars: 2800,
+      );
+      expect(compactedPrompt, isNot(contains('OLD_TOOL_CALL_MARKER')));
+      expect(compactedPrompt, contains('ACTIVE_TOOL_CALL_MARKER'));
+      expect(compactedPrompt, contains('"city": "Kyiv"'));
+      // Old System tool result is compacted to ~120 chars with ellipsis, while active stays full
+      final activeEndMarker = List.filled(35, 'current').join(' ');
+      expect(compactedPrompt, contains(activeEndMarker));
+      final oldEndMarker = List.filled(40, 'historical').join(' ');
+      expect(compactedPrompt, isNot(contains(oldEndMarker)));
+    });
+
     test('Prompt.generate prefers wikipedia_summary for general topic questions', () async {
       final prompt = Prompt(ghUrl: 'https://github.com/Puzzaks/PAIOS');
       final generated = await prompt.generate(
@@ -394,7 +528,8 @@ void main() {
               (engine.isLoading ||
                   engine.isGenerating ||
                   engine.context.length < 2 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 30));
       }
@@ -549,7 +684,8 @@ void main() {
                   engine.isGenerating ||
                   engine.isContinuing ||
                   engine.context.length < 2 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
@@ -659,7 +795,8 @@ void main() {
                   engine.isGenerating ||
                   engine.isContinuing ||
                   engine.context.length < 2 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
@@ -738,7 +875,8 @@ void main() {
                   engine.isGenerating ||
                   engine.isContinuing ||
                   engine.context.length < 2 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
@@ -896,7 +1034,8 @@ void main() {
                   engine.isGenerating ||
                   engine.isSynthesizing ||
                   engine.context.length < 4 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
@@ -1270,7 +1409,8 @@ void main() {
                   engine.isGenerating ||
                   engine.isContinuing ||
                   engine.context.length < 2 ||
-                  !engine.chats.containsKey(engine.currentChat));
+                  !engine.chats.containsKey(engine.currentChat) ||
+                  engine.prompt.text.isNotEmpty);
           i++) {
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
@@ -1605,6 +1745,50 @@ void main() {
       expect(engine.isDownloadingModel, isFalse);
       expect(engine.variantDownloads['stable:full']?.isCompleted, isTrue);
       expect(engine.downloadErrorRetryCount, 0);
+    });
+
+    test('unpunctuated multi-sentence prose cutoff triggers isLikelyMidClauseCutoff and trimTrailingIncompleteSentence while keeping single sentences, lists, headings, and JSON untouched', () {
+      const multiSentenceCutoff =
+          "I am PAIOS, an on-device AI assistant powered by Google's Gemini Nano model. I'm designed to be your personal AI, offering features like multimodal vision, a thinking mode for enhanced reasoning";
+      expect(AIEngine.isLikelyMidClauseCutoff(multiSentenceCutoff), isTrue);
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(multiSentenceCutoff),
+        "I am PAIOS, an on-device AI assistant powered by Google's Gemini Nano model.",
+      );
+
+      // Complete single sentence without trailing punctuation
+      const completeSingleSentence = 'Yes, everything looks good right now';
+      expect(AIEngine.isLikelyMidClauseCutoff(completeSingleSentence), isFalse);
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(completeSingleSentence),
+        completeSingleSentence,
+      );
+
+      // Markdown bullet list after a sentence stays untouched
+      const markdownList =
+          'Here are the supported features in this release:\n- Multimodal vision input\n- Local reasoning mode';
+      expect(AIEngine.isLikelyMidClauseCutoff(markdownList), isFalse);
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(markdownList),
+        markdownList,
+      );
+
+      // Markdown heading after a sentence stays untouched
+      const markdownHeading =
+          'Overview is complete.\n## Supported Devices and Tiers';
+      expect(AIEngine.isLikelyMidClauseCutoff(markdownHeading), isFalse);
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(markdownHeading),
+        markdownHeading,
+      );
+
+      // Incomplete tool JSON draft stays untouched
+      const incompleteToolJson =
+          'Checking documentation first. {"tool": "query_aicore_documentation", "args": {"query": "PAIOS"';
+      expect(
+        AIEngine.trimTrailingIncompleteSentence(incompleteToolJson),
+        incompleteToolJson,
+      );
     });
 
     test('trimTrailingIncompleteSentence trims trailing dangling clause after complete sentence while preserving decimals, complete text, and single sentences', () {

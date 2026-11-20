@@ -112,6 +112,10 @@ class IntroPageState extends State<IntroPage> {
         return Icons.tune_rounded;
       case 'widgets_rounded':
         return Icons.widgets_rounded;
+      case 'record_voice_over_rounded':
+        return Icons.record_voice_over_rounded;
+      case 'mic_rounded':
+        return Icons.mic_rounded;
       default:
         return Icons.extension_rounded;
     }
@@ -167,34 +171,7 @@ class IntroPageState extends State<IntroPage> {
     await engine.endFirstLaunch();
   }
 
-  String _convertSize(int size, bool isSpeed) {
-    if (size < 1024) {
-      return '$size B${isSpeed ? "/s" : ""}';
-    } else if (size < 10240) {
-      double sizeKb = size / 1024;
-      return '${sizeKb.toStringAsFixed(2)} KB${isSpeed ? "/s" : ""}';
-    } else if (size < 1048576) {
-      double sizeKb = size / 1024;
-      return '${sizeKb.toStringAsFixed(1)} KB${isSpeed ? "/s" : ""}';
-    } else if (size < 10485760) {
-      double sizeMb = size / 1048576;
-      return '${sizeMb.toStringAsFixed(2)} MB${isSpeed ? "/s" : ""}';
-    } else if (size < 104857600) {
-      double sizeMb = size / 1048576;
-      return '${sizeMb.toStringAsFixed(1)} MB${isSpeed ? "/s" : ""}';
-    } else if (size < 1073741824) {
-      double sizeGb = size / 1073741824;
-      return '${sizeGb.toStringAsFixed(2)} GB${isSpeed ? "/s" : ""}';
-    } else if (size < 10737418240) {
-      double sizeGb = size / 1073741824;
-      return '${sizeGb.toStringAsFixed(1)} GB${isSpeed ? "/s" : ""}';
-    } else {
-      double sizeGb = size / 1073741824;
-      return '${sizeGb.toInt()} GB${isSpeed ? "/s" : ""}';
-    }
-  }
-
-  String _calcSpeed(List log) {
+  String _calcSpeed(List log, AIEngine engine) {
     if (log.length > 1) {
       int lastSize = int.tryParse(log[log.length - 1]["value"].toString()) ?? 0;
       int lastTime = (((log[log.length - 1]["time"] as int? ?? 0) + 1) / 1000).toInt();
@@ -202,33 +179,33 @@ class IntroPageState extends State<IntroPage> {
       int prevTime = ((log[log.length - 2]["time"] as int? ?? 0) / 1000).toInt();
 
       if (lastTime == prevTime || lastSize == prevSize) {
-        return _convertSize(_latestSpeed, true);
+        return engine.convertSize(_latestSpeed, true);
       }
       int speed = ((lastSize - prevSize) / (lastTime - prevTime)).toInt();
       if (log.length > 2) {
         int anotherSize = int.tryParse(log[log.length - 3]["value"].toString()) ?? 0;
         int anotherTime = ((log[log.length - 3]["time"] as int? ?? 0) / 1000).toInt();
         if (prevSize == anotherSize || prevTime == anotherTime) {
-          return _convertSize(_latestSpeed, true);
+          return engine.convertSize(_latestSpeed, true);
         }
         int lastSpeed = ((prevSize - anotherSize) / (prevTime - anotherTime)).toInt();
         int avgSpeed = ((speed + lastSpeed) / 2).toInt();
         if (avgSpeed < 100) {
-          return _convertSize(_latestSpeed, true);
+          return engine.convertSize(_latestSpeed, true);
         } else {
           _latestSpeed = avgSpeed;
-          return _convertSize(avgSpeed, true);
+          return engine.convertSize(avgSpeed, true);
         }
       } else {
         if (speed < 100) {
-          return _convertSize(_latestSpeed, true);
+          return engine.convertSize(_latestSpeed, true);
         } else {
           _latestSpeed = speed;
-          return _convertSize(speed, true);
+          return engine.convertSize(speed, true);
         }
       }
     } else {
-      return _convertSize(_latestSpeed, true);
+      return engine.convertSize(_latestSpeed, true);
     }
   }
 
@@ -732,7 +709,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                   CardContents.progress(
                     title: engine.dict.value("downloading_model"),
                     subtitle:
-                        "${_convertSize(activeDownload.bytesDownloaded, false)} / ${_convertSize(activeDownload.totalBytes, false)} (${(activeDownload.progress * 100).toStringAsFixed(1)}%)",
+                        "${engine.convertSize(activeDownload.bytesDownloaded, false)} / ${engine.convertSize(activeDownload.totalBytes, false)} (${(activeDownload.progress * 100).toStringAsFixed(1)}%)",
                     subsubtitle: activeDownload.bytesPerSec > 0
                         ? _dictTemplateOrFallback(
                             engine,
@@ -741,11 +718,11 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                           )
                             .replaceAll(
                               '{speed}',
-                              _convertSize(activeDownload.bytesPerSec.round(), true),
+                              engine.convertSize(activeDownload.bytesPerSec.round(), true),
                             )
                             .replaceAll(
                               '{remaining}',
-                              _convertSize(activeDownload.remainingBytes, false),
+                              engine.convertSize(activeDownload.remainingBytes, false),
                             )
                         : _dictTemplateOrFallback(
                             engine,
@@ -753,7 +730,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                             '{remaining} remaining',
                           ).replaceAll(
                             '{remaining}',
-                            _convertSize(activeDownload.remainingBytes, false),
+                            engine.convertSize(activeDownload.remainingBytes, false),
                           ),
                     progress: activeDownload.progress,
                   )
@@ -769,7 +746,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               else if (engine.modelDownloadLog.isNotEmpty &&
                   engine.modelDownloadLog.last["status"] == "Error")
                 CardContents.doubleTap(
-                  title: "Model ${engine.dict.value("unavailable")}",
+                  title: engine.dict.value("model_unavailable_title"),
                   subtitle: engine.isAiCoreFeatureNotFoundError
                       ? engine.dict.value("aicore_error_606_hint")
                       : engine.dict.value("whoops"),
@@ -788,10 +765,10 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                   CardContents.progress(
                     title: engine.dict.value(engine.modelDownloadLog.last["info"].toString()),
                     subtitle:
-                        "${_convertSize(int.parse(engine.modelDownloadLog.last["value"].toString()), false)} / ${_convertSize(engine.usualModelSize, false)} (${((int.parse(engine.modelDownloadLog.last["value"].toString()) / engine.usualModelSize) * 100).toStringAsFixed(1)}%)",
+                        "${engine.convertSize(int.parse(engine.modelDownloadLog.last["value"].toString()), false)} / ${engine.convertSize(engine.usualModelSize, false)} (${((int.parse(engine.modelDownloadLog.last["value"].toString()) / engine.usualModelSize) * 100).toStringAsFixed(1)}%)",
                     subsubtitle: engine.modelDownloadLog.last["info"] == "waiting_network"
                         ? ""
-                        : _calcSpeed(engine.modelDownloadLog),
+                        : _calcSpeed(engine.modelDownloadLog, engine),
                     progress: (int.parse(engine.modelDownloadLog.last["value"].toString()) /
                         engine.usualModelSize),
                   )
@@ -908,8 +885,8 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             const SizedBox(height: 24),
             ...engine.promptData.defaultPrompts.values.map((prompt) {
               final id = prompt["id"]?.toString() ?? "";
-              final name = prompt["name"]?.toString() ?? id;
-              final desc = prompt["description"]?.toString() ?? "";
+              final name = engine.promptData.getPromptDisplayName(id, engine.dict);
+              final desc = engine.promptData.getPromptDisplayDescription(id, engine.dict);
               final isSelected = engine.config.defaultPromptId == id;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -1015,7 +992,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                     .map((tool) {
                   final extId = AIEngine.canonicalToolExtensionId(tool);
                   final appLabel = extId.isEmpty
-                      ? 'LOCAL'
+                      ? engine.dict.value("mesh_local_badge")
                       : _labelForExtension(extId).toUpperCase();
                   return CardContents.static(
                     title: tool.name,
@@ -1030,10 +1007,10 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                 colorBG: scheme.primaryFixedDim,
                 color: scheme.onPrimaryFixed,
                 title: engine.dict.value("mesh_dev_docs"),
-                subtitle: "https://github.com/Puzzaks/PAIOS#agentic-mesh",
+                subtitle: "${engine.config.githubRepoUrl}#agentic-mesh",
                 icon: Icons.open_in_new_rounded,
                 action: () => launchUrl(
-                  Uri.parse("https://github.com/Puzzaks/PAIOS#agentic-mesh"),
+                  Uri.parse("${engine.config.githubRepoUrl}#agentic-mesh"),
                   mode: LaunchMode.externalApplication,
                 ),
               ),
@@ -1093,7 +1070,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             cards.cardGroup([
               CardContents.static(
                 title: engine.dict.value("your_device"),
-                subtitle: engine.modelInfo["deviceModel"]?.toString() ?? "Android Device",
+                subtitle: engine.modelInfo["deviceModel"]?.toString() ?? engine.dict.value("unknown_android_device"),
               ),
               CardContents.static(
                 title: engine.dict.value("os_version"),
@@ -1108,7 +1085,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                                     ?.toString()
                                     .toLowerCase() ==
                                 "true")
-                        ? "Installed (Model Inactive)"
+                        ? engine.dict.value("aicore_installed_inactive")
                         : engine.dict.value("aicore_unavailable"),
               ),
             ]),
@@ -1155,7 +1132,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                       for (final device in filteredDevices.take(4))
                         CardContents.static(
                           title: device,
-                          subtitle: "Official AICore / Gemini Nano Tier",
+                          subtitle: engine.dict.value("supported_device_tier_subtitle"),
                         ),
                     ],
             ),
@@ -1184,28 +1161,28 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
                   subtitle: engine.dict.value("aicore_error_606_hint"),
                 ),
               CardContents.static(
-                title: "1. Android Settings",
+                title: engine.dict.value("troubleshooting_step_1_title"),
                 subtitle: engine.dict.value("troubleshooting_tip_1"),
               ),
               CardContents.static(
-                title: "2. Google Play Services",
+                title: engine.dict.value("troubleshooting_step_2_title"),
                 subtitle: engine.dict.value("troubleshooting_tip_2"),
               ),
               CardContents.static(
-                title: "3. Developer Options",
+                title: engine.dict.value("troubleshooting_step_3_title"),
                 subtitle: engine.dict.value("troubleshooting_tip_3"),
               ),
             ]),
             const SizedBox(height: 24),
             Category.settings(
-              title: "Actions",
+              title: engine.dict.value("intro_actions_category"),
               context: context,
             ),
             cards.cardGroup([
               // 1. Copy Diagnostic Report
               CardContents.tapIcon(
                 title: engine.dict.value("btn_copy_diagnostic"),
-                subtitle: "Survives clipboard wipe; paste into GitHub issues",
+                subtitle: engine.dict.value("btn_copy_diagnostic_desc"),
                 icon: Icons.copy_all_rounded,
                 colorBG: scheme.primaryContainer,
                 color: scheme.onPrimaryContainer,
@@ -1225,7 +1202,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               // 2. Open In-App Docs Explorer
               CardContents.tapIcon(
                 title: engine.dict.value("btn_open_docs"),
-                subtitle: "View architecture, guides, and model docs",
+                subtitle: engine.dict.value("btn_open_docs_desc"),
                 icon: Icons.menu_book_rounded,
                 colorBG: scheme.primaryFixedDim,
                 color: scheme.onPrimaryFixed,
@@ -1243,7 +1220,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               // 3. Open In-App GitHub Explorer
               CardContents.tapIcon(
                 title: engine.dict.value("btn_open_github"),
-                subtitle: "Issues, releases, and repository tracker",
+                subtitle: engine.dict.value("btn_open_github_desc"),
                 icon: Icons.explore_rounded,
                 colorBG: scheme.primaryFixedDim,
                 color: scheme.onPrimaryFixed,
@@ -1261,12 +1238,12 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               // 4. Create Issue on GitHub
               CardContents.tapIcon(
                 title: engine.dict.value("btn_create_issue"),
-                subtitle: "https://github.com/Puzzaks/PAIOS/issues/new",
+                subtitle: "${engine.config.githubRepoUrl}/issues/new",
                 icon: Icons.add_circle_outline_rounded,
                 colorBG: scheme.primaryFixedDim,
                 color: scheme.onPrimaryFixed,
                 action: () => launchUrl(
-                  Uri.parse("https://github.com/Puzzaks/PAIOS/issues/new"),
+                  Uri.parse("${engine.config.githubRepoUrl}/issues/new"),
                   mode: LaunchMode.externalApplication,
                 ),
               ),
@@ -1274,7 +1251,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
               // 5. Re-check AICore Status
               CardContents.tapIcon(
                 title: engine.dict.value("btn_recheck_status"),
-                subtitle: "Instantly re-query Gemini Nano and AICore",
+                subtitle: engine.dict.value("btn_recheck_status_desc"),
                 icon: Icons.refresh_rounded,
                 colorBG: scheme.tertiaryContainer,
                 color: scheme.onTertiaryContainer,
@@ -1333,16 +1310,16 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
     final actionLabelKey = slide['action_label_key']?.toString() ?? "learn_more";
     final isCommunity = slide['id'] == 'open_source_community' || titleKey == 'intro_slide_community_title';
     final actionUrl = isCommunity
-        ? "https://github.com/Puzzaks/PAIOS"
+        ? engine.config.githubRepoUrl
         : slide['action_url']?.toString();
 
     final title = isCommunity
-        ? "Fully Open-Source"
+        ? engine.dict.value("intro_slide_community_title")
         : (engine.dict.value(titleKey).isNotEmpty ? engine.dict.value(titleKey) : (slide['title']?.toString() ?? ""));
     final desc = engine.dict.value(descKey);
     final actionLabel = isCommunity
-        ? "GitHub Repository"
-        : (engine.dict.value(actionLabelKey).isNotEmpty ? engine.dict.value(actionLabelKey) : "Open");
+        ? engine.dict.value("gh_repo")
+        : (engine.dict.value(actionLabelKey).isNotEmpty ? engine.dict.value(actionLabelKey) : engine.dict.value("tap_to_open"));
 
     return _buildSlideContainer(
       child: Column(
@@ -1368,7 +1345,7 @@ ${engine.modelDownloadLog.take(8).map((l) => '  - ${l['status']}=${l['info']}=${
             const SizedBox(height: 32),
             FilledButton.icon(
               icon: const Icon(Icons.open_in_new_rounded, size: 20),
-              label: Text(actionLabel.isNotEmpty ? actionLabel : "Open"),
+              label: Text(actionLabel.isNotEmpty ? actionLabel : engine.dict.value("tap_to_open")),
               onPressed: () => launchUrl(
                 Uri.parse(actionUrl),
                 mode: LaunchMode.externalApplication,

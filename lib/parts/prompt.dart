@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:collection/collection.dart';
@@ -14,10 +13,10 @@ class Prompt{
     return Prompt._internal(ghUrl);
   }
 
-  Future<Map> getAppData() async {
+  Future<Map> getAppData({PackageInfo? packageInfo}) async {
     try {
-      final info = await PackageInfo.fromPlatform()
-          .timeout(const Duration(seconds: 3));
+      final info = packageInfo ??
+          await PackageInfo.fromPlatform().timeout(const Duration(seconds: 3));
       return {
         "version": info.version,
         "name": info.appName,
@@ -30,8 +29,8 @@ class Prompt{
     }
   }
 
-  initialize() async {
-    appInfo = await getAppData();
+  Future<void> initialize({PackageInfo? packageInfo}) async {
+    appInfo = await getAppData(packageInfo: packageInfo);
   }
 
   static const String _attachedImageCue =
@@ -97,6 +96,173 @@ class Prompt{
     return tail;
   }
 
+  static const int defaultMaxHistoryChars = 2800;
+  static const int defaultMaxToolSchemaChars = 3500;
+  static const int _maxHistoricalMessageChars = 700;
+  static const int _maxActiveToolResultChars = 1200;
+  static const int _maxHistoricalToolSummaryChars = 120;
+
+  static bool _isToolCallJsonMessage(String text) {
+    final trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('```')) return false;
+    return RegExp(
+      r'''["'](?:tool|method)["']\s*:|["']action["']\s*:\s*["']tool(?:_)?call["']''',
+      caseSensitive: false,
+    ).hasMatch(trimmed);
+  }
+
+  static bool _isToolResultMessage(String text) {
+    final trimmed = text.trimLeft();
+    return trimmed.startsWith('[TOOL RESULT:') ||
+        trimmed.startsWith('[TOOL ERROR');
+  }
+
+  static String _compactToolSchema(Map<String, dynamic> parameters) {
+    final rawProps = parameters['properties'];
+    if (rawProps is! Map || rawProps.isEmpty) {
+      return '{}';
+    }
+    final Set<String> requiredSet = <String>{
+      if (parameters['required'] is List)
+        for (final r in parameters['required'] as List) r.toString(),
+    };
+    final List<String> parts = <String>[];
+    rawProps.forEach((key, value) {
+      final propName = key.toString();
+      final bool isRequired =
+          requiredSet.isEmpty ? false : requiredSet.contains(propName);
+      String typeStr = 'any';
+      if (value is Map) {
+        final rawEnum = value['enum'];
+        if (rawEnum is List && rawEnum.isNotEmpty && rawEnum.length <= 4) {
+          typeStr = rawEnum.map((e) => e.toString()).join('|');
+        } else {
+          final rawType = value['type']?.toString() ?? 'any';
+          if (rawType == 'array' && value['items'] is Map) {
+            final itemType = (value['items'] as Map)['type']?.toString();
+            typeStr = itemType != null ? 'array<$itemType>' : 'array';
+          } else {
+            typeStr = rawType;
+          }
+        }
+      }
+      parts.add('$propName${isRequired ? '' : '?'}: $typeStr');
+    });
+    return '{${parts.join(', ')}}';
+  }
+
+  List<String> _buildBoundedHistoryLines(
+    List chatlog, {
+    required int maxHistoryChars,
+    required bool compactHistoryTools,
+  }) {
+    if (chatlog.isEmpty || maxHistoryChars <= 0) return const <String>[];
+
+    // Identify trailing active tool-turn chain (User -> Gemini tool JSON -> System tool results)
+    int activeChainStart = chatlog.length;
+    if (compactHistoryTools) {
+      final last = chatlog.last;
+      final lastUser = last is Map ? last['user']?.toString() ?? '' : '';
+      final lastMsg = last is Map ? last['message']?.toString() ?? '' : '';
+      final bool hasActiveToolTail = lastUser == 'System' ||
+          (lastUser == 'Gemini' && _isToolCallJsonMessage(lastMsg));
+      if (hasActiveToolTail) {
+        int idx = chatlog.length - 1;
+        while (idx >= 0) {
+          final item = chatlog[idx];
+          if (item is! Map) break;
+          final u = item['user']?.toString() ?? '';
+          final m = item['message']?.toString() ?? '';
+          if (u == 'System' ||
+              (u == 'Gemini' && _isToolCallJsonMessage(m))) {
+            activeChainStart = idx;
+            idx--;
+            continue;
+          }
+          if (u == 'User') {
+            activeChainStart = idx;
+          }
+          break;
+        }
+      }
+    }
+
+    final List<({String user, String formatted})> reversedSelected =
+        <({String user, String formatted})>[];
+    int usedChars = 0;
+
+    for (int i = chatlog.length - 1; i >= 0; i--) {
+      final rawItem = chatlog[i];
+      if (rawItem is! Map) continue;
+      final String user = rawItem['user']?.toString() ?? '';
+      final String rawMsg = rawItem['message']?.toString() ?? '';
+      final bool isInActiveChain = i >= activeChainStart;
+
+      String effectiveMsg = rawMsg;
+      if (compactHistoryTools && !isInActiveChain) {
+        if (user == 'Gemini' && _isToolCallJsonMessage(rawMsg)) {
+          continue;
+        }
+        if (user == 'System' && _isToolResultMessage(rawMsg)) {
+          final singleLine = rawMsg.replaceAll(RegExp(r'\s+'), ' ').trim();
+          effectiveMsg = boundHeadAtBoundary(
+            singleLine,
+            _maxHistoricalToolSummaryChars,
+          );
+        }
+      }
+
+      if (isInActiveChain &&
+          user == 'System' &&
+          effectiveMsg.length > _maxActiveToolResultChars) {
+        effectiveMsg = boundHeadAtBoundary(
+          effectiveMsg,
+          _maxActiveToolResultChars,
+        );
+      } else if (!(isInActiveChain && user == 'System') &&
+          effectiveMsg.length > _maxHistoricalMessageChars) {
+        effectiveMsg = boundHeadAtBoundary(
+          effectiveMsg,
+          _maxHistoricalMessageChars,
+        );
+      }
+
+      final lineCopy = Map<String, dynamic>.from(rawItem)
+        ..['message'] = effectiveMsg;
+      String formatted = _formatHistoryLine(lineCopy);
+
+      if (reversedSelected.isEmpty && formatted.length > maxHistoryChars) {
+        final overflow = formatted.length - maxHistoryChars;
+        final nextLen = effectiveMsg.length - overflow;
+        if (nextLen > 40) {
+          lineCopy['message'] = boundHeadAtBoundary(effectiveMsg, nextLen);
+          formatted = _formatHistoryLine(lineCopy);
+        }
+      }
+
+      if (reversedSelected.isNotEmpty &&
+          usedChars + formatted.length > maxHistoryChars) {
+        break;
+      }
+
+      reversedSelected.add((user: user, formatted: formatted));
+      usedChars += formatted.length;
+    }
+
+    // Avoid starting the oldest retained turn with an orphaned Gemini reply if a
+    // newer User turn is present.
+    while (reversedSelected.length > 1 &&
+        reversedSelected.last.user == 'Gemini') {
+      final hasNewerUser = reversedSelected
+          .take(reversedSelected.length - 1)
+          .any((entry) => entry.user == 'User');
+      if (!hasNewerUser) break;
+      reversedSelected.removeLast();
+    }
+
+    return reversedSelected.reversed.map((e) => e.formatted).toList();
+  }
+
   String _formatHistoryLine(dynamic line) {
     final rawTime = line["time"]?.toString() ?? "";
     final epochMs = int.tryParse(rawTime);
@@ -149,19 +315,30 @@ class Prompt{
     List<M3xTool>? tools,
     bool includeTools = true,
     bool hasAttachedImage = false,
+    int? maxHistoryChars,
+    int? maxToolSchemaChars,
+    bool compactHistoryTools = true,
   }) async {
     // Used only for title generation — skip everything
     if (ignoreContext) return "";
+
+    final int historyBudget = maxHistoryChars ?? defaultMaxHistoryChars;
+    final int schemaBudget = maxToolSchemaChars ?? defaultMaxToolSchemaChars;
 
     // ignoreInstructions: bare conversation wrapper only (no system prompt)
     if (ignoreInstructions) {
       if (chatlog.isEmpty && !hasAttachedImage) return "";
       String bare = "You are having a conversation with the User.\n"
           "Reply directly with your answer without prepending \"Gemini\" or a timestamp.";
-      if (chatlog.isNotEmpty) {
+      final historyLines = _buildBoundedHistoryLines(
+        chatlog,
+        maxHistoryChars: historyBudget,
+        compactHistoryTools: compactHistoryTools,
+      );
+      if (historyLines.isNotEmpty) {
         bare += "\n\n### [CHAT HISTORY]";
-        for (var line in chatlog) {
-          bare += _formatHistoryLine(line);
+        for (final line in historyLines) {
+          bare += line;
         }
       }
       if (hasAttachedImage) {
@@ -208,27 +385,54 @@ class Prompt{
       final hasWikipediaTools = tools.any(
         (t) => t.name == 'wikipedia_summary' || t.name == 'wikipedia_details',
       );
-      output += "\n\n### [AVAILABLE TOOLS]"
-          "\nUse a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text."
-          '\nWhen calling a tool, respond with ONLY a JSON object using double quotes:'
-          '\n{"tool": "<tool>", "app": "<app>", "args": {}}'
-          '\nIf a tool takes no parameters, set "args": {} (never leave "args": empty).'
-          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required).'
-          '${hasWikipediaTools ? ' Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.' : ''}'
-          "\n\nTools:";
+      final toolsBuffer = StringBuffer()
+        ..write("\n\n### [AVAILABLE TOOLS]")
+        ..write(
+          "\nUse a tool only when the user explicitly asks for live data or an app action covered below; otherwise reply directly in plain text.",
+        )
+        ..write(
+          '\nWhen calling a tool, respond with ONLY a JSON object using double quotes:',
+        )
+        ..write('\n{"tool": "<tool>", "app": "<app>", "args": {}}')
+        ..write(
+          '\nIf a tool takes no parameters, set "args": {} (never leave "args": empty).',
+        )
+        ..write(
+          '\nAlways fill ALL required arguments in "args" (never leave empty "args": {} when parameters are required).',
+        )
+        ..write(
+          hasWikipediaTools
+              ? ' Prefer wikipedia_summary for general "What is X?" explanations; use wikipedia_details only when looking up a specific fact inside a Wikipedia article.'
+              : '',
+        )
+        ..write("\n\nTools:");
+      int addedTools = 0;
       for (final tool in tools) {
         final appStr = tool.app != null ? ' (app: "${tool.app}")' : '';
-        output += "\n - ${tool.name}$appStr: ${tool.description}"
-            "\n   args schema: ${jsonEncode(tool.parameters)}";
+        final compactDesc = boundHeadAtBoundary(tool.description, 160);
+        final compactArgs = _compactToolSchema(tool.parameters);
+        final entry =
+            "\n - ${tool.name}$appStr: $compactDesc\n   args: $compactArgs";
+        if (addedTools > 0 && toolsBuffer.length + entry.length > schemaBudget) {
+          break;
+        }
+        toolsBuffer.write(entry);
+        addedTools++;
       }
+      output += toolsBuffer.toString();
     }
 
     // ── 5. Chat history ───────────────────────────────────────────────────────
-    if (chatlog.isNotEmpty) {
+    final historyLines = _buildBoundedHistoryLines(
+      chatlog,
+      maxHistoryChars: historyBudget,
+      compactHistoryTools: compactHistoryTools,
+    );
+    if (historyLines.isNotEmpty) {
       output += "\n\n### [CHAT HISTORY]"
           "\n - Use history for context and focus on the user's latest message.";
-      for (var line in chatlog) {
-        output += _formatHistoryLine(line);
+      for (final line in historyLines) {
+        output += line;
       }
     }
 

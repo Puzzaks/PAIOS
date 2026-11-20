@@ -15,8 +15,11 @@ import android.util.Base64
 import android.util.Log
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.FunctionCall
+import com.google.mlkit.genai.common.GenAiException
 import com.google.mlkit.genai.common.StreamingCallback
 import com.google.mlkit.genai.prompt.GenerateContentResponse
+import com.google.mlkit.genai.prompt.PromptPrefix
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -37,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -49,6 +53,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class FlutterLocalAiPlugin(
@@ -75,6 +80,10 @@ class FlutterLocalAiPlugin(
 
         @androidx.annotation.Keep
         @JvmStatic
+        fun hasActivePlugin(): Boolean = pluginInstanceRef?.get() != null
+
+        @androidx.annotation.Keep
+        @JvmStatic
         fun deliverAssistantChat(messagesJson: String, unarchived: Boolean = true) {
             val plugin = pluginInstanceRef?.get()
             if (plugin != null) {
@@ -94,15 +103,22 @@ class FlutterLocalAiPlugin(
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private lateinit var downloadChannel: EventChannel
+    @Volatile
     private var requestedReleaseStage: String? = null
+    @Volatile
     private var requestedPreference: String? = null
+    @Volatile
     private var requestedEnableThinking: Boolean? = null
+    @Volatile
     private var lastObservedPrefStage: String? = null
+    @Volatile
     private var lastObservedPrefPreference: String? = null
+    @Volatile
     private var lastObservedPrefThinking: Boolean? = null
     private var activeResolvedClient: PaiosModelHelper.ResolvedModelClient? = null
     private val clientLock = Any()
     private val activeGenerationCount = AtomicInteger(0)
+    @Volatile
     private var instructions: String? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeStreamJob: Job? = null
@@ -251,6 +267,20 @@ class FlutterLocalAiPlugin(
         )
         replaceActiveClient(resolved)
         return resolved
+    }
+
+    private fun triggerWarmupIfIdle(resolved: PaiosModelHelper.ResolvedModelClient) {
+        if (resolved.statusCode == FeatureStatus.AVAILABLE &&
+            activeGenerationCount.get() == 0 &&
+            !PaiosModelHelper.overlayActiveFlag
+        ) {
+            coroutineScope.launch(Dispatchers.IO) {
+                if (activeGenerationCount.get() == 0 && !PaiosModelHelper.overlayActiveFlag) {
+                    runCatching { resolved.model.warmup() }
+                        .onFailure { e -> Log.d("FlutterLocalAi", "warmup() skipped: ${e.message}") }
+                }
+            }
+        }
     }
 
     private fun variantKey(stage: String, preference: String): String =
@@ -453,7 +483,10 @@ class FlutterLocalAiPlugin(
             val activePref = resolved.activePreference
             val key = variantKey(activeStage, activePref)
             when (resolved.statusCode) {
-                FeatureStatus.AVAILABLE -> emit("Available=Available=0")
+                FeatureStatus.AVAILABLE -> {
+                    triggerWarmupIfIdle(resolved)
+                    emit("Available=Available=0")
+                }
                 FeatureStatus.UNAVAILABLE -> emit("Error=AICore=Unavailable")
                 FeatureStatus.DOWNLOADING,
                 FeatureStatus.DOWNLOADABLE -> {
@@ -563,6 +596,7 @@ class FlutterLocalAiPlugin(
                         val resolved = withContext(Dispatchers.IO) {
                             ensureClient(stage, pref, allowDownloadable = true, forceRefresh = true)
                         }
+                        triggerWarmupIfIdle(resolved)
                         result.success(buildFullModelStatusMap(resolved, logContext = "initAiCore"))
                     } catch (e: Exception) {
                         result.error("INIT_ERROR", e.message, null)
@@ -606,6 +640,7 @@ class FlutterLocalAiPlugin(
                         val resolved = withContext(Dispatchers.IO) {
                             ensureClient(stage, pref, allowDownloadable = true, forceRefresh = true)
                         }
+                        triggerWarmupIfIdle(resolved)
                         result.success(buildFullModelStatusMap(resolved, logContext = "switchModelConfig"))
                     } catch (e: Exception) {
                         result.error("SWITCH_MODEL_CONFIG_ERROR", e.message, null)
@@ -758,6 +793,90 @@ class FlutterLocalAiPlugin(
                     }
                 }
             }
+            "countTokens" -> {
+                val prompt = call.argument<String>("prompt")
+                if (prompt == null) {
+                    result.error("INVALID_ARG", "Prompt is required", null)
+                    return
+                }
+                val sysInstr = call.argument<String>("systemInstruction")
+                    ?: call.argument<String>("instructions")
+                coroutineScope.launch {
+                    try {
+                        val totalTokens = withContext(Dispatchers.IO) {
+                            val resolved = ensureClient(
+                                stage = resolveRequestedStage(),
+                                preference = resolveRequestedPreference(),
+                                allowDownloadable = false
+                            )
+                            val request = PaiosModelHelper.buildRequest(
+                                prompt = prompt,
+                                instructions = sysInstr,
+                                useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable
+                            )
+                            resolved.model.countTokens(request).totalTokens
+                        }
+                        result.success(totalTokens)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        result.error(
+                            "COUNT_TOKENS_ERROR",
+                            formatAiCoreErrorMessage("Error counting tokens", e),
+                            null
+                        )
+                    }
+                }
+            }
+            "getTokenLimit" -> {
+                coroutineScope.launch {
+                    try {
+                        val limit = withContext(Dispatchers.IO) {
+                            val resolved = ensureClient(
+                                stage = resolveRequestedStage(),
+                                preference = resolveRequestedPreference(),
+                                allowDownloadable = false
+                            )
+                            resolved.model.getTokenLimit()
+                        }
+                        result.success(limit)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        result.error(
+                            "GET_TOKEN_LIMIT_ERROR",
+                            formatAiCoreErrorMessage("Error getting token limit", e),
+                            null
+                        )
+                    }
+                }
+            }
+            "clearImplicitCaches" -> {
+                coroutineScope.launch {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val existing = synchronized(clientLock) { activeResolvedClient }
+                            val resolved = existing ?: ensureClient(
+                                stage = resolveRequestedStage(),
+                                preference = resolveRequestedPreference(),
+                                allowDownloadable = false
+                            )
+                            if (resolved.statusCode == FeatureStatus.AVAILABLE) {
+                                resolved.model.clearImplicitCaches()
+                            }
+                        }
+                        result.success(true)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        result.error(
+                            "CLEAR_CACHES_ERROR",
+                            formatAiCoreErrorMessage("Error clearing implicit caches", e),
+                            null
+                        )
+                    }
+                }
+            }
             "generateInternalInference" -> {
                 val prompt = call.argument<String>("prompt")
                 if (prompt.isNullOrBlank()) {
@@ -769,6 +888,8 @@ class FlutterLocalAiPlugin(
                 val rawMaxTokens = call.argument<Number>("maxTokens")?.toInt() ?: 192
                 val clampedMaxTokens = rawMaxTokens.coerceIn(1, 256)
                 val temperatureValue = call.argument<Number>("temperature")?.toFloat() ?: 0.2f
+                val topKValue = call.argument<Number>("topK")?.toInt()
+                val seedValue = call.argument<Number>("seed")?.toInt()
 
                 coroutineScope.launch {
                     try {
@@ -777,7 +898,9 @@ class FlutterLocalAiPlugin(
                             oneShotInstructions = oneShotInstructions,
                             imageBytes = imageBytes,
                             maxTokens = clampedMaxTokens,
-                            temperature = temperatureValue
+                            temperature = temperatureValue,
+                            topK = topKValue,
+                            seed = seedValue
                         )
                         result.success(output)
                     } catch (e: CancellationException) {
@@ -892,39 +1015,46 @@ class FlutterLocalAiPlugin(
         downsample: Boolean
     ): Bitmap? {
         try {
-            val rawBitmap: Bitmap = when {
-                imageBytes != null && imageBytes.isNotEmpty() -> {
-                    BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                }
+            return when {
                 !imagePath.isNullOrBlank() -> {
                     if (imagePath.startsWith("content://") || imagePath.startsWith("file://")) {
-                        context.contentResolver.openInputStream(Uri.parse(imagePath))?.use {
-                            BitmapFactory.decodeStream(it)
-                        }
+                        val parsedUri = Uri.parse(imagePath)
+                        PaiosModelHelper.decodeSampledBitmapFromStream(
+                            openStream = { context.contentResolver.openInputStream(parsedUri) },
+                            maxDim = MAX_DOWNSAMPLE_DIMENSION,
+                            downsample = downsample
+                        )
                     } else {
                         val file = File(imagePath)
                         if (file.exists()) {
-                            BitmapFactory.decodeFile(file.absolutePath)
+                            PaiosModelHelper.decodeSampledBitmapFromFile(
+                                path = file.absolutePath,
+                                maxDim = MAX_DOWNSAMPLE_DIMENSION,
+                                downsample = downsample
+                            )
                         } else {
                             null
                         }
                     }
                 }
+                imageBytes != null && imageBytes.isNotEmpty() -> {
+                    PaiosModelHelper.decodeSampledBitmapFromBytes(
+                        bytes = imageBytes,
+                        maxDim = MAX_DOWNSAMPLE_DIMENSION,
+                        downsample = downsample
+                    )
+                }
                 !imageBase64.isNullOrBlank() -> {
                     val cleanBase64 = imageBase64.substringAfter("base64,", imageBase64).trim()
                     val decoded = Base64.decode(cleanBase64, Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(decoded, 0, decoded.size)
+                    PaiosModelHelper.decodeSampledBitmapFromBytes(
+                        bytes = decoded,
+                        maxDim = MAX_DOWNSAMPLE_DIMENSION,
+                        downsample = downsample
+                    )
                 }
                 else -> null
-            } ?: return null
-
-            if (downsample && (rawBitmap.width > MAX_DOWNSAMPLE_DIMENSION || rawBitmap.height > MAX_DOWNSAMPLE_DIMENSION)) {
-                val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(rawBitmap.width, rawBitmap.height).toFloat()
-                val newW = (rawBitmap.width * scale).toInt().coerceAtLeast(1)
-                val newH = (rawBitmap.height * scale).toInt().coerceAtLeast(1)
-                return Bitmap.createScaledBitmap(rawBitmap, newW, newH, true)
             }
-            return rawBitmap
         } catch (e: Exception) {
             Log.e("FlutterLocalAi", "Error decoding bitmap for vision inference: ${e.message}", e)
             return null
@@ -1021,6 +1151,8 @@ class FlutterLocalAiPlugin(
             "isSystemPromptAvailable" to resolved.capabilities.isSystemPromptAvailable,
             "isThinkingModeAvailable" to resolved.capabilities.isThinkingModeAvailable,
             "isCachingAvailable" to resolved.capabilities.isCachingAvailable,
+            "isStructuredOutputAvailable" to resolved.capabilities.isStructuredOutputAvailable,
+            "isFunctionCallingAvailable" to resolved.capabilities.isFunctionCallingAvailable,
             "isNanoV4" to resolved.capabilities.isNanoV4,
             "tokenLimit" to resolved.capabilities.tokenLimit,
             "availableFeatures" to resolved.capabilities.availableFeatures,
@@ -1098,6 +1230,8 @@ class FlutterLocalAiPlugin(
                 "isSystemPromptAvailable" to false,
                 "isThinkingModeAvailable" to false,
                 "isCachingAvailable" to false,
+                "isStructuredOutputAvailable" to false,
+                "isFunctionCallingAvailable" to false,
                 "isNanoV4" to false,
                 "tokenLimit" to 0,
                 "aicoreInstalled" to false,
@@ -1194,6 +1328,8 @@ class FlutterLocalAiPlugin(
             (payload["enableThinking"] as? Boolean) ?: (configMap?.get("enableThinking") as? Boolean)
         )
         val callInstructions = (payload["instructions"] as? String) ?: instructions
+        val topKValue = (payload["topK"] as? Number)?.toInt() ?: (configMap?.get("topK") as? Number)?.toInt()
+        val seedValue = (payload["seed"] as? Number)?.toInt() ?: (configMap?.get("seed") as? Number)?.toInt()
 
         activeStreamJob?.cancel()
         activeStreamJob = coroutineScope.launch {
@@ -1213,7 +1349,9 @@ class FlutterLocalAiPlugin(
                     releaseStage = stage,
                     preference = preference,
                     enableThinking = enableThinking,
-                    overrideInstructions = callInstructions
+                    overrideInstructions = callInstructions,
+                    topK = topKValue,
+                    seed = seedValue
                 )
                 withContext(Dispatchers.Main) {
                     if (isActive) {
@@ -1260,12 +1398,15 @@ class FlutterLocalAiPlugin(
             (payload["enableThinking"] as? Boolean) ?: (configMap?.get("enableThinking") as? Boolean)
         )
         val callInstructions = (payload["instructions"] as? String) ?: instructions
+        val topKValue = (payload["topK"] as? Number)?.toInt() ?: (configMap?.get("topK") as? Number)?.toInt()
+        val seedValue = (payload["seed"] as? Number)?.toInt() ?: (configMap?.get("seed") as? Number)?.toInt()
 
         activeStreamJob?.cancel()
         var lastFinishReason: String? = null
         var finalDoneResponse: Map<String, Any>? = null
         var streamFailed = false
         activeStreamJob = coroutineScope.launch {
+            var bitmap: Bitmap? = null
             try {
                 withContext(Dispatchers.Main) {
                     if (isActive) {
@@ -1273,7 +1414,7 @@ class FlutterLocalAiPlugin(
                     }
                 }
 
-                val bitmap = withContext(Dispatchers.IO) {
+                bitmap = withContext(Dispatchers.IO) {
                     prepareBitmap(imageBytes, imagePath, imageBase64, downsample)
                 }
 
@@ -1284,7 +1425,9 @@ class FlutterLocalAiPlugin(
                     releaseStage = stage,
                     preference = preference,
                     enableThinking = enableThinking,
-                    overrideInstructions = callInstructions
+                    overrideInstructions = callInstructions,
+                    topK = topKValue,
+                    seed = seedValue
                 )
                     .onEach { chunkMap ->
                         val reasonFromChunk = chunkMap["reason"] as? String
@@ -1337,6 +1480,10 @@ class FlutterLocalAiPlugin(
                         events.endOfStream()
                     }
                 }
+            } finally {
+                if (bitmap != null && !bitmap.isRecycled) {
+                    runCatching { bitmap.recycle() }
+                }
             }
         }
     }
@@ -1358,7 +1505,10 @@ class FlutterLocalAiPlugin(
                 forceRefresh = true
             )
             when (resolved.statusCode) {
-                FeatureStatus.AVAILABLE -> "Available=Available=0"
+                FeatureStatus.AVAILABLE -> {
+                    triggerWarmupIfIdle(resolved)
+                    "Available=Available=0"
+                }
                 FeatureStatus.UNAVAILABLE -> "Error=AICore=Unavailable"
                 FeatureStatus.DOWNLOADING -> "Download=In Progress=0"
                 FeatureStatus.DOWNLOADABLE -> {
@@ -1390,9 +1540,12 @@ class FlutterLocalAiPlugin(
         releaseStage: String = resolveRequestedStage(),
         preference: String = resolveRequestedPreference(),
         enableThinking: Boolean = resolveRequestedEnableThinking(),
-        overrideInstructions: String? = instructions
+        overrideInstructions: String? = instructions,
+        topK: Int? = null,
+        seed: Int? = null
     ): Map<String, Any> = withContext(Dispatchers.IO) {
         activeGenerationCount.incrementAndGet()
+        var bitmap: Bitmap? = null
         try {
             val resolved = ensureClient(
                 stage = releaseStage,
@@ -1402,7 +1555,14 @@ class FlutterLocalAiPlugin(
             val maxOutputTokensValue = (configMap?.get("maxTokens") as? Number)?.toInt()
             val temperatureValue = (configMap?.get("temperature") as? Number)?.toFloat()
             val candidateCountValue = (configMap?.get("candidates") as? Number)?.toInt()
-            val bitmap = prepareBitmap(imageBytes, imagePath, imageBase64, downsample)
+            val effectiveTopK = topK ?: (configMap?.get("topK") as? Number)?.toInt()
+            val effectiveSeed = seed ?: (configMap?.get("seed") as? Number)?.toInt()
+            bitmap = prepareBitmap(imageBytes, imagePath, imageBase64, downsample)
+            val promptPrefixConfig = if (resolved.capabilities.isCachingAvailable && bitmap == null) {
+                PromptPrefix(cacheSystemInstruction = true, cacheTools = true)
+            } else {
+                null
+            }
 
             val request = PaiosModelHelper.buildRequest(
                 prompt = prompt,
@@ -1413,15 +1573,25 @@ class FlutterLocalAiPlugin(
                 enableThinking = enableThinking,
                 useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
                 useThinkingCapability = resolved.capabilities.isThinkingModeAvailable,
-                candidateCount = candidateCountValue
+                candidateCount = candidateCountValue,
+                topK = effectiveTopK,
+                seed = effectiveSeed,
+                promptPrefix = promptPrefixConfig
             )
             val startTime = System.currentTimeMillis()
-            val response: GenerateContentResponse = resolved.model.generateContent(request)
+            val response: GenerateContentResponse = PaiosModelHelper.inferenceMutex.withLock {
+                resolved.model.generateContent(request)
+            }
             val generationTime = System.currentTimeMillis() - startTime
-            val generatedText = response.candidates.firstOrNull()?.text ?: ""
+            val candidate = response.candidates.firstOrNull()
+            val generatedText = candidate?.text?.takeIf { it.isNotEmpty() }
+                ?: candidate?.functionCalls?.firstOrNull()?.let {
+                    PaiosModelHelper.functionCallToJsonObject(it).toString()
+                }
+                ?: ""
             val thoughtText = response.thoughtProcess.joinToString("") { it.text }
-            val finishReason = response.candidates.firstOrNull()?.finishReason?.toString()
-            val tokenCount = generatedText.split(" ").filter { it.isNotEmpty() }.size
+            val finishReason = candidate?.finishReason?.toString()
+            val tokenCount = PaiosModelHelper.countEstimatedTokens(generatedText)
             val resultMap = mutableMapOf<String, Any>(
                 "text" to generatedText,
                 "generationTimeMs" to generationTime,
@@ -1438,13 +1608,11 @@ class FlutterLocalAiPlugin(
             throw e
         } catch (e: Exception) {
             Log.e("FlutterLocalAi", "generateText error: ${e.javaClass.simpleName} - ${e.message}", e)
-            val errorMessage = e.message ?: ""
-            val errorCode = extractErrorCode(errorMessage)
-            if (errorCode == -101) {
-                throw Exception("AICore is not installed or version is too low (Error -101). Please install or update Google AICore from the Play Store: https://play.google.com/store/apps/details?id=com.google.android.aicore")
-            }
-            throw Exception("Error generating text: ${e.message}")
+            throw Exception(formatAiCoreErrorMessage("Error generating text", e), e)
         } finally {
+            if (bitmap != null && !bitmap.isRecycled) {
+                runCatching { bitmap.recycle() }
+            }
             activeGenerationCount.decrementAndGet()
         }
     }
@@ -1454,63 +1622,87 @@ class FlutterLocalAiPlugin(
         oneShotInstructions: String?,
         imageBytes: ByteArray?,
         maxTokens: Int,
-        temperature: Float
+        temperature: Float,
+        topK: Int? = null,
+        seed: Int? = null
     ): String = withContext(Dispatchers.IO) {
-        val resolved = ensureClient(
-            stage = resolveRequestedStage(),
-            preference = resolveRequestedPreference(),
-            allowDownloadable = false
-        )
-        val bitmap = if (imageBytes != null && imageBytes.isNotEmpty()) {
-            prepareBitmap(imageBytes, null, null, true)
-        } else {
-            null
-        }
-        val cleanInstructions = oneShotInstructions?.takeIf { it.isNotBlank() }
-        val clampedTokens = maxTokens.coerceIn(1, 256)
+        activeGenerationCount.incrementAndGet()
+        var bitmap: Bitmap? = null
+        try {
+            if (PaiosModelHelper.overlayActiveFlag) {
+                delay(150L)
+            }
+            val resolved = ensureClient(
+                stage = resolveRequestedStage(),
+                preference = resolveRequestedPreference(),
+                allowDownloadable = false
+            )
+            bitmap = if (imageBytes != null && imageBytes.isNotEmpty()) {
+                prepareBitmap(imageBytes, null, null, true)
+            } else {
+                null
+            }
+            val cleanInstructions = oneShotInstructions?.takeIf { it.isNotBlank() }
+            val clampedTokens = maxTokens.coerceIn(1, 256)
+            val promptPrefixConfig = if (resolved.capabilities.isCachingAvailable && bitmap == null) {
+                PromptPrefix(cacheSystemInstruction = true, cacheTools = true)
+            } else {
+                null
+            }
 
-        val request = PaiosModelHelper.buildRequest(
-            prompt = prompt,
-            instructions = cleanInstructions,
-            image = bitmap,
-            maxTokens = clampedTokens,
-            temperature = temperature,
-            enableThinking = false,
-            useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
-            useThinkingCapability = false,
-            candidateCount = 1
-        )
+            val request = PaiosModelHelper.buildRequest(
+                prompt = prompt,
+                instructions = cleanInstructions,
+                image = bitmap,
+                maxTokens = clampedTokens,
+                temperature = temperature,
+                enableThinking = false,
+                useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
+                useThinkingCapability = false,
+                candidateCount = 1,
+                topK = topK,
+                seed = seed,
+                promptPrefix = promptPrefixConfig
+            )
 
-        val retryDelaysMs = longArrayOf(200L, 450L, 800L)
-        var lastException: Exception? = null
-        for (attempt in 0..retryDelaysMs.size) {
-            try {
-                val response: GenerateContentResponse = resolved.model.generateContent(request)
-                return@withContext response.candidates.firstOrNull()?.text ?: ""
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastException = e
-                if (PaiosModelHelper.isBusyException(e) && attempt < retryDelaysMs.size) {
-                    val waitMs = retryDelaysMs[attempt]
-                    Log.w(
-                        "FlutterLocalAi",
-                        "generateInternalInference busy (-101), retry ${attempt + 1}/${retryDelaysMs.size} after ${waitMs}ms: ${e.message}"
-                    )
-                    delay(waitMs)
-                } else {
-                    break
+            val retryDelaysMs = longArrayOf(200L, 450L, 800L)
+            var lastException: Exception? = null
+            for (attempt in 0..retryDelaysMs.size) {
+                try {
+                    val response: GenerateContentResponse = PaiosModelHelper.inferenceMutex.withLock {
+                        resolved.model.generateContent(request)
+                    }
+                    return@withContext response.candidates.firstOrNull()?.text ?: ""
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastException = e
+                    if (PaiosModelHelper.isBusyException(e) && attempt < retryDelaysMs.size) {
+                        val waitMs = PaiosModelHelper.extractRetryDelayMs(e) ?: retryDelaysMs[attempt]
+                        Log.w(
+                            "FlutterLocalAi",
+                            "generateInternalInference busy, retry ${attempt + 1}/${retryDelaysMs.size} after ${waitMs}ms: ${e.message}"
+                        )
+                        delay(waitMs)
+                    } else {
+                        break
+                    }
                 }
             }
-        }
 
-        val finalError = lastException ?: Exception("Unknown internal inference error")
-        Log.e(
-            "FlutterLocalAi",
-            "generateInternalInference failed: ${finalError.javaClass.simpleName} - ${finalError.message}",
-            finalError
-        )
-        throw Exception("Internal inference error: ${finalError.message}", finalError)
+            val finalError = lastException ?: Exception("Unknown internal inference error")
+            Log.e(
+                "FlutterLocalAi",
+                "generateInternalInference failed: ${finalError.javaClass.simpleName} - ${finalError.message}",
+                finalError
+            )
+            throw Exception(formatAiCoreErrorMessage("Internal inference error", finalError), finalError)
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled) {
+                runCatching { bitmap.recycle() }
+            }
+            activeGenerationCount.decrementAndGet()
+        }
     }
 
     private fun generateTextStreamFlow(
@@ -1520,11 +1712,15 @@ class FlutterLocalAiPlugin(
         releaseStage: String = resolveRequestedStage(),
         preference: String = resolveRequestedPreference(),
         enableThinking: Boolean = resolveRequestedEnableThinking(),
-        overrideInstructions: String? = instructions
+        overrideInstructions: String? = instructions,
+        topK: Int? = null,
+        seed: Int? = null
     ): Flow<Map<String, Any>> {
         val candidateCountValue = (configMap?.get("candidates") as? Number)?.toInt()
         val maxOutputTokensValue = (configMap?.get("maxTokens") as? Number)?.toInt()
         val temperatureValue = (configMap?.get("temperature") as? Number)?.toFloat()
+        val effectiveTopK = topK ?: (configMap?.get("topK") as? Number)?.toInt()
+        val effectiveSeed = seed ?: (configMap?.get("seed") as? Number)?.toInt()
         val startTime = System.currentTimeMillis()
 
         return flow {
@@ -1536,6 +1732,11 @@ class FlutterLocalAiPlugin(
                     allowDownloadable = false
                 )
                 val useThinking = enableThinking && resolved.capabilities.isThinkingModeAvailable
+                val promptPrefixConfig = if (resolved.capabilities.isCachingAvailable && bitmap == null) {
+                    PromptPrefix(cacheSystemInstruction = true, cacheTools = true)
+                } else {
+                    null
+                }
                 val request = PaiosModelHelper.buildRequest(
                     prompt = prompt,
                     instructions = overrideInstructions,
@@ -1545,167 +1746,203 @@ class FlutterLocalAiPlugin(
                     enableThinking = useThinking,
                     useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
                     useThinkingCapability = resolved.capabilities.isThinkingModeAvailable,
-                    candidateCount = candidateCountValue
+                    candidateCount = candidateCountValue,
+                    topK = effectiveTopK,
+                    seed = effectiveSeed,
+                    promptPrefix = promptPrefixConfig
                 )
 
-                if (useThinking) {
-                    callbackFlow {
-                        val job = launch(Dispatchers.IO) {
-                            val lock = Any()
-                            val textBuffer = StringBuilder()
-                            val thoughtBuffer = StringBuilder()
-                            try {
-                                val finalResponse = resolved.model.generateContent(
-                                    request,
-                                    object : StreamingCallback {
-                                        override fun onNewThought(thought: String) {
-                                            if (thought.isEmpty()) return
-                                            val cumulativeText: String
-                                            val cumulativeThought: String
-                                            synchronized(lock) {
-                                                thoughtBuffer.append(thought)
-                                                cumulativeText = textBuffer.toString()
-                                                cumulativeThought = thoughtBuffer.toString()
-                                            }
-                                            val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
-                                            val cleanChunk = PaiosModelHelper.stripControlToolTags(thought)
-                                            val generationTime = System.currentTimeMillis() - startTime
-                                            val tokenCount = cumulativeText.split(" ").count { it.isNotEmpty() }
-                                            trySend(
-                                                mapOf(
-                                                    "status" to "streaming",
-                                                    "text" to cumulativeText,
-                                                    "chunk" to "",
-                                                    "thought" to cleanThought,
-                                                    "thoughtChunk" to cleanChunk,
-                                                    "generationTimeMs" to generationTime,
-                                                    "tokenCount" to tokenCount
+                PaiosModelHelper.inferenceMutex.withLock {
+                    if (useThinking) {
+                        callbackFlow {
+                            val job = launch(Dispatchers.IO) {
+                                val lock = Any()
+                                val textBuffer = StringBuilder()
+                                val thoughtBuffer = StringBuilder()
+                                try {
+                                    val finalResponse = resolved.model.generateContent(
+                                        request,
+                                        object : StreamingCallback {
+                                            override fun onNewThought(thought: String) {
+                                                if (thought.isEmpty()) return
+                                                val cumulativeText: String
+                                                val cumulativeThought: String
+                                                synchronized(lock) {
+                                                    thoughtBuffer.append(thought)
+                                                    cumulativeText = textBuffer.toString()
+                                                    cumulativeThought = thoughtBuffer.toString()
+                                                }
+                                                val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
+                                                val cleanChunk = PaiosModelHelper.stripControlToolTags(thought)
+                                                val generationTime = System.currentTimeMillis() - startTime
+                                                val tokenCount = PaiosModelHelper.countEstimatedTokens(cumulativeText)
+                                                trySend(
+                                                    mapOf(
+                                                        "status" to "streaming",
+                                                        "text" to cumulativeText,
+                                                        "chunk" to "",
+                                                        "thought" to cleanThought,
+                                                        "thoughtChunk" to cleanChunk,
+                                                        "generationTimeMs" to generationTime,
+                                                        "tokenCount" to tokenCount
+                                                    )
                                                 )
-                                            )
-                                        }
+                                            }
 
-                                        override fun onNewText(text: String) {
-                                            if (text.isEmpty()) return
-                                            val cumulativeText: String
-                                            val cumulativeThought: String
-                                            synchronized(lock) {
-                                                textBuffer.append(text)
-                                                cumulativeText = textBuffer.toString()
-                                                cumulativeThought = thoughtBuffer.toString()
-                                            }
-                                            val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
-                                            val generationTime = System.currentTimeMillis() - startTime
-                                            val tokenCount = cumulativeText.split(" ").count { it.isNotEmpty() }
-                                            trySend(
-                                                mapOf(
-                                                    "status" to "streaming",
-                                                    "text" to cumulativeText,
-                                                    "chunk" to text,
-                                                    "thought" to cleanThought,
-                                                    "generationTimeMs" to generationTime,
-                                                    "tokenCount" to tokenCount
+                                            override fun onNewText(text: String) {
+                                                if (text.isEmpty()) return
+                                                val cumulativeText: String
+                                                val cumulativeThought: String
+                                                synchronized(lock) {
+                                                    textBuffer.append(text)
+                                                    cumulativeText = textBuffer.toString()
+                                                    cumulativeThought = thoughtBuffer.toString()
+                                                }
+                                                val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
+                                                val generationTime = System.currentTimeMillis() - startTime
+                                                val tokenCount = PaiosModelHelper.countEstimatedTokens(cumulativeText)
+                                                trySend(
+                                                    mapOf(
+                                                        "status" to "streaming",
+                                                        "text" to cumulativeText,
+                                                        "chunk" to text,
+                                                        "thought" to cleanThought,
+                                                        "generationTimeMs" to generationTime,
+                                                        "tokenCount" to tokenCount
+                                                    )
                                                 )
-                                            )
+                                            }
+
+                                            override fun onNewFunctionCall(functionCall: FunctionCall) {
+                                                val jsonText = PaiosModelHelper.functionCallToJsonObject(functionCall).toString()
+                                                val cumulativeText: String
+                                                val cumulativeThought: String
+                                                synchronized(lock) {
+                                                    textBuffer.append(jsonText)
+                                                    cumulativeText = textBuffer.toString()
+                                                    cumulativeThought = thoughtBuffer.toString()
+                                                }
+                                                val cleanThought = PaiosModelHelper.stripControlToolTags(cumulativeThought)
+                                                val generationTime = System.currentTimeMillis() - startTime
+                                                val tokenCount = PaiosModelHelper.countEstimatedTokens(cumulativeText)
+                                                trySend(
+                                                    mapOf(
+                                                        "status" to "streaming",
+                                                        "text" to cumulativeText,
+                                                        "chunk" to jsonText,
+                                                        "thought" to cleanThought,
+                                                        "generationTimeMs" to generationTime,
+                                                        "tokenCount" to tokenCount
+                                                    )
+                                                )
+                                            }
                                         }
+                                    )
+                                    val candidate = finalResponse.candidates.firstOrNull()
+                                    val rawFinalText = synchronized(lock) { textBuffer.toString() }
+                                        .ifEmpty {
+                                            candidate?.text?.takeIf { it.isNotEmpty() }
+                                                ?: candidate?.functionCalls?.firstOrNull()?.let {
+                                                    PaiosModelHelper.functionCallToJsonObject(it).toString()
+                                                }
+                                                ?: ""
+                                        }
+                                    val rawFinalThought = synchronized(lock) { thoughtBuffer.toString() }
+                                        .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
+                                    val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
+                                        PaiosModelHelper.extractToolCallJson(rawFinalThought)
+                                    } else {
+                                        null
                                     }
-                                )
-                                val rawFinalText = synchronized(lock) { textBuffer.toString() }
-                                    .ifEmpty { finalResponse.candidates.firstOrNull()?.text ?: "" }
-                                val rawFinalThought = synchronized(lock) { thoughtBuffer.toString() }
-                                    .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
-                                val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
-                                    PaiosModelHelper.extractToolCallJson(rawFinalThought)
-                                } else {
-                                    null
+                                    val finalText = if (promotedToolCall != null) {
+                                        promotedToolCall.toJsonObject().toString()
+                                    } else {
+                                        rawFinalText
+                                    }
+                                    val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
+                                    val finishReason = PaiosModelHelper.normalizeFinishReason(
+                                        candidate?.finishReason
+                                    )
+                                    val generationTime = System.currentTimeMillis() - startTime
+                                    val tokenCount = PaiosModelHelper.countEstimatedTokens(finalText)
+                                    val doneMap = mutableMapOf<String, Any>(
+                                        "status" to "done",
+                                        "text" to finalText,
+                                        "thought" to finalThought,
+                                        "generationTimeMs" to generationTime,
+                                        "tokenCount" to tokenCount
+                                    )
+                                    if (finishReason != null) {
+                                        doneMap["reason"] = finishReason
+                                    }
+                                    trySend(doneMap)
+                                    close()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    close(e)
                                 }
-                                val finalText = if (promotedToolCall != null) {
-                                    promotedToolCall.toJsonObject().toString()
-                                } else {
-                                    rawFinalText
+                            }
+                            awaitClose { job.cancel() }
+                        }.collect { emit(it) }
+                    } else {
+                        var fullResponse = ""
+                        var lastFinishReason: String? = null
+                        resolved.model.generateContentStream(request)
+                            .transform { chunk ->
+                                val candidate = chunk.candidates.firstOrNull()
+                                val newChunkText = candidate?.text?.takeIf { it.isNotEmpty() }
+                                    ?: candidate?.functionCalls?.firstOrNull()?.let {
+                                        PaiosModelHelper.functionCallToJsonObject(it).toString()
+                                    }
+                                    ?: ""
+                                val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                                if (chunkReason != null) {
+                                    lastFinishReason = chunkReason
                                 }
-                                val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
-                                val finishReason = PaiosModelHelper.normalizeFinishReason(
-                                    finalResponse.candidates.firstOrNull()?.finishReason
-                                )
+                                fullResponse += newChunkText
                                 val generationTime = System.currentTimeMillis() - startTime
-                                val tokenCount = finalText.split(" ").count { it.isNotEmpty() }
-                                val doneMap = mutableMapOf<String, Any>(
-                                    "status" to "done",
-                                    "text" to finalText,
-                                    "thought" to finalThought,
+                                val tokenCount = PaiosModelHelper.countEstimatedTokens(fullResponse)
+                                val chunkMap = mutableMapOf<String, Any>(
+                                    "status" to "streaming",
+                                    "text" to fullResponse,
+                                    "chunk" to newChunkText,
                                     "generationTimeMs" to generationTime,
                                     "tokenCount" to tokenCount
                                 )
-                                if (finishReason != null) {
-                                    doneMap["reason"] = finishReason
+                                val activeReason = lastFinishReason
+                                if (activeReason != null) {
+                                    chunkMap["reason"] = activeReason
                                 }
-                                trySend(doneMap)
-                                close()
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                close(e)
+                                emit(chunkMap)
                             }
-                        }
-                        awaitClose { job.cancel() }
-                    }.collect { emit(it) }
-                } else {
-                    var fullResponse = ""
-                    var lastFinishReason: String? = null
-                    resolved.model.generateContentStream(request)
-                        .transform { chunk ->
-                            val candidate = chunk.candidates.firstOrNull()
-                            val newChunkText = candidate?.text ?: ""
-                            val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
-                            if (chunkReason != null) {
-                                lastFinishReason = chunkReason
-                            }
-                            fullResponse += newChunkText
-                            val generationTime = System.currentTimeMillis() - startTime
-                            val tokenCount = fullResponse.split(" ").filter { it.isNotEmpty() }.size
-                            val chunkMap = mutableMapOf<String, Any>(
-                                "status" to "streaming",
-                                "text" to fullResponse,
-                                "chunk" to newChunkText,
-                                "generationTimeMs" to generationTime,
-                                "tokenCount" to tokenCount
-                            )
-                            val activeReason = lastFinishReason
-                            if (activeReason != null) {
-                                chunkMap["reason"] = activeReason
-                            }
-                            emit(chunkMap)
-                        }
-                        .collect { emit(it) }
+                            .collect { emit(it) }
 
-                    val generationTime = System.currentTimeMillis() - startTime
-                    val tokenCount = fullResponse.split(" ").filter { it.isNotEmpty() }.size
-                    val doneMap = mutableMapOf<String, Any>(
-                        "status" to "done",
-                        "text" to fullResponse,
-                        "generationTimeMs" to generationTime,
-                        "tokenCount" to tokenCount
-                    )
-                    val finalReason = lastFinishReason
-                    if (finalReason != null) {
-                        doneMap["reason"] = finalReason
+                        val generationTime = System.currentTimeMillis() - startTime
+                        val tokenCount = PaiosModelHelper.countEstimatedTokens(fullResponse)
+                        val doneMap = mutableMapOf<String, Any>(
+                            "status" to "done",
+                            "text" to fullResponse,
+                            "generationTimeMs" to generationTime,
+                            "tokenCount" to tokenCount
+                        )
+                        val finalReason = lastFinishReason
+                        if (finalReason != null) {
+                            doneMap["reason"] = finalReason
+                        }
+                        emit(doneMap)
                     }
-                    emit(doneMap)
                 }
             } finally {
+                if (bitmap != null && !bitmap.isRecycled) {
+                    runCatching { bitmap.recycle() }
+                }
                 activeGenerationCount.decrementAndGet()
             }
         }.catch { e ->
             if (e is CancellationException) throw e
             Log.e("FlutterLocalAi", "generateTextStream error: ${e.javaClass.simpleName} - ${e.message}", e)
-            val errorMessage = e.message ?: ""
-            val errorCode = extractErrorCode(errorMessage)
-            val exception = if (errorCode == -101) {
-                Exception("AICore is not installed or version is too low (Error -101). Please install or update Google AICore from the Play Store: https://play.google.com/store/apps/details?id=com.google.android.aicore")
-            } else {
-                Exception("Error generating text stream: ${e.message}")
-            }
-            throw exception
+            throw Exception(formatAiCoreErrorMessage("Error generating text stream", e), e)
         }
     }
 
@@ -1780,11 +2017,13 @@ class FlutterLocalAiPlugin(
     }
 
     private fun dispose() {
+        activeStreamJob?.cancel()
+        activeStreamJob = null
         variantDownloadJobs.values.forEach { it.cancel() }
         variantDownloadJobs.clear()
         variantDownloadOutcomes.clear()
         downloadEventSink = null
-        coroutineScope.cancel()
+        coroutineScope.coroutineContext.cancelChildren()
         val oldModel = synchronized(clientLock) {
             val prev = activeResolvedClient?.model
             activeResolvedClient = null
@@ -1799,7 +2038,47 @@ class FlutterLocalAiPlugin(
     private fun extractErrorCode(errorMessage: String): Int {
         val regex = "Error (-?\\d+)".toRegex()
         val match = regex.find(errorMessage)
-        return match?.groups?.get(1)?.value?.toInt() ?: 0
+        return match?.groups?.get(1)?.value?.toIntOrNull() ?: 0
+    }
+
+    private fun formatAiCoreErrorMessage(prefix: String, e: Throwable): String {
+        val details = PaiosModelHelper.extractGenAiErrorDetails(e)
+        val errorCode = details["errorCode"] as? Int
+        val aiCoreErrorCode = details["aiCoreErrorCode"] as? Int
+        val aiCoreErrorType = details["aiCoreErrorType"] as? Int
+        val retryDelayMs = details["retryDelayMs"] as? Long
+        val rawMessage = e.message?.trim().orEmpty()
+        val parsedMessageCode = extractErrorCode(rawMessage).takeIf { it != 0 }
+
+        if (errorCode == GenAiException.ErrorCode.AICORE_INCOMPATIBLE ||
+            aiCoreErrorCode == -101 ||
+            parsedMessageCode == -101
+        ) {
+            return "AICore is not installed or version is too low (Error -101). Please install or update Google AICore from the Play Store: https://play.google.com/store/apps/details?id=com.google.android.aicore"
+        }
+
+        val tagParts = buildList {
+            if (errorCode != null) add("GenAiException code $errorCode")
+            if (aiCoreErrorCode != null && aiCoreErrorCode != 0) {
+                add("Error $aiCoreErrorCode")
+            } else if (errorCode != null) {
+                add("Error $errorCode")
+            } else if (parsedMessageCode != null) {
+                add("Error $parsedMessageCode")
+            }
+            if (aiCoreErrorType != null && aiCoreErrorType != 0) {
+                add("type=$aiCoreErrorType")
+            }
+            if (retryDelayMs != null && retryDelayMs > 0L) {
+                add("retryDelay=${retryDelayMs}ms")
+            }
+        }
+        val codeTag = if (tagParts.isNotEmpty()) " [${tagParts.joinToString(", ")}]" else ""
+        return if (rawMessage.isNotEmpty()) {
+            "$prefix$codeTag: $rawMessage"
+        } else {
+            "$prefix$codeTag"
+        }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -1807,5 +2086,9 @@ class FlutterLocalAiPlugin(
         eventChannel.setStreamHandler(null)
         downloadChannel.setStreamHandler(null)
         dispose()
+        coroutineScope.cancel()
+        if (pluginInstanceRef?.get() === this) {
+            pluginInstanceRef = null
+        }
     }
 }

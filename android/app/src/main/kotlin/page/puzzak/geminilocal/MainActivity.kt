@@ -2,9 +2,6 @@ package page.puzzak.geminilocal
 
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.os.BatteryManager
-import android.os.Build
 import android.os.Bundle
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
@@ -16,7 +13,7 @@ class MainActivity: FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleAssistantOpenIntent(intent)
-        registerMeshHeadlessHandler()
+        registerHeadlessMeshHandler(applicationContext)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -37,7 +34,7 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        registerMeshHeadlessHandler()
+        registerHeadlessMeshHandler(applicationContext)
 
         try {
             flutterEngine.plugins.add(FlutterLocalAiPlugin(this))
@@ -69,69 +66,49 @@ class MainActivity: FlutterActivity() {
     }
 
     private fun readBatteryStatus(): Map<String, Any> {
-        val bm = getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
-        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        var level = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-        if (level < 0 && intent != null) {
-            val rawLevel = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-            if (rawLevel >= 0 && scale > 0) {
-                level = (rawLevel * 100) / scale
-            }
-        }
-        val statusInt = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) ?: -1
-            } else {
-                -1
-            }
-        val isCharging = statusInt == BatteryManager.BATTERY_STATUS_CHARGING ||
-            statusInt == BatteryManager.BATTERY_STATUS_FULL
-        val statusLabel = when (statusInt) {
-            BatteryManager.BATTERY_STATUS_CHARGING -> "Charging"
-            BatteryManager.BATTERY_STATUS_FULL -> "Full"
-            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "Not charging"
-            BatteryManager.BATTERY_STATUS_DISCHARGING -> "Discharging"
-            else -> if (isCharging) "Charging" else "Discharging"
-        }
+        val snapshot = InternalToolsHelper.readBatteryStatusSnapshot(applicationContext)
         return mapOf(
-            "level" to level,
-            "charging" to isCharging,
-            "status" to statusLabel,
+            "level" to snapshot.level,
+            "charging" to snapshot.charging,
+            "status" to snapshot.status,
         )
     }
 
-    private val overlayMethods = setOf("query_local_ai", "open_assistant_bubble")
+    companion object {
+        private val overlayMethods = setOf("query_local_ai", "open_assistant_bubble")
 
-    private fun registerMeshHeadlessHandler() {
-        com.puzzak.m3x_mesh.M3xMeshContentProvider.headlessHandler = { caller, payload, callback ->
-            val json = try {
-                org.json.JSONObject(payload)
-            } catch (_: Exception) {
-                null
-            }
-            val method = json
-                ?.optString("method", json.optString("name", json.optString("tool", "")))
-                ?.trim()
-                .orEmpty()
-            if (method in overlayMethods) {
-                val paramsObj = json?.optJSONObject("params") ?: json?.optJSONObject("arguments")
-                val isInteractive = method == "open_assistant_bubble" ||
-                    json?.optBoolean("interactive_bubble", false) == true ||
-                    paramsObj?.optBoolean("interactive_bubble", false) == true
-                MeshOverlayActivity.pendingCallback = callback
-                val intent = Intent(this, MeshOverlayActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
-                    putExtra("caller", caller)
-                    putExtra("payload", payload)
-                    if (isInteractive) {
-                        putExtra("interactive_bubble", true)
-                    }
+        @JvmStatic
+        fun registerHeadlessMeshHandler(context: Context) {
+            val appContext = context.applicationContext
+            com.puzzak.m3x_mesh.M3xMeshContentProvider.headlessHandler = { caller, payload, callback ->
+                val json = try {
+                    org.json.JSONObject(payload)
+                } catch (_: Exception) {
+                    null
                 }
-                startActivity(intent)
-                true
-            } else {
-                false
+                val method = json
+                    ?.optString("method", json.optString("name", json.optString("tool", "")))
+                    ?.trim()
+                    .orEmpty()
+                if (method in overlayMethods) {
+                    val paramsObj = json?.optJSONObject("params") ?: json?.optJSONObject("arguments")
+                    val isInteractive = method == "open_assistant_bubble" ||
+                        json?.optBoolean("interactive_bubble", false) == true ||
+                        paramsObj?.optBoolean("interactive_bubble", false) == true
+                    MeshOverlayActivity.pendingCallback = callback
+                    val intent = Intent(appContext, MeshOverlayActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        putExtra("caller", caller)
+                        putExtra("payload", payload)
+                        if (isInteractive) {
+                            putExtra("interactive_bubble", true)
+                        }
+                    }
+                    appContext.startActivity(intent)
+                    true
+                } else {
+                    false
+                }
             }
         }
     }

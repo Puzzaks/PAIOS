@@ -58,6 +58,7 @@ import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.FunctionCall
 import com.google.mlkit.genai.common.StreamingCallback
 import com.google.mlkit.genai.prompt.GenerateContentRequest
 import com.google.mlkit.genai.prompt.GenerateContentResponse
@@ -81,6 +82,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -362,7 +364,7 @@ class MeshOverlayActivity : Activity() {
     private var currentBitmap: Bitmap? = null
     private val attachedBitmaps = mutableListOf<Bitmap>()
     private val userBitmaps = mutableListOf<Bitmap>()
-    private var activeSessionBitmap: Bitmap? = null
+    private val activeSessionBitmaps = mutableListOf<Bitmap>()
     private var pendingScreenBitmap: Bitmap? = null
     private var pendingScreenAssistText: String? = null
     private var pendingScreenMeshText: String? = null
@@ -516,8 +518,6 @@ class MeshOverlayActivity : Activity() {
     private var callerBadgeView: TextView? = null
     private var imagePreviewContainer: HorizontalScrollView? = null
     private var imagePreviewItemsRow: LinearLayout? = null
-    private var imagePreviewView: ImageView? = null
-    private var imagePreviewLabel: TextView? = null
     private var outputScrollView: ScrollView? = null
     private var messagesContainer: LinearLayout? = null
     private var sheetProgressBar: ProgressBar? = null
@@ -591,6 +591,11 @@ class MeshOverlayActivity : Activity() {
         return fallbackEnDict.optString(key, key)
     }
 
+    private fun trWithFallback(key: String, fallback: String): String {
+        val resolved = tr(key)
+        return if (resolved != key && resolved.isNotBlank()) resolved else fallback
+    }
+
     override fun onResume() {
         super.onResume()
         isLaunchingImagePicker = false
@@ -649,10 +654,11 @@ class MeshOverlayActivity : Activity() {
         visualContextMemory = ""
         activeVisualNote = ""
         contextData = ""
+        PaiosModelHelper.overlayActiveFlag = true
         currentBitmap = null
         attachedBitmaps.clear()
         userBitmaps.clear()
-        activeSessionBitmap = null
+        activeSessionBitmaps.clear()
         activeTurnIdPendingTtlConsume = -1L
         clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
@@ -857,7 +863,7 @@ class MeshOverlayActivity : Activity() {
                     } else {
                         softBmp
                     }
-                    if (downsampleSetting &&
+                    val finalBmp = if (downsampleSetting &&
                         (croppedBmp.width > MAX_DOWNSAMPLE_DIMENSION || croppedBmp.height > MAX_DOWNSAMPLE_DIMENSION)
                     ) {
                         val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(croppedBmp.width, croppedBmp.height).toFloat()
@@ -870,6 +876,13 @@ class MeshOverlayActivity : Activity() {
                     } else {
                         croppedBmp
                     }
+                    if (croppedBmp !== softBmp && softBmp !== bitmap && !softBmp.isRecycled) {
+                        runCatching { softBmp.recycle() }
+                    }
+                    if (finalBmp !== croppedBmp && croppedBmp !== bitmap && !croppedBmp.isRecycled) {
+                        runCatching { croppedBmp.recycle() }
+                    }
+                    finalBmp
                 } catch (e: Exception) {
                     Log.w(TAG, "Error scaling assist screenshot: ${e.message}")
                     bitmap
@@ -936,7 +949,7 @@ class MeshOverlayActivity : Activity() {
         if (bitmap == null) return
         if (bitmap === activeInspectScreenBitmap ||
             bitmap === pendingScreenBitmap ||
-            bitmap === activeSessionBitmap ||
+            activeSessionBitmaps.contains(bitmap) ||
             bitmap === currentBitmap ||
             bitmap === latestAssistBitmap ||
             userBitmaps.contains(bitmap) ||
@@ -1151,8 +1164,23 @@ class MeshOverlayActivity : Activity() {
                         } catch (_: Exception) {
                             null
                         }
+                        var sampleSize = 1
+                        if (downsample) {
+                            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            contentResolver.openInputStream(parsedUri)?.use {
+                                BitmapFactory.decodeStream(it, null, boundsOpts)
+                            }
+                            if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                                sampleSize = PaiosModelHelper.computeSampleSize(
+                                    boundsOpts.outWidth,
+                                    boundsOpts.outHeight,
+                                    MAX_DOWNSAMPLE_DIMENSION
+                                )
+                            }
+                        }
+                        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
                         contentResolver.openInputStream(parsedUri)?.use {
-                            BitmapFactory.decodeStream(it)
+                            BitmapFactory.decodeStream(it, null, decodeOpts)
                         }
                     } else {
                         val file = File(imageUriStr)
@@ -1162,7 +1190,20 @@ class MeshOverlayActivity : Activity() {
                             } catch (_: Exception) {
                                 null
                             }
-                            BitmapFactory.decodeFile(file.absolutePath)
+                            var sampleSize = 1
+                            if (downsample) {
+                                val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeFile(file.absolutePath, boundsOpts)
+                                if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                                    sampleSize = PaiosModelHelper.computeSampleSize(
+                                        boundsOpts.outWidth,
+                                        boundsOpts.outHeight,
+                                        MAX_DOWNSAMPLE_DIMENSION
+                                    )
+                                }
+                            }
+                            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                            BitmapFactory.decodeFile(file.absolutePath, decodeOpts)
                         } else {
                             null
                         }
@@ -1171,7 +1212,20 @@ class MeshOverlayActivity : Activity() {
                 !imageBase64.isNullOrBlank() -> {
                     val clean = imageBase64.substringAfter("base64,", imageBase64).trim()
                     val bytes = Base64.decode(clean, Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    var sampleSize = 1
+                    if (downsample) {
+                        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
+                        if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                            sampleSize = PaiosModelHelper.computeSampleSize(
+                                boundsOpts.outWidth,
+                                boundsOpts.outHeight,
+                                MAX_DOWNSAMPLE_DIMENSION
+                            )
+                        }
+                    }
+                    val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
                 }
                 else -> null
             } ?: return null
@@ -1181,7 +1235,11 @@ class MeshOverlayActivity : Activity() {
                 val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(orientedBitmap.width, orientedBitmap.height).toFloat()
                 val newW = (orientedBitmap.width * scale).toInt().coerceAtLeast(1)
                 val newH = (orientedBitmap.height * scale).toInt().coerceAtLeast(1)
-                return Bitmap.createScaledBitmap(orientedBitmap, newW, newH, true)
+                val scaled = Bitmap.createScaledBitmap(orientedBitmap, newW, newH, true)
+                if (scaled !== orientedBitmap && !orientedBitmap.isRecycled) {
+                    runCatching { orientedBitmap.recycle() }
+                }
+                return scaled
             }
             return orientedBitmap
         } catch (e: Exception) {
@@ -1217,6 +1275,17 @@ class MeshOverlayActivity : Activity() {
         return fresh
     }
 
+    private fun closeCachedClient() {
+        val oldModel = synchronized(modelClientLock) {
+            val prev = cachedResolvedClient?.model
+            cachedResolvedClient = null
+            prev
+        }
+        if (oldModel != null) {
+            runCatching { oldModel.close() }
+        }
+    }
+
     private fun shouldEnableOverlayThinking(resolved: PaiosModelHelper.ResolvedModelClient): Boolean {
         if (!resolved.capabilities.isThinkingModeAvailable) return false
         if (resolved.capabilities.isNanoV4 || resolved.capabilities.isThinkingModeAvailable) {
@@ -1247,7 +1316,9 @@ class MeshOverlayActivity : Activity() {
             useThinkingCapability = false
         )
         return try {
-            resolved.model.generateContent(request)
+            PaiosModelHelper.inferenceMutex.withLock {
+                resolved.model.generateContent(request)
+            }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             if (extraContextData.isNotBlank() && PaiosModelHelper.isPolicyCheckException(e)) {
@@ -1262,7 +1333,9 @@ class MeshOverlayActivity : Activity() {
                     useNativeSystemInstruction = resolved.capabilities.isSystemPromptAvailable,
                     useThinkingCapability = false
                 )
-                resolved.model.generateContent(fallbackRequest)
+                PaiosModelHelper.inferenceMutex.withLock {
+                    resolved.model.generateContent(fallbackRequest)
+                }
             } else {
                 throw e
             }
@@ -2287,6 +2360,14 @@ class MeshOverlayActivity : Activity() {
 
             if (initialPrompt.isNotBlank()) {
                 startInteractiveStreaming(initialPrompt)
+            } else {
+                withContext(Dispatchers.IO) {
+                    val resolved = getOverlayResolvedClient()
+                    if (resolved.statusCode == FeatureStatus.AVAILABLE && !isDismissing) {
+                        runCatching { resolved.model.warmup() }
+                            .onFailure { e -> Log.d(TAG, "Interactive overlay warmup skipped: ${e.message}") }
+                    }
+                }
             }
         }
     }
@@ -2422,7 +2503,7 @@ class MeshOverlayActivity : Activity() {
         val outgoingNote = activeVisualNote.trim().ifEmpty {
             visualContextMemory.trim().take(240)
         }
-        if (activeSessionBitmap != null && outgoingNote.isNotEmpty()) {
+        if (activeSessionBitmaps.isNotEmpty() && outgoingNote.isNotEmpty()) {
             val marker = "\nUser attached a previous image: $outgoingNote\n"
             if (!conversationHistoryPrompt.contains(marker)) {
                 conversationHistoryPrompt += marker
@@ -2431,21 +2512,11 @@ class MeshOverlayActivity : Activity() {
         visualSummaryJob?.cancel()
         activeVisualNote = ""
         visualContextMemory = ""
-        activeSessionBitmap = null
+        activeSessionBitmaps.clear()
         currentBitmap = bitmap
         userBitmaps.add(bitmap)
         attachedBitmaps.add(bitmap)
         renderAttachedImagesPreview()
-    }
-
-    private fun attachBitmapToPreview(
-        bitmap: Bitmap,
-        sourceLabel: String? = null,
-        isScreenContext: Boolean = false
-    ) {
-        if (!isScreenContext) {
-            attachUserBitmap(bitmap)
-        }
     }
 
     private fun renderAttachedImagesPreview() {
@@ -2512,7 +2583,7 @@ class MeshOverlayActivity : Activity() {
                         currentBitmap = attachedBitmaps.firstOrNull()
                     }
                     if (attachedBitmaps.isEmpty()) {
-                        activeSessionBitmap = null
+                        activeSessionBitmaps.clear()
                     }
                     renderAttachedImagesPreview()
                 }
@@ -2647,36 +2718,44 @@ class MeshOverlayActivity : Activity() {
         val thoughtTogglePill: TextView,
         val thoughtBodyView: TextView,
         val answerView: TextView,
+        val thinkingLabel: String,
+        val thoughtProcessLabel: String,
         var isThoughtExpanded: Boolean = true,
-        var userToggledThought: Boolean = false
+        var userToggledThought: Boolean = false,
+        var isStillThinking: Boolean = true
     ) {
         fun updateThought(thoughtText: String, isStillThinking: Boolean) {
             if (thoughtText.isBlank()) return
+            this.isStillThinking = isStillThinking
             thoughtContainer.visibility = View.VISIBLE
             thoughtBodyView.text = thoughtText.trim()
-            val label = if (isStillThinking) "✦ Thinking…" else "✦ Thought process"
+            val label = if (isStillThinking) "✦ $thinkingLabel" else "✦ $thoughtProcessLabel"
             val chevron = if (isThoughtExpanded) "▾" else "▸"
             thoughtTogglePill.text = "$label $chevron"
             thoughtBodyView.visibility = if (isThoughtExpanded) View.VISIBLE else View.GONE
         }
 
         fun collapseThoughtIfAuto() {
+            isStillThinking = false
             if (!userToggledThought && isThoughtExpanded) {
                 isThoughtExpanded = false
                 thoughtBodyView.visibility = View.GONE
             }
             if (thoughtContainer.visibility == View.VISIBLE) {
                 val chevron = if (isThoughtExpanded) "▾" else "▸"
-                thoughtTogglePill.text = "✦ Thought process $chevron"
+                thoughtTogglePill.text = "✦ $thoughtProcessLabel $chevron"
             }
         }
 
         fun hideThought() {
+            isStillThinking = false
             thoughtContainer.visibility = View.GONE
         }
     }
 
     private fun addAiThinkingBubble(initialStatus: String): AiBubbleViews {
+        val thinkingLabel = trWithFallback("thinking_in_progress", "Thinking…")
+        val thoughtProcessLabel = trWithFallback("thought_process", "Thought process")
         val container = messagesContainer
         if (container == null) {
             val fallbackCard = LinearLayout(this)
@@ -2689,7 +2768,9 @@ class MeshOverlayActivity : Activity() {
                 thoughtContainer = fallbackThoughtContainer,
                 thoughtTogglePill = fallbackPill,
                 thoughtBodyView = fallbackThoughtBody,
-                answerView = fallbackAnswer
+                answerView = fallbackAnswer,
+                thinkingLabel = thinkingLabel,
+                thoughtProcessLabel = thoughtProcessLabel
             )
         }
 
@@ -2737,7 +2818,7 @@ class MeshOverlayActivity : Activity() {
         }
 
         val thoughtTogglePill = TextView(this).apply {
-            text = "✦ Thinking… ▾"
+            text = "✦ $thinkingLabel ▾"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setTextColor(palette.subtitle)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -2788,17 +2869,19 @@ class MeshOverlayActivity : Activity() {
             thoughtContainer = thoughtContainer,
             thoughtTogglePill = thoughtTogglePill,
             thoughtBodyView = thoughtBodyView,
-            answerView = answerView
+            answerView = answerView,
+            thinkingLabel = thinkingLabel,
+            thoughtProcessLabel = thoughtProcessLabel
         )
 
         thoughtTogglePill.setOnClickListener {
             bubbleViews.userToggledThought = true
             bubbleViews.isThoughtExpanded = !bubbleViews.isThoughtExpanded
             thoughtBodyView.visibility = if (bubbleViews.isThoughtExpanded) View.VISIBLE else View.GONE
-            val baseLabel = if (thoughtTogglePill.text.toString().contains("Thinking")) {
-                "✦ Thinking…"
+            val baseLabel = if (bubbleViews.isStillThinking) {
+                "✦ ${bubbleViews.thinkingLabel}"
             } else {
-                "✦ Thought process"
+                "✦ ${bubbleViews.thoughtProcessLabel}"
             }
             thoughtTogglePill.text = "$baseLabel ${if (bubbleViews.isThoughtExpanded) "▾" else "▸"}"
         }
@@ -2971,35 +3054,6 @@ class MeshOverlayActivity : Activity() {
         return builder
     }
 
-    private fun compositeBitmaps(bitmaps: List<Bitmap>): Bitmap {
-        if (bitmaps.size == 1) return bitmaps[0]
-
-        val targetWidth = bitmaps.maxOf { it.width }
-        val totalHeight = bitmaps.sumOf { (it.height * (targetWidth.toFloat() / it.width)).toInt() }
-        val composite = Bitmap.createBitmap(targetWidth, totalHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(composite)
-        var currentY = 0f
-
-        for (bmp in bitmaps) {
-            val scale = targetWidth.toFloat() / bmp.width
-            val drawHeight = bmp.height * scale
-            val destRect = RectF(0f, currentY, targetWidth.toFloat(), currentY + drawHeight)
-            canvas.drawBitmap(bmp, null, destRect, null)
-            currentY += drawHeight
-        }
-
-        if (downsampleSetting && (composite.width > MAX_DOWNSAMPLE_DIMENSION || composite.height > MAX_DOWNSAMPLE_DIMENSION)) {
-            val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(composite.width, composite.height).toFloat()
-            return Bitmap.createScaledBitmap(
-                composite,
-                (composite.width * scale).toInt().coerceAtLeast(1),
-                (composite.height * scale).toInt().coerceAtLeast(1),
-                true
-            )
-        }
-        return composite
-    }
-
     private sealed class StreamAttemptResult {
         data class Completed(
             val text: String,
@@ -3107,54 +3161,177 @@ class MeshOverlayActivity : Activity() {
         bubbleViews: AiBubbleViews,
         prefixText: String = ""
     ): StreamAttemptResult {
-        var streamedText = ""
-        var handledToolCall = false
-        var lastFinishReason: String? = null
-        try {
-            if (useThinking) {
-                val streamLock = Any()
-                val textBuffer = StringBuilder()
-                val thoughtBuffer = StringBuilder()
+        var retriedBusy = false
+        while (true) {
+            var streamedText = ""
+            var handledToolCall = false
+            var lastFinishReason: String? = null
+            try {
+                if (useThinking) {
+                    val streamLock = Any()
+                    val textBuffer = StringBuilder()
+                    val thoughtBuffer = StringBuilder()
 
-                val finalResponse = resolved.model.generateContent(
-                    request,
-                    object : StreamingCallback {
-                        override fun onNewThought(thought: String) {
-                            if (thought.isEmpty()) return
-                            synchronized(streamLock) {
-                                thoughtBuffer.append(thought)
+                    val finalResponse = PaiosModelHelper.inferenceMutex.withLock {
+                        resolved.model.generateContent(
+                            request,
+                            object : StreamingCallback {
+                                override fun onNewThought(thought: String) {
+                                    if (thought.isEmpty()) return
+                                    synchronized(streamLock) {
+                                        thoughtBuffer.append(thought)
+                                    }
+                                    activityScope.launch(Dispatchers.Main) {
+                                        if (overlayTurnSequence != turnId || isDismissing || handledToolCall) return@launch
+                                        val snapshotThought: String
+                                        val hasAnswer: Boolean
+                                        synchronized(streamLock) {
+                                            snapshotThought = thoughtBuffer.toString()
+                                            hasAnswer = textBuffer.isNotEmpty()
+                                        }
+                                        val displayThought = PaiosModelHelper.stripControlToolTags(snapshotThought)
+                                        if (displayThought.isNotBlank()) {
+                                            bubbleViews.updateThought(displayThought, isStillThinking = !hasAnswer)
+                                        } else {
+                                            bubbleViews.hideThought()
+                                        }
+                                        outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                    }
+                                }
+
+                                override fun onNewText(text: String) {
+                                    if (text.isEmpty()) return
+                                    synchronized(streamLock) {
+                                        textBuffer.append(text)
+                                    }
+                                    activityScope.launch(Dispatchers.Main) {
+                                        if (overlayTurnSequence != turnId || isDismissing) return@launch
+                                        val snapshotText = synchronized(streamLock) { textBuffer.toString() }
+                                        streamedText = snapshotText
+                                        val displayText = if (prefixText.isNotEmpty()) {
+                                            PaiosModelHelper.stitchOverlayContinuation(prefixText, snapshotText)
+                                        } else {
+                                            snapshotText
+                                        }
+                                        val toolCall = PaiosModelHelper.extractToolCallJson(
+                                            displayText,
+                                            allowTruncatedRepair = false
+                                        )?.toJsonObject()
+                                        val isToolCallPending = looksLikeIncompleteToolCall(displayText)
+                                        if (toolCall != null || isToolCallPending) {
+                                            handledToolCall = true
+                                        }
+                                        if (handledToolCall) {
+                                            bubbleViews.hideThought()
+                                            val desc = formatToolChipLabel(toolCall, displayText)
+                                            applyToolChipStyle(aiBubbleView, desc)
+                                        } else {
+                                            val cleanDisplay = PaiosModelHelper.stripControlToolTags(
+                                                PaiosModelHelper.stripLeadingAssistantLabel(displayText)
+                                            )
+                                            if (cleanDisplay.isNotBlank()) {
+                                                bubbleViews.collapseThoughtIfAuto()
+                                                aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                            }
+                                        }
+                                        outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                    }
+                                }
+
+                                override fun onNewFunctionCall(functionCall: FunctionCall) {
+                                    val jsonText = PaiosModelHelper.functionCallToJsonObject(functionCall).toString()
+                                    synchronized(streamLock) {
+                                        textBuffer.append(jsonText)
+                                    }
+                                    activityScope.launch(Dispatchers.Main) {
+                                        if (overlayTurnSequence != turnId || isDismissing) return@launch
+                                        val snapshotText = synchronized(streamLock) { textBuffer.toString() }
+                                        streamedText = snapshotText
+                                        handledToolCall = true
+                                        bubbleViews.hideThought()
+                                        val toolCall = PaiosModelHelper.extractToolCallJson(
+                                            snapshotText,
+                                            allowTruncatedRepair = false
+                                        )?.toJsonObject()
+                                        val desc = formatToolChipLabel(toolCall, snapshotText)
+                                        applyToolChipStyle(aiBubbleView, desc)
+                                        outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                                    }
+                                }
                             }
-                            activityScope.launch(Dispatchers.Main) {
-                                if (overlayTurnSequence != turnId || isDismissing || handledToolCall) return@launch
-                                val snapshotThought: String
-                                val hasAnswer: Boolean
-                                synchronized(streamLock) {
-                                    snapshotThought = thoughtBuffer.toString()
-                                    hasAnswer = textBuffer.isNotEmpty()
+                        )
+                    }
+
+                    val candidate = finalResponse.candidates.firstOrNull()
+                    val rawFinalText = synchronized(streamLock) { textBuffer.toString() }
+                        .ifEmpty {
+                            candidate?.text?.takeIf { it.isNotEmpty() }
+                                ?: candidate?.functionCalls?.firstOrNull()?.let {
+                                    PaiosModelHelper.functionCallToJsonObject(it).toString()
                                 }
-                                val displayThought = PaiosModelHelper.stripControlToolTags(snapshotThought)
-                                if (displayThought.isNotBlank()) {
-                                    bubbleViews.updateThought(displayThought, isStillThinking = !hasAnswer)
-                                } else {
-                                    bubbleViews.hideThought()
+                                ?: ""
+                        }
+                    val rawFinalThought = synchronized(streamLock) { thoughtBuffer.toString() }
+                        .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
+                    lastFinishReason = PaiosModelHelper.normalizeFinishReason(
+                        candidate?.finishReason
+                    )
+                    val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
+                        PaiosModelHelper.extractToolCallJson(rawFinalThought)
+                    } else {
+                        null
+                    }
+                    val finalText = if (promotedToolCall != null) {
+                        handledToolCall = true
+                        promotedToolCall.toJsonObject().toString()
+                    } else if (!handledToolCall) {
+                        PaiosModelHelper.stripLeadingAssistantLabel(rawFinalText)
+                    } else {
+                        rawFinalText
+                    }
+                    val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
+                    streamedText = finalText
+
+                    withContext(Dispatchers.Main) {
+                        if (overlayTurnSequence == turnId && !isDismissing) {
+                            if (handledToolCall) {
+                                bubbleViews.hideThought()
+                                val desc = formatToolChipLabel(
+                                    promotedToolCall?.toJsonObject() ?: extractToolCallJson(finalText),
+                                    finalText
+                                )
+                                applyToolChipStyle(aiBubbleView, desc)
+                            } else if (finalThought.isNotBlank()) {
+                                bubbleViews.updateThought(finalThought, isStillThinking = false)
+                                if (finalText.isNotBlank()) {
+                                    bubbleViews.collapseThoughtIfAuto()
                                 }
-                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
+                            } else {
+                                bubbleViews.hideThought()
                             }
                         }
-
-                        override fun onNewText(text: String) {
-                            if (text.isEmpty()) return
-                            synchronized(streamLock) {
-                                textBuffer.append(text)
-                            }
-                            activityScope.launch(Dispatchers.Main) {
-                                if (overlayTurnSequence != turnId || isDismissing) return@launch
-                                val snapshotText = synchronized(streamLock) { textBuffer.toString() }
-                                streamedText = snapshotText
+                    }
+                    return StreamAttemptResult.Completed(streamedText, handledToolCall, lastFinishReason)
+                } else {
+                    var streamError: Throwable? = null
+                    PaiosModelHelper.inferenceMutex.withLock {
+                        resolved.model.generateContentStream(request)
+                            .onEach { chunk ->
+                                val candidate = chunk.candidates.firstOrNull()
+                                val piece = candidate?.text?.takeIf { it.isNotEmpty() }
+                                    ?: candidate?.functionCalls?.firstOrNull()?.let {
+                                        PaiosModelHelper.functionCallToJsonObject(it).toString()
+                                    }
+                                    ?: ""
+                                val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
+                                if (chunkReason != null) {
+                                    lastFinishReason = chunkReason
+                                }
+                                streamedText += piece
                                 val displayText = if (prefixText.isNotEmpty()) {
-                                    PaiosModelHelper.stitchOverlayContinuation(prefixText, snapshotText)
+                                    PaiosModelHelper.stitchOverlayContinuation(prefixText, streamedText)
                                 } else {
-                                    snapshotText
+                                    streamedText
                                 }
                                 val toolCall = PaiosModelHelper.extractToolCallJson(
                                     displayText,
@@ -3164,130 +3341,60 @@ class MeshOverlayActivity : Activity() {
                                 if (toolCall != null || isToolCallPending) {
                                     handledToolCall = true
                                 }
-                                if (handledToolCall) {
-                                    bubbleViews.hideThought()
-                                    val desc = formatToolChipLabel(toolCall, displayText)
-                                    applyToolChipStyle(aiBubbleView, desc)
-                                } else {
-                                    val cleanDisplay = PaiosModelHelper.stripControlToolTags(
-                                        PaiosModelHelper.stripLeadingAssistantLabel(displayText)
-                                    )
-                                    if (cleanDisplay.isNotBlank()) {
-                                        bubbleViews.collapseThoughtIfAuto()
-                                        aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                withContext(Dispatchers.Main) {
+                                    if (overlayTurnSequence != turnId || isDismissing) return@withContext
+                                    if (handledToolCall) {
+                                        bubbleViews.hideThought()
+                                        val desc = formatToolChipLabel(toolCall, displayText)
+                                        applyToolChipStyle(aiBubbleView, desc)
+                                    } else {
+                                        val cleanDisplay = PaiosModelHelper.stripControlToolTags(
+                                            PaiosModelHelper.stripLeadingAssistantLabel(displayText)
+                                        )
+                                        if (cleanDisplay.isNotBlank()) {
+                                            aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                        }
                                     }
-                                }
-                                outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
-                            }
-                        }
-                    }
-                )
-
-                val rawFinalText = synchronized(streamLock) { textBuffer.toString() }
-                    .ifEmpty { finalResponse.candidates.firstOrNull()?.text ?: "" }
-                val rawFinalThought = synchronized(streamLock) { thoughtBuffer.toString() }
-                    .ifEmpty { finalResponse.thoughtProcess.joinToString("") { it.text } }
-                lastFinishReason = PaiosModelHelper.normalizeFinishReason(
-                    finalResponse.candidates.firstOrNull()?.finishReason
-                )
-                val promotedToolCall = if (rawFinalText.isBlank() && rawFinalThought.isNotBlank()) {
-                    PaiosModelHelper.extractToolCallJson(rawFinalThought)
-                } else {
-                    null
-                }
-                val finalText = if (promotedToolCall != null) {
-                    handledToolCall = true
-                    promotedToolCall.toJsonObject().toString()
-                } else if (!handledToolCall) {
-                    PaiosModelHelper.stripLeadingAssistantLabel(rawFinalText)
-                } else {
-                    rawFinalText
-                }
-                val finalThought = PaiosModelHelper.stripControlToolTags(rawFinalThought)
-                streamedText = finalText
-
-                withContext(Dispatchers.Main) {
-                    if (overlayTurnSequence == turnId && !isDismissing) {
-                        if (handledToolCall) {
-                            bubbleViews.hideThought()
-                            val desc = formatToolChipLabel(
-                                promotedToolCall?.toJsonObject() ?: extractToolCallJson(finalText),
-                                finalText
-                            )
-                            applyToolChipStyle(aiBubbleView, desc)
-                        } else if (finalThought.isNotBlank()) {
-                            bubbleViews.updateThought(finalThought, isStillThinking = false)
-                            if (finalText.isNotBlank()) {
-                                bubbleViews.collapseThoughtIfAuto()
-                            }
-                        } else {
-                            bubbleViews.hideThought()
-                        }
-                    }
-                }
-                return StreamAttemptResult.Completed(streamedText, handledToolCall, lastFinishReason)
-            } else {
-                var streamError: Throwable? = null
-                resolved.model.generateContentStream(request)
-                    .onEach { chunk ->
-                        val candidate = chunk.candidates.firstOrNull()
-                        val piece = candidate?.text ?: ""
-                        val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
-                        if (chunkReason != null) {
-                            lastFinishReason = chunkReason
-                        }
-                        streamedText += piece
-                        val displayText = if (prefixText.isNotEmpty()) {
-                            PaiosModelHelper.stitchOverlayContinuation(prefixText, streamedText)
-                        } else {
-                            streamedText
-                        }
-                        val toolCall = PaiosModelHelper.extractToolCallJson(
-                            displayText,
-                            allowTruncatedRepair = false
-                        )?.toJsonObject()
-                        val isToolCallPending = looksLikeIncompleteToolCall(displayText)
-                        if (toolCall != null || isToolCallPending) {
-                            handledToolCall = true
-                        }
-                        withContext(Dispatchers.Main) {
-                            if (overlayTurnSequence != turnId || isDismissing) return@withContext
-                            if (handledToolCall) {
-                                bubbleViews.hideThought()
-                                val desc = formatToolChipLabel(toolCall, displayText)
-                                applyToolChipStyle(aiBubbleView, desc)
-                            } else {
-                                val cleanDisplay = PaiosModelHelper.stripControlToolTags(
-                                    PaiosModelHelper.stripLeadingAssistantLabel(displayText)
-                                )
-                                if (cleanDisplay.isNotBlank()) {
-                                    aiBubbleView.text = formatMarkdownToSpannable(cleanDisplay)
+                                    outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
                                 }
                             }
-                            outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
-                        }
+                            .catch { e ->
+                                if (e is kotlinx.coroutines.CancellationException) throw e
+                                streamError = e
+                            }
+                            .collect {}
                     }
-                    .catch { e ->
-                        if (e is kotlinx.coroutines.CancellationException) throw e
-                        streamError = e
-                    }
-                    .collect {}
 
-                val failure = streamError
-                if (failure != null) {
-                    return StreamAttemptResult.Failed(failure, streamedText)
+                    val failure = streamError
+                    if (failure != null) {
+                        if (!retriedBusy && streamedText.isBlank() && PaiosModelHelper.isBusyException(failure)) {
+                            retriedBusy = true
+                            val waitMs = PaiosModelHelper.extractRetryDelayMs(failure) ?: 300L
+                            Log.w(TAG, "[OVERLAY BUSY RETRY] Waiting ${waitMs}ms before 1-shot retry")
+                            delay(waitMs)
+                            continue
+                        }
+                        return StreamAttemptResult.Failed(failure, streamedText)
+                    }
+                    val finalOutText = if (!handledToolCall && prefixText.isEmpty()) {
+                        PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
+                    } else {
+                        streamedText
+                    }
+                    return StreamAttemptResult.Completed(finalOutText, handledToolCall, lastFinishReason)
                 }
-                val finalOutText = if (!handledToolCall && prefixText.isEmpty()) {
-                    PaiosModelHelper.stripLeadingAssistantLabel(streamedText)
-                } else {
-                    streamedText
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!retriedBusy && streamedText.isBlank() && PaiosModelHelper.isBusyException(e)) {
+                    retriedBusy = true
+                    val waitMs = PaiosModelHelper.extractRetryDelayMs(e) ?: 300L
+                    Log.w(TAG, "[OVERLAY BUSY RETRY] Waiting ${waitMs}ms before 1-shot retry")
+                    delay(waitMs)
+                    continue
                 }
-                return StreamAttemptResult.Completed(finalOutText, handledToolCall, lastFinishReason)
+                return StreamAttemptResult.Failed(e, streamedText)
             }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            return StreamAttemptResult.Failed(e, streamedText)
         }
     }
 
@@ -3324,7 +3431,7 @@ class MeshOverlayActivity : Activity() {
         val aiBubbleView = bubbleViews.answerView
         sheetProgressBar?.visibility = View.VISIBLE
 
-        val visualMemorySnapshot = if (hasUserPhotos || isPureGreeting || activeSessionBitmap == null) {
+        val visualMemorySnapshot = if (hasUserPhotos || isPureGreeting || activeSessionBitmaps.isEmpty()) {
             ""
         } else {
             activeVisualNote.ifBlank { visualContextMemory }
@@ -3338,8 +3445,9 @@ class MeshOverlayActivity : Activity() {
             val appLang = tr("current_language")
             val meshToolsPrompt = getMeshToolSchemaPrompt(includeInspectScreen = hasScreenToolThisTurn)
             val temperatureValue = resolveTemperatureSetting()
-            val hasUserVisualMemory = !hasUserPhotos && activeSessionBitmap != null && visualMemorySnapshot.isNotBlank()
-            val hasAnySessionImage = hasUserPhotos || activeSessionBitmap != null
+            val sessionBitmapsSnapshot = activeSessionBitmaps.toList()
+            val hasUserVisualMemory = !hasUserPhotos && sessionBitmapsSnapshot.isNotEmpty() && visualMemorySnapshot.isNotBlank()
+            val hasAnySessionImage = hasUserPhotos || sessionBitmapsSnapshot.isNotEmpty()
 
             fun formatCleanUserTurn(hasImage: Boolean): String = if (hasImage) {
                 "[Image attached to this message]\nUser's request: $userPrompt"
@@ -3364,15 +3472,14 @@ class MeshOverlayActivity : Activity() {
                     isCompactBudget = isCompactBudget
                 )
                 val useThinking = shouldEnableOverlayThinking(resolved)
-                val newUserCompositeBitmap = if (hasUserPhotos) compositeBitmaps(userBitmapsSnapshot) else null
-                val primaryBitmap = newUserCompositeBitmap ?: activeSessionBitmap
-                val persistentUserBitmap = newUserCompositeBitmap ?: activeSessionBitmap
+                val primaryBitmaps = if (hasUserPhotos) userBitmapsSnapshot else sessionBitmapsSnapshot
+                val persistentUserBitmaps = primaryBitmaps
 
                 // Primary attempt: matches ChatPage framing (clean TextPart + structured SystemInstruction, maxTokens = null)
                 val primaryRequest = PaiosModelHelper.buildRequest(
-                    prompt = formatCleanUserTurn(primaryBitmap != null),
+                    prompt = formatCleanUserTurn(primaryBitmaps.isNotEmpty()),
                     instructions = fullSystemBlock.takeIf { it.isNotBlank() },
-                    image = primaryBitmap,
+                    bitmaps = primaryBitmaps,
                     maxTokens = null,
                     temperature = temperatureValue,
                     enableThinking = useThinking,
@@ -3410,7 +3517,7 @@ class MeshOverlayActivity : Activity() {
                             addTime = addTime,
                             shareLocale = shareLocale,
                             appLang = appLang,
-                            hasAnySessionImage = persistentUserBitmap != null,
+                            hasAnySessionImage = persistentUserBitmaps.isNotEmpty(),
                             visualMemorySnapshot = "",
                             historySnapshot = historySnapshot,
                             meshToolsPrompt = meshToolsPrompt,
@@ -3422,12 +3529,12 @@ class MeshOverlayActivity : Activity() {
                             append(supplementary)
                             append("\n\n")
                         }
-                        append(formatCleanUserTurn(persistentUserBitmap != null))
+                        append(formatCleanUserTurn(persistentUserBitmaps.isNotEmpty()))
                     }
                     val tier1Request = PaiosModelHelper.buildRequest(
                         prompt = tier1Prompt,
                         instructions = boundedPersona,
-                        image = persistentUserBitmap,
+                        bitmaps = persistentUserBitmaps,
                         maxTokens = null,
                         temperature = temperatureValue,
                         enableThinking = false,
@@ -3454,11 +3561,11 @@ class MeshOverlayActivity : Activity() {
                     withContext(Dispatchers.Main) {
                         bubbleViews.hideThought()
                     }
-                    val bareBitmap = if (hasUserPhotos) newUserCompositeBitmap else null
+                    val bareBitmaps = if (hasUserPhotos) userBitmapsSnapshot else emptyList()
                     val tier2Request = PaiosModelHelper.buildRequest(
-                        prompt = formatCleanUserTurn(bareBitmap != null),
+                        prompt = formatCleanUserTurn(bareBitmaps.isNotEmpty()),
                         instructions = null,
-                        image = bareBitmap,
+                        bitmaps = bareBitmaps,
                         maxTokens = null,
                         temperature = temperatureValue,
                         enableThinking = false,
@@ -3589,14 +3696,13 @@ class MeshOverlayActivity : Activity() {
                             personaSystemPrompt = personaSystemPrompt,
                             historySnapshot = historySnapshot,
                             userBitmapsSnapshot = userBitmapsSnapshot,
-                            newUserCompositeBitmap = newUserCompositeBitmap,
                             effectiveBitmaps = effectiveBitmaps,
                             aiBubbleView = aiBubbleView,
                             bubbleViews = bubbleViews,
                             temperatureValue = temperatureValue,
                             turnId = turnId
                         )
-                        val turnBitmap = activeSessionBitmap
+                        val turnBitmap = activeSessionBitmaps.firstOrNull()
                         if (outcome.first && turnBitmap != null && overlayTurnSequence == turnId && !isDismissing) {
                             schedulePostTurnVisualSummary(turnBitmap, userPrompt, outcome.second, turnId)
                         }
@@ -3609,7 +3715,7 @@ class MeshOverlayActivity : Activity() {
                             // Ensure failed passive/session context cannot poison future turns
                             contextData = ""
                             if (!hasUserPhotos) {
-                                activeSessionBitmap = null
+                                activeSessionBitmaps.clear()
                             }
                         }
                         withContext(Dispatchers.Main) {
@@ -3635,7 +3741,7 @@ class MeshOverlayActivity : Activity() {
                 if (PaiosModelHelper.isPolicyCheckException(e)) {
                     contextData = ""
                     if (!hasUserPhotos) {
-                        activeSessionBitmap = null
+                        activeSessionBitmaps.clear()
                     }
                 }
                 withContext(Dispatchers.Main) {
@@ -3676,7 +3782,6 @@ class MeshOverlayActivity : Activity() {
         personaSystemPrompt: String,
         historySnapshot: String,
         userBitmapsSnapshot: List<Bitmap>,
-        newUserCompositeBitmap: Bitmap?,
         effectiveBitmaps: List<Bitmap>,
         aiBubbleView: TextView,
         bubbleViews: AiBubbleViews,
@@ -3735,11 +3840,13 @@ class MeshOverlayActivity : Activity() {
                 personaSystemPrompt = personaSystemPrompt,
                 historySnapshot = historySnapshot,
                 userBitmapsSnapshot = userBitmapsSnapshot,
-                newUserCompositeBitmap = newUserCompositeBitmap,
                 aiBubbleView = aiBubbleView,
                 temperatureValue = temperatureValue,
                 turnId = turnId,
-                emptyFallbackMessage = "Unable to parse completed tool request. Please try again.",
+                emptyFallbackMessage = trWithFallback(
+                    "tool_fallback_invalid_request",
+                    "The assistant could not complete a valid tool request for this query. Please try rephrasing or try again."
+                ),
                 forceOverrideOnError = true
             )
             withContext(Dispatchers.Main) {
@@ -3767,7 +3874,6 @@ class MeshOverlayActivity : Activity() {
                 personaSystemPrompt = personaSystemPrompt,
                 historySnapshot = historySnapshot,
                 userBitmapsSnapshot = userBitmapsSnapshot,
-                newUserCompositeBitmap = newUserCompositeBitmap,
                 aiBubbleView = aiBubbleView,
                 temperatureValue = temperatureValue,
                 turnId = turnId
@@ -3780,8 +3886,9 @@ class MeshOverlayActivity : Activity() {
             return emptyOutcome
         }
 
-        if (userBitmapsSnapshot.isNotEmpty() && newUserCompositeBitmap != null) {
-            activeSessionBitmap = newUserCompositeBitmap
+        if (userBitmapsSnapshot.isNotEmpty()) {
+            activeSessionBitmaps.clear()
+            activeSessionBitmaps.addAll(userBitmapsSnapshot)
         }
 
         withContext(Dispatchers.Main) {
@@ -3791,7 +3898,7 @@ class MeshOverlayActivity : Activity() {
             }
             conversationHistoryPrompt += "\nUser: $userPrompt\nPAIOS: $cleanStreamedText\n"
             lastResponseText = cleanStreamedText
-            if (effectiveBitmaps.isNotEmpty() || activeSessionBitmap != null) {
+            if (effectiveBitmaps.isNotEmpty() || activeSessionBitmaps.isNotEmpty()) {
                 visualContextMemory = cleanStreamedText.take(1200)
             }
             val aiMsg = JSONObject().apply {
@@ -3804,7 +3911,7 @@ class MeshOverlayActivity : Activity() {
             consumePendingScreenTurnIfNeeded(turnId)
         }
         val shouldSummarize = userBitmapsSnapshot.isNotEmpty() &&
-            activeSessionBitmap != null &&
+            activeSessionBitmaps.isNotEmpty() &&
             overlayTurnSequence == turnId
         return Pair(shouldSummarize, if (shouldSummarize) cleanStreamedText else "")
     }
@@ -3842,7 +3949,6 @@ class MeshOverlayActivity : Activity() {
         personaSystemPrompt: String,
         historySnapshot: String,
         userBitmapsSnapshot: List<Bitmap>,
-        newUserCompositeBitmap: Bitmap?,
         aiBubbleView: TextView,
         temperatureValue: Float,
         turnId: Long
@@ -3851,7 +3957,6 @@ class MeshOverlayActivity : Activity() {
         personaSystemPrompt = personaSystemPrompt,
         historySnapshot = historySnapshot,
         userBitmapsSnapshot = userBitmapsSnapshot,
-        newUserCompositeBitmap = newUserCompositeBitmap,
         aiBubbleView = aiBubbleView,
         temperatureValue = temperatureValue,
         turnId = turnId,
@@ -3864,7 +3969,6 @@ class MeshOverlayActivity : Activity() {
         personaSystemPrompt: String,
         historySnapshot: String,
         userBitmapsSnapshot: List<Bitmap>,
-        newUserCompositeBitmap: Bitmap?,
         aiBubbleView: TextView,
         temperatureValue: Float,
         turnId: Long,
@@ -3898,11 +4002,11 @@ class MeshOverlayActivity : Activity() {
         var lastFinishReason: String? = null
         try {
             val resolved = getOverlayResolvedClient()
-            val retryBitmap = if (hasUserPhotos) (newUserCompositeBitmap ?: compositeBitmaps(userBitmapsSnapshot)) else null
+            val retryBitmaps = if (hasUserPhotos) userBitmapsSnapshot else emptyList()
             val retryRequest = PaiosModelHelper.buildRequest(
                 prompt = retryPrompt,
                 instructions = retryInstructions,
-                image = retryBitmap,
+                bitmaps = retryBitmaps,
                 maxTokens = null,
                 temperature = temperatureValue,
                 enableThinking = false,
@@ -3910,7 +4014,8 @@ class MeshOverlayActivity : Activity() {
                 useThinkingCapability = false,
                 candidateCount = 1
             )
-            resolved.model.generateContentStream(retryRequest)
+            PaiosModelHelper.inferenceMutex.withLock {
+                resolved.model.generateContentStream(retryRequest)
                 .onEach { chunk ->
                     val candidate = chunk.candidates.firstOrNull()
                     val piece = candidate?.text ?: ""
@@ -3935,6 +4040,7 @@ class MeshOverlayActivity : Activity() {
                     retryError = e
                 }
                 .collect {}
+            }
 
             if (retryError != null &&
                 retryText.isBlank() &&
@@ -3947,7 +4053,7 @@ class MeshOverlayActivity : Activity() {
                 val bareRequest = PaiosModelHelper.buildRequest(
                     prompt = retryPrompt,
                     instructions = null,
-                    image = retryBitmap,
+                    bitmaps = retryBitmaps,
                     maxTokens = null,
                     temperature = temperatureValue,
                     enableThinking = false,
@@ -3955,7 +4061,8 @@ class MeshOverlayActivity : Activity() {
                     useThinkingCapability = false,
                     candidateCount = 1
                 )
-                resolved.model.generateContentStream(bareRequest)
+                PaiosModelHelper.inferenceMutex.withLock {
+                    resolved.model.generateContentStream(bareRequest)
                     .onEach { chunk ->
                         val candidate = chunk.candidates.firstOrNull()
                         val piece = candidate?.text ?: ""
@@ -3980,6 +4087,7 @@ class MeshOverlayActivity : Activity() {
                         retryError = e
                     }
                     .collect {}
+                }
             }
 
             retryText = PaiosModelHelper.stripControlToolTags(
@@ -4042,8 +4150,9 @@ class MeshOverlayActivity : Activity() {
                 var roundText = ""
                 var roundReason: String? = null
                 var roundError: Throwable? = null
-                resolved.model.generateContentStream(contRequest)
-                    .onEach { chunk ->
+                PaiosModelHelper.inferenceMutex.withLock {
+                    resolved.model.generateContentStream(contRequest)
+                            .onEach { chunk ->
                         val candidate = chunk.candidates.firstOrNull()
                         val piece = candidate?.text ?: ""
                         val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
@@ -4070,7 +4179,8 @@ class MeshOverlayActivity : Activity() {
                         if (e is kotlinx.coroutines.CancellationException) throw e
                         roundError = e
                     }
-                    .collect {}
+                        .collect {}
+                }
 
                 if (roundError != null) {
                     Log.w(TAG, "[TOOL-FREE FALLBACK AUTO-CONTINUE #$fallbackContinuationCount] failed: ${roundError?.message}")
@@ -4124,7 +4234,8 @@ class MeshOverlayActivity : Activity() {
         }
 
         if (hasUserPhotos && cleanRetryText.isNotBlank()) {
-            activeSessionBitmap = newUserCompositeBitmap ?: activeSessionBitmap
+            activeSessionBitmaps.clear()
+            activeSessionBitmaps.addAll(userBitmapsSnapshot)
         }
 
         withContext(Dispatchers.Main) {
@@ -4148,7 +4259,7 @@ class MeshOverlayActivity : Activity() {
             }
             outputScrollView?.post { outputScrollView?.fullScroll(View.FOCUS_DOWN) }
         }
-        val turnBitmap = activeSessionBitmap
+        val turnBitmap = activeSessionBitmaps.firstOrNull()
         val shouldSummarize = hasUserPhotos &&
             cleanRetryText.isNotBlank() &&
             turnBitmap != null &&
@@ -4206,6 +4317,17 @@ class MeshOverlayActivity : Activity() {
             } else {
                 "[TOOL RESULT: $resultPayload]"
             }
+            val maxPromptToolResultChars = 2400
+            val cappedPayload = if (resultPayload.length > maxPromptToolResultChars) {
+                resultPayload.take(maxPromptToolResultChars) + "...(truncated)"
+            } else {
+                resultPayload
+            }
+            val promptToolResultBanner = if (isToolError) {
+                "[TOOL ERROR — DATA UNAVAILABLE] Calling '$toolName' on '$appName' failed: $cappedPayload."
+            } else {
+                "[TOOL RESULT: $cappedPayload]"
+            }
 
             val sysMsg = JSONObject().apply {
                 put("user", "System")
@@ -4224,7 +4346,7 @@ class MeshOverlayActivity : Activity() {
             val synthesisUserBlock = buildString {
                 append("User question: \"$userPrompt\"\n\n")
                 append("Tool '$toolName' from '$appName' returned:\n")
-                append("$toolResultBanner\n\n")
+                append("$promptToolResultBanner\n\n")
 
                 if (isShareLocale) {
                     val appLang = activeDict.optString("current_language", "en")
@@ -4259,8 +4381,9 @@ class MeshOverlayActivity : Activity() {
                     useThinkingCapability = false,
                     candidateCount = 1
                 )
-                resolved.model.generateContentStream(request)
-                    .onEach { chunk ->
+                PaiosModelHelper.inferenceMutex.withLock {
+                    resolved.model.generateContentStream(request)
+                        .onEach { chunk ->
                         val candidate = chunk.candidates.firstOrNull()
                         val piece = candidate?.text ?: ""
                         val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
@@ -4283,7 +4406,8 @@ class MeshOverlayActivity : Activity() {
                         if (e is kotlinx.coroutines.CancellationException) throw e
                         synthError = e
                     }
-                    .collect {}
+                        .collect {}
+                }
 
                 if (synthError != null &&
                     synthText.isBlank() &&
@@ -4304,8 +4428,9 @@ class MeshOverlayActivity : Activity() {
                         useThinkingCapability = false,
                         candidateCount = 1
                     )
-                    resolved.model.generateContentStream(fallbackRequest)
-                        .onEach { chunk ->
+                    PaiosModelHelper.inferenceMutex.withLock {
+                        resolved.model.generateContentStream(fallbackRequest)
+                            .onEach { chunk ->
                             val candidate = chunk.candidates.firstOrNull()
                             val piece = candidate?.text ?: ""
                             val chunkReason = PaiosModelHelper.normalizeFinishReason(candidate?.finishReason)
@@ -4325,7 +4450,8 @@ class MeshOverlayActivity : Activity() {
                             if (e is kotlinx.coroutines.CancellationException) throw e
                             synthError = e
                         }
-                        .collect {}
+                            .collect {}
+                    }
                 }
 
                 // Auto-continue tool synthesis on v3 / truncated outputs
@@ -4384,7 +4510,8 @@ class MeshOverlayActivity : Activity() {
                     var roundText = ""
                     var roundReason: String? = null
                     var roundError: Throwable? = null
-                    resolved.model.generateContentStream(contRequest)
+                    PaiosModelHelper.inferenceMutex.withLock {
+                        resolved.model.generateContentStream(contRequest)
                         .onEach { chunk ->
                             val candidate = chunk.candidates.firstOrNull()
                             val piece = candidate?.text ?: ""
@@ -4408,7 +4535,8 @@ class MeshOverlayActivity : Activity() {
                             if (e is kotlinx.coroutines.CancellationException) throw e
                             roundError = e
                         }
-                        .collect {}
+                            .collect {}
+                    }
 
                     val activeRoundError = roundError
                     if (activeRoundError != null) {
@@ -4461,7 +4589,10 @@ class MeshOverlayActivity : Activity() {
                             sessionMessages.add(aiMsg)
                         } else {
                             val fallbackMsg = if (isToolError) {
-                                "Tool '$toolName' failed to return a response."
+                                trWithFallback(
+                                    "tool_fallback_partial_error",
+                                    "Completed {tool}, but could not format the response."
+                                ).replace("{tool}", toolName)
                             } else {
                                 resolveEmptyResponseFallback()
                             }
@@ -4516,13 +4647,20 @@ class MeshOverlayActivity : Activity() {
         if (trimmed.isEmpty()) return tr("tool_selecting")
         val lower = trimmed.lowercase(Locale.ROOT)
         when (lower) {
-            InternalToolsHelper.TOOL_INSPECT_SCREEN -> return "Inspecting screen"
-            "query_aicore_documentation", "about_paios", "paios_info", "get_paios_info" -> return "Searching documentation"
-            "get_battery_status" -> return "Checking battery"
-            "wikipedia_summary" -> return "Searching Wikipedia"
-            "wikipedia_details" -> return "Reading Wikipedia"
-            "duckduckgo_search" -> return "Searching DuckDuckGo"
-            "weather_forecast" -> return "Checking weather"
+            InternalToolsHelper.TOOL_INSPECT_SCREEN ->
+                return trWithFallback("tool_inspecting_screen", "Inspecting screen")
+            "query_aicore_documentation", "about_paios", "paios_info", "get_paios_info" ->
+                return trWithFallback("tool_searching_docs", "Searching documentation")
+            "get_battery_status" ->
+                return trWithFallback("tool_checking_battery", "Checking battery status")
+            "wikipedia_summary" ->
+                return trWithFallback("tool_searching_wikipedia", "Searching Wikipedia")
+            "wikipedia_details" ->
+                return trWithFallback("tool_reading_wikipedia", "Reading Wikipedia")
+            "duckduckgo_search" ->
+                return trWithFallback("tool_searching_duckduckgo", "Searching DuckDuckGo")
+            "weather_forecast" ->
+                return trWithFallback("tool_checking_weather", "Checking weather")
         }
 
         val normalized = trimmed
@@ -4896,21 +5034,6 @@ class MeshOverlayActivity : Activity() {
         }
     }
 
-    private fun resolveMaxTokensSetting(): Int {
-        return try {
-            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            val raw = prefs.all["flutter.tokens"] ?: prefs.all["tokens"]
-            val parsed = when (raw) {
-                is Number -> raw.toInt()
-                is String -> raw.trim().toIntOrNull()
-                else -> null
-            }
-            (parsed?.takeIf { it > 0 } ?: 256).coerceIn(1, 256)
-        } catch (_: Exception) {
-            256
-        }
-    }
-
     private fun canonicalAppId(app: String): String {
         val trimmed = app.trim()
         val lower = trimmed.lowercase(Locale.ROOT)
@@ -5023,7 +5146,9 @@ class MeshOverlayActivity : Activity() {
         while (attempt <= retryDelaysMs.size) {
             if (shouldYield?.invoke() == true) return@withContext ""
             try {
-                val response = resolved.model.generateContent(activeRequest)
+                val response = PaiosModelHelper.inferenceMutex.withLock {
+                    resolved.model.generateContent(activeRequest)
+                }
                 return@withContext response.candidates.firstOrNull()?.text?.trim().orEmpty()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -5306,39 +5431,46 @@ class MeshOverlayActivity : Activity() {
     private fun closeInteractiveSession() {
         PaiosVoiceInteractionSession.dismissActiveSession()
 
-        // Auto-archive assistant session to SharedPreferences if messages were exchanged
+        // Auto-archive assistant session if messages were exchanged
         if (sessionMessages.isNotEmpty() && !skipPendingArchiveOnDismiss) {
             try {
-                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                val autoArchive = prefs.getBoolean("flutter.autoArchiveAssistantChats", true)
-                val existingPendingStr = prefs.getString("flutter.pending_assistant_chats", null)
-                val pendingArr = if (!existingPendingStr.isNullOrBlank()) {
-                    JSONArray(existingPendingStr)
+                val serializedMessages = JSONArray(sessionMessages).toString()
+                if (FlutterLocalAiPlugin.hasActivePlugin()) {
+                    FlutterLocalAiPlugin.deliverAssistantChat(serializedMessages, unarchived = false)
                 } else {
-                    JSONArray()
+                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    val autoArchive = prefs.getBoolean("flutter.autoArchiveAssistantChats", true)
+                    val existingPendingStr = prefs.getString("flutter.pending_assistant_chats", null)
+                    val pendingArr = if (!existingPendingStr.isNullOrBlank()) {
+                        JSONArray(existingPendingStr)
+                    } else {
+                        JSONArray()
+                    }
+                    val sessionItem = JSONObject().apply {
+                        put("messages", JSONArray(sessionMessages))
+                        put("unarchived", !autoArchive)
+                        put("timestamp", System.currentTimeMillis())
+                    }
+                    pendingArr.put(sessionItem)
+                    prefs.edit().putString("flutter.pending_assistant_chats", pendingArr.toString()).apply()
                 }
-                val sessionItem = JSONObject().apply {
-                    put("messages", JSONArray(sessionMessages))
-                    put("unarchived", !autoArchive)
-                    put("timestamp", System.currentTimeMillis())
-                }
-                pendingArr.put(sessionItem)
-                prefs.edit().putString("flutter.pending_assistant_chats", pendingArr.toString()).apply()
             } catch (e: Exception) {
                 Log.w(TAG, "Error saving pending assistant session: ${e.message}")
             }
         }
 
-        // Explicitly clear all assist state on session close
+        // Explicitly clear all assist state and cached model client on session close
+        PaiosModelHelper.overlayActiveFlag = false
         visualSummaryJob?.cancel()
         overlayTurnSequence++
+        closeCachedClient()
         latestAssistBitmap = null
         latestAssistScreenText = null
         latestAssistCallerPkg = null
         currentBitmap = null
         attachedBitmaps.clear()
         userBitmaps.clear()
-        activeSessionBitmap = null
+        activeSessionBitmaps.clear()
         activeTurnIdPendingTtlConsume = -1L
         clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
@@ -5418,12 +5550,16 @@ class MeshOverlayActivity : Activity() {
                                     (thumb.width > MAX_DOWNSAMPLE_DIMENSION || thumb.height > MAX_DOWNSAMPLE_DIMENSION)
                                 ) {
                                     val scale = MAX_DOWNSAMPLE_DIMENSION.toFloat() / maxOf(thumb.width, thumb.height).toFloat()
-                                    Bitmap.createScaledBitmap(
+                                    val scaled = Bitmap.createScaledBitmap(
                                         thumb,
                                         (thumb.width * scale).toInt().coerceAtLeast(1),
                                         (thumb.height * scale).toInt().coerceAtLeast(1),
                                         true
                                     )
+                                    if (scaled !== thumb && !thumb.isRecycled) {
+                                        runCatching { thumb.recycle() }
+                                    }
+                                    scaled
                                 } else {
                                     thumb
                                 }
@@ -5501,15 +5637,9 @@ class MeshOverlayActivity : Activity() {
         activeStreamJob?.cancel()
         visualSummaryJob?.cancel()
         overlayTurnSequence++
+        PaiosModelHelper.overlayActiveFlag = false
         activityScope.cancel()
-        val oldModel = synchronized(modelClientLock) {
-            val prev = cachedResolvedClient?.model
-            cachedResolvedClient = null
-            prev
-        }
-        if (oldModel != null) {
-            runCatching { oldModel.close() }
-        }
+        closeCachedClient()
         if (activeInstanceRef?.get() === this) {
             activeInstanceRef = null
         }
@@ -5519,7 +5649,7 @@ class MeshOverlayActivity : Activity() {
         currentBitmap = null
         attachedBitmaps.clear()
         userBitmaps.clear()
-        activeSessionBitmap = null
+        activeSessionBitmaps.clear()
         activeTurnIdPendingTtlConsume = -1L
         clearPendingScreenContext(recycleBitmap = true)
         pendingCameraPhotoFile?.let { file ->
@@ -5562,10 +5692,6 @@ class MeshOverlayActivity : Activity() {
         SPARKLE,
         CLOSE,
         OPEN_IN_FULL,
-        SUMMARIZE,
-        SEARCH,
-        INSIGHT,
-        EXTRACT,
         ADD_PHOTO,
         CAMERA,
         SEND
@@ -5642,57 +5768,6 @@ class MeshOverlayActivity : Activity() {
                     val headSize = d * 0.48f
                     canvas.drawLine(ax - headSize, ay, ax, ay, strokePaint)
                     canvas.drawLine(ax, ay + headSize, ax, ay, strokePaint)
-                }
-
-                M3IconType.SUMMARIZE -> {
-                    val left = cx - r * 0.85f
-                    val rightFull = cx + r * 0.45f
-                    val rightShort = cx + r * 0.80f
-                    canvas.drawLine(left, cy - r * 0.45f, rightFull, cy - r * 0.45f, strokePaint)
-                    canvas.drawLine(left, cy + r * 0.05f, rightShort, cy + r * 0.05f, strokePaint)
-                    canvas.drawLine(left, cy + r * 0.55f, cx + r * 0.25f, cy + r * 0.55f, strokePaint)
-                    val sx = cx + r * 0.68f
-                    val sy = cy - r * 0.52f
-                    val sr = r * 0.32f
-                    val sp = Path().apply {
-                        moveTo(sx, sy - sr)
-                        quadTo(sx, sy, sx + sr, sy)
-                        quadTo(sx, sy, sx, sy + sr)
-                        quadTo(sx, sy, sx - sr, sy)
-                        quadTo(sx, sy, sx, sy - sr)
-                        close()
-                    }
-                    canvas.drawPath(sp, fillPaint)
-                }
-
-                M3IconType.SEARCH -> {
-                    val cr = r * 0.58f
-                    val scx = cx - r * 0.15f
-                    val scy = cy - r * 0.15f
-                    canvas.drawCircle(scx, scy, cr, strokePaint)
-                    canvas.drawLine(
-                        scx + cr * 0.72f,
-                        scy + cr * 0.72f,
-                        cx + r * 0.78f,
-                        cy + r * 0.78f,
-                        strokePaint
-                    )
-                }
-
-                M3IconType.INSIGHT -> {
-                    val br = r * 0.54f
-                    val by = cy - r * 0.22f
-                    canvas.drawCircle(cx, by, br, strokePaint)
-                    canvas.drawLine(cx - br * 0.45f, cy + r * 0.52f, cx + br * 0.45f, cy + r * 0.52f, strokePaint)
-                    canvas.drawLine(cx - br * 0.28f, cy + r * 0.82f, cx + br * 0.28f, cy + r * 0.82f, strokePaint)
-                }
-
-                M3IconType.EXTRACT -> {
-                    val rect = RectF(cx - r * 0.72f, cy - r * 0.85f, cx + r * 0.72f, cy + r * 0.85f)
-                    canvas.drawRoundRect(rect, r * 0.22f, r * 0.22f, strokePaint)
-                    canvas.drawLine(cx - r * 0.38f, cy - r * 0.30f, cx + r * 0.38f, cy - r * 0.30f, strokePaint)
-                    canvas.drawLine(cx - r * 0.38f, cy + r * 0.08f, cx + r * 0.38f, cy + r * 0.08f, strokePaint)
-                    canvas.drawLine(cx - r * 0.38f, cy + r * 0.45f, cx + r * 0.12f, cy + r * 0.45f, strokePaint)
                 }
 
                 M3IconType.ADD_PHOTO -> {

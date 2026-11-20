@@ -50,7 +50,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                             ),
                             if (engine.currentChat != "0") cards.cardGroup([
                               if(!engine.isLoading) CardContents.doubleTap(
-                                    title: engine.chats[engine.currentChat]?["name"]??engine.dict.value("new_chat"),
+                                    title: (() { final raw = engine.chats[engine.currentChat]?["name"]?.toString(); if (raw == null || raw.isEmpty) return engine.dict.value("new_chat"); if (raw == "Still loading") return engine.dict.value("generating_title"); return raw; })(),
                                     subtitle: engine.dict.value("change_name"),
                                     action: (){
                                       List<Widget> cardlist = [];
@@ -73,7 +73,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                           );
                                         }
                                       }
-                                      engine.chatName.text = engine.chats[engine.currentChat]?["name"];
+                                      final rawNameForEdit = engine.chats[engine.currentChat]?["name"]?.toString(); engine.chatName.text = (rawNameForEdit == null || rawNameForEdit == "Still loading") ? "" : rawNameForEdit;
                                       showDialog(
                                         context: context,
                                         builder: (BuildContext newContext) => AlertDialog(
@@ -162,7 +162,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                     },
                                     icon: Icons.auto_awesome_rounded,
                                     secondAction: () async {
-                                      String newTitle = "Generating...";
+                                      String newTitle = engine.dict.value("generating_title");
                                       setState(() {
                                         engine.isLoading = true;
                                       });
@@ -287,7 +287,7 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                             cards.cardGroup([
                               CardContents.tap(
                                   title: engine.dict.value("chat_prompt"),
-                                  subtitle: engine.promptData.getPromptName(engine.chats[engine.currentChat]?["promptId"] ?? engine.config.defaultPromptId),
+                                  subtitle: engine.promptData.getPromptDisplayName(engine.chats[engine.currentChat]?["promptId"] ?? engine.config.defaultPromptId, engine.dict),
                                   action: () {
                                     showDialog(
                                         context: context,
@@ -299,8 +299,8 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                     child: cards.cardGroup([
                                                       ...engine.promptData.defaultPrompts.keys.map((key) {
                                                         return CardContents.halfTap(
-                                                            title: engine.promptData.defaultPrompts[key]["name"] ?? "Default",
-                                                            subtitle: "System",
+                                                            title: engine.promptData.getPromptDisplayName(key, engine.dict),
+                                                            subtitle: engine.dict.value("prompt_type_system"),
                                                             action: () {
                                                               setState(() {
                                                                 engine.chats[engine.currentChat]!["promptId"] = key;
@@ -312,8 +312,8 @@ class ChatSettingsPageState extends State<ChatSettingsPage> {
                                                       }).toList().cast<Widget>(),
                                                       ...engine.promptData.userPrompts.keys.map((key) {
                                                         return CardContents.halfTap(
-                                                            title: engine.promptData.userPrompts[key]["name"] ?? "Custom",
-                                                            subtitle: "User",
+                                                            title: engine.promptData.getPromptDisplayName(key, engine.dict),
+                                                            subtitle: engine.dict.value("prompt_type_user"),
                                                             action: () {
                                                               setState(() {
                                                                 engine.chats[engine.currentChat]!["promptId"] = key;

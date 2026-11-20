@@ -28,15 +28,14 @@ doc/api/
 lib/firebase_options.dart
 *.exe
 android/app/google-services.json
-.idea/caches/deviceStreaming.xml
-.idea/caches/deviceStreaming.xml
-.idea/deviceManager.xml
 firebase.json
+.idea/caches/
 .idea/deviceManager.xml
-android/.kotlin/sessions/kotlin-compiler-11069125661880765564.salive
-.idea/caches/deviceStreaming.xml
-.idea/deviceManager.xml
+android/.kotlin/
 /.tmp.driveupload
+release/
+*.apk
+*.aab
 
 # Play Store credentials and temporary release notes
 android/play-service-account.json

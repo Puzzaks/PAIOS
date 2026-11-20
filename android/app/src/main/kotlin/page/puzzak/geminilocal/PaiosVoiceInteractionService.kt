@@ -32,6 +32,7 @@ class PaiosVoiceInteractionService : VoiceInteractionService() {
     override fun onReady() {
         super.onReady()
         Log.d("PaiosAssistService", "[VOICE INTERACTION SERVICE READY] PAIOS bound as active system assistant")
+        MainActivity.registerHeadlessMeshHandler(applicationContext)
         MeshOverlayActivity.preloadTranslationsAsync(applicationContext)
     }
 }
@@ -136,7 +137,10 @@ class PaiosVoiceInteractionSession(context: Context) : VoiceInteractionSession(c
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         activeSessionRef = WeakReference(this)
-        MeshOverlayActivity.clearAssistCache()
+        val assistAgeMs = System.currentTimeMillis() - MeshOverlayActivity.latestAssistTimestampMs
+        if (assistAgeMs > 500L) {
+            MeshOverlayActivity.clearAssistCache()
+        }
 
         val overlayIntent = Intent(context, MeshOverlayActivity::class.java).apply {
             component = ComponentName(context, MeshOverlayActivity::class.java)
