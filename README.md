@@ -45,10 +45,10 @@
 - **RAG, Agentism & Modular Extensions**:
   - Using IPC (already implemented in [PTK](https://github.com/Puzzaks/PTK), and upcoming `Air Raid Alerts`) supporting up to 6-turn tool chaining and per-app / per-module Extensions Settings.
   - Tool calls as bundled modules (Documentation, basic Device Info and screen resolver) and opt-in modules for online capabilities (Wikipedia, DuckDuckGo, Open-Meteo Weather).
-- **M3 Expressive UI, Docs Explorer, 5 Languages and so much more**:
+- **M3 Expressive UI, Docs Explorer, 6 Languages and so much more**:
   - Custom UI package (TBD) that builds upon Material 3 eXpressive
   - 23-page GenAI/AICore Docs Explorer (bundled offline + live `.md.txt` sync + RAG tool)
-  - Multilingual support - 5 languages (`EN / UK / ZH / DE / TR` - or you can add yours :) ),
+  - Multilingual support - 6 languages (`EN / UK / ZH-Hant / ZH-Hans / DE / TR` - or you can add yours :) ),
   - GitHub issue and documentation viewer in-app
   - Changelog and package list viewer in-app
   - Transparent [System Prompt](assets/prompts/system_default.md) and prompt viewer in-app.

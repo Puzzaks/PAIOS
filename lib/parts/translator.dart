@@ -7,7 +7,17 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:flutter/services.dart';
 
 class Dictionary {
-  List languages = [];
+  static const List<Map<String, String>> _supportedLangs =
+      <Map<String, String>>[
+    {'origin': 'English', 'name': 'English', 'id': 'en'},
+    {'origin': 'Українська', 'name': 'Ukrainian', 'id': 'uk'},
+    {'origin': '繁體中文', 'name': 'Traditional Chinese', 'id': 'zh'},
+    {'origin': '简体中文', 'name': 'Simplified Chinese', 'id': 'zh-Hans'},
+    {'origin': 'Deutsch', 'name': 'German', 'id': 'de'},
+    {'origin': 'Türkçe', 'name': 'Turkish', 'id': 'tr'},
+  ];
+
+  List languages = List<Map<String, String>>.from(_supportedLangs);
   bool systemLanguage = false;
   Map dictionary = {};
   String locale = "en";
@@ -166,6 +176,50 @@ class Dictionary {
     return Dictionary._internal(path, url);
   }
 
+  /// Resolves a raw system locale string (e.g. `zh_CN`, `zh_Hans`, `zh_TW`, `uk_UA`)
+  /// into a supported PAIOS dictionary language ID.
+  static String resolveSystemLocale(
+    String rawLocale, {
+    Iterable<String>? supportedIds,
+  }) {
+    final Set<String> supported =
+        (supportedIds != null && supportedIds.isNotEmpty)
+            ? supportedIds.toSet()
+            : _supportedLangs.map((e) => e['id']!).toSet();
+    final String cleaned = rawLocale.trim().split(RegExp(r'[.@]')).first;
+    if (cleaned.isEmpty) return 'en';
+    final List<String> parts = cleaned
+        .replaceAll('-', '_')
+        .split('_')
+        .map((p) => p.trim().toLowerCase())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return 'en';
+
+    final String lang = parts.first;
+    if (lang == 'zh') {
+      final bool isSimplified =
+          parts.contains('hans') || parts.contains('cn') || parts.contains('sg');
+      if (isSimplified && supported.contains('zh-Hans')) {
+        return 'zh-Hans';
+      }
+      if (supported.contains('zh')) {
+        return 'zh';
+      }
+      if (supported.contains('zh-Hans')) {
+        return 'zh-Hans';
+      }
+      return 'en';
+    }
+
+    for (final String candidate in supported) {
+      if (candidate.toLowerCase() == lang) {
+        return candidate;
+      }
+    }
+    return 'en';
+  }
+
   Future<void> decideLanguage() async {
     if (!Hive.isBoxOpen('paios_storage')) {
       await setSystemLanguage();
@@ -173,42 +227,137 @@ class Dictionary {
     }
     final box = Hive.box('paios_storage');
     if (box.containsKey("language")) {
-      locale = box.get("language", defaultValue: "en");
+      final String raw =
+          box.get("language", defaultValue: "en")?.toString().trim() ?? "en";
+      final String lower = raw.toLowerCase();
+      if (lower == 'zh-hans' ||
+          lower == 'zh_hans' ||
+          lower == 'zh_cn' ||
+          lower == 'zh-cn' ||
+          lower == 'zh_sg' ||
+          lower == 'zh-sg') {
+        locale = "zh-Hans";
+      } else if (lower == 'zh_hant' ||
+          lower == 'zh-hant' ||
+          lower == 'zh_tw' ||
+          lower == 'zh-tw' ||
+          lower == 'zh_hk' ||
+          lower == 'zh-hk' ||
+          lower == 'zh_mo' ||
+          lower == 'zh-mo') {
+        locale = "zh";
+      } else {
+        locale = raw;
+      }
     } else {
       await setSystemLanguage();
     }
   }
 
-  Future<void> setSystemLanguage() async {
-    if (Hive.isBoxOpen('paios_storage')) {
-      final box = Hive.box('paios_storage');
+  Future<void> setSystemLanguage([String? overridePlatformLocale]) async {
+    final Box<dynamic>? box =
+        Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
+    if (box != null) {
       // Remove the saved preference so decideLanguage() falls back to device locale on next boot
       await box.delete("language");
     }
-    String deviceLocale = "en";
+    String rawLocale = "en";
     try {
-      deviceLocale = Platform.localeName.split("_")[0];
+      rawLocale = overridePlatformLocale ?? Platform.localeName;
     } catch (_) {}
-    bool found = false;
-    for (int a = 0; a < languages.length; a++) {
-      if (languages[a]["id"] == deviceLocale) {
-        locale = deviceLocale;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      locale = "en";
+    final Iterable<String> supportedIds = languages.isNotEmpty
+        ? languages
+            .whereType<Map>()
+            .map((m) => m["id"]?.toString() ?? "")
+            .where((id) => id.isNotEmpty)
+        : _supportedLangs.map((m) => m["id"]!);
+    locale = resolveSystemLocale(rawLocale, supportedIds: supportedIds);
+    if (!dictionary.containsKey(locale)) {
+      await _loadLanguageFromAssetAndCache(locale, box);
     }
   }
 
-  saveLanguage(String variant) async {
-    final box = Hive.box('paios_storage');
+  Future<void> saveLanguage(String variant) async {
+    final Box<dynamic>? box =
+        Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
     for (int a = 0; a < languages.length; a++) {
       if (languages[a]["id"] == variant) {
+        if (!dictionary.containsKey(variant)) {
+          await _loadLanguageFromAssetAndCache(variant, box);
+        }
         locale = variant;
-        box.put("language", variant);
+        await box?.put("language", variant);
+        break;
       }
+    }
+  }
+
+  Future<void> _loadLanguageFromAssetAndCache(
+    String langId,
+    Box<dynamic>? box,
+  ) async {
+    final Map<String, dynamic> assetDictMap = <String, dynamic>{};
+    final Map<String, dynamic> mergedDict = <String, dynamic>{};
+
+    try {
+      final String assetDict =
+          await rootBundle.loadString('$path/$langId.json');
+      final dynamic decodedAsset = jsonDecode(assetDict);
+      if (decodedAsset is Map) {
+        decodedAsset.forEach((k, v) {
+          final key = k.toString();
+          final val = sanitizeTranslationValue(v.toString());
+          assetDictMap[key] = val;
+          mergedDict[key] = val;
+        });
+      }
+    } catch (_) {
+      // Fails silently if rootBundle doesn't have it (e.g. newly added remote lang)
+    }
+
+    final String? cachedDict = box?.get("cached_dict_$langId");
+    if (cachedDict != null && cachedDict.isNotEmpty) {
+      try {
+        final dynamic decodedCache = jsonDecode(cachedDict);
+        if (decodedCache is Map) {
+          bool cacheHadMojibake = false;
+          decodedCache.forEach((k, v) {
+            final key = k.toString();
+            final rawVal = v.toString();
+            if (hasMojibake(rawVal)) {
+              cacheHadMojibake = true;
+            }
+            final cleanFallback = assetDictMap[key]?.toString();
+            mergedDict[key] = sanitizeTranslationValue(
+              rawVal,
+              cleanFallback: cleanFallback,
+            );
+          });
+          if (cacheHadMojibake && box != null) {
+            await box.put("cached_dict_$langId", jsonEncode(mergedDict));
+          }
+        }
+      } catch (_) {}
+    }
+
+    dictionary[langId] = mergedDict;
+  }
+
+  Future<void> _loadDeferredLanguages(
+    List<String> langIds,
+    Box<dynamic>? box,
+    VoidCallback? onUpdated,
+  ) async {
+    bool loadedAny = false;
+    await Future.wait(
+      langIds.map((langId) async {
+        if (dictionary.containsKey(langId)) return;
+        await _loadLanguageFromAssetAndCache(langId, box);
+        loadedAny = true;
+      }),
+    );
+    if (loadedAny && dictionary.containsKey(locale)) {
+      onUpdated?.call();
     }
   }
 
@@ -216,11 +365,15 @@ class Dictionary {
   /// 1. Immediately loads bundled assets as baseline and overlays any cached
   ///    Hive translations on top so startup never waits on network I/O and works
   ///    offline with cached strings.
-  /// 2. Silently upgrades translations from GitHub in the background and invokes
+  /// 2. When [deferInactiveLanguages] is `true`, loads the active [locale],
+  ///    `'en'` (and `'zh'` when `locale == 'zh-Hans'`) immediately, deferring
+  ///    inactive bundled languages to the background.
+  /// 3. Silently upgrades translations from GitHub in the background and invokes
   ///    [onUpdated] once downloaded.
   Future<void> setup({
     Future<void> Function(String, String, String)? log,
     VoidCallback? onUpdated,
+    bool deferInactiveLanguages = false,
   }) async {
     final Box<dynamic>? box =
         Hive.isBoxOpen('paios_storage') ? Hive.box('paios_storage') : null;
@@ -270,54 +423,34 @@ class Dictionary {
 
     await decideLanguage();
 
-    // 2. For each language, load bundled asset baseline + overlay cached Hive strings
+    // 2. Load active + fallback languages (or all languages synchronously when deferInactiveLanguages is false)
+    final Set<String> immediateIds = <String>{
+      locale,
+      'en',
+      if (locale == 'zh-Hans') 'zh',
+    };
+    final List<String> toLoadNow = <String>[];
+    final List<String> toDefer = <String>[];
     for (int i = 0; i < languages.length; i++) {
       final String langId = languages[i]["id"].toString();
-      final Map<String, dynamic> assetDictMap = <String, dynamic>{};
-      final Map<String, dynamic> mergedDict = <String, dynamic>{};
-
-      try {
-        final String assetDict =
-            await rootBundle.loadString('$path/$langId.json');
-        final dynamic decodedAsset = jsonDecode(assetDict);
-        if (decodedAsset is Map) {
-          decodedAsset.forEach((k, v) {
-            final key = k.toString();
-            final val = sanitizeTranslationValue(v.toString());
-            assetDictMap[key] = val;
-            mergedDict[key] = val;
-          });
-        }
-      } catch (_) {
-        // Fails silently if rootBundle doesn't have it (e.g. newly added remote lang)
+      if (!deferInactiveLanguages || immediateIds.contains(langId)) {
+        toLoadNow.add(langId);
+      } else {
+        toDefer.add(langId);
       }
-
-      final String? cachedDict = box?.get("cached_dict_$langId");
-      if (cachedDict != null && cachedDict.isNotEmpty) {
-        try {
-          final dynamic decodedCache = jsonDecode(cachedDict);
-          if (decodedCache is Map) {
-            bool cacheHadMojibake = false;
-            decodedCache.forEach((k, v) {
-              final key = k.toString();
-              final rawVal = v.toString();
-              if (hasMojibake(rawVal)) {
-                cacheHadMojibake = true;
-              }
-              final cleanFallback = assetDictMap[key]?.toString();
-              mergedDict[key] = sanitizeTranslationValue(
-                rawVal,
-                cleanFallback: cleanFallback,
-              );
-            });
-            if (cacheHadMojibake && box != null) {
-              await box.put("cached_dict_$langId", jsonEncode(mergedDict));
-            }
-          }
-        } catch (_) {}
+    }
+    for (final reqId in immediateIds) {
+      if (reqId.isNotEmpty && !toLoadNow.contains(reqId)) {
+        toLoadNow.add(reqId);
       }
+    }
 
-      dictionary[langId] = mergedDict;
+    await Future.wait(
+      toLoadNow.map((langId) => _loadLanguageFromAssetAndCache(langId, box)),
+    );
+
+    if (toDefer.isNotEmpty) {
+      unawaited(_loadDeferredLanguages(toDefer, box, onUpdated));
     }
 
     // 3. Fire non-blocking background GitHub refresh so app startup never blocks on HTTP
@@ -360,8 +493,24 @@ class Dictionary {
         final String langBody = utf8.decode(response.bodyBytes);
         final dynamic decodedLangs = jsonDecode(langBody);
         if (decodedLangs is List) {
-          languages = decodedLangs;
-          await box.put("cached_languages_json", langBody);
+          final List<dynamic> mergedRemoteLangs =
+              List<dynamic>.from(decodedLangs);
+          final Set<String> remoteIds = decodedLangs
+              .whereType<Map>()
+              .map((m) => m["id"]?.toString() ?? "")
+              .where((id) => id.isNotEmpty)
+              .toSet();
+          for (final item in languages) {
+            if (item is Map && item["id"] != null) {
+              final String id = item["id"].toString();
+              if (!remoteIds.contains(id)) {
+                remoteIds.add(id);
+                mergedRemoteLangs.add(item);
+              }
+            }
+          }
+          languages = mergedRemoteLangs;
+          await box.put("cached_languages_json", jsonEncode(mergedRemoteLangs));
           if (!box.containsKey("language")) {
             await decideLanguage();
           }
@@ -431,12 +580,45 @@ class Dictionary {
     }
   }
 
+  /// Returns the localized string for [entry] without debug `!!!` markers,
+  /// or `null` when the key is absent from the active locale and fallbacks.
+  String? tryValue(String entry) {
+    if (dictionary.containsKey(locale) &&
+        dictionary[locale] is Map &&
+        (dictionary[locale] as Map).containsKey(entry)) {
+      final v = dictionary[locale][entry]?.toString().trim() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    if (locale == "zh-Hans" &&
+        dictionary.containsKey("zh") &&
+        dictionary["zh"] is Map &&
+        (dictionary["zh"] as Map).containsKey(entry)) {
+      final v = dictionary["zh"][entry]?.toString().trim() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    if (dictionary.containsKey("en") &&
+        dictionary["en"] is Map &&
+        (dictionary["en"] as Map).containsKey(entry)) {
+      final v = dictionary["en"][entry]?.toString().trim() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    return null;
+  }
+
   String value(String entry) {
     if (!dictionary.containsKey(locale)) {
       return "Loading...";
     }
     if (!dictionary[locale].containsKey(entry)) {
-      if (!dictionary["en"].containsKey(entry)) {
+      if (locale == "zh-Hans" &&
+          dictionary.containsKey("zh") &&
+          dictionary["zh"] is Map &&
+          dictionary["zh"].containsKey(entry)) {
+        return dictionary["zh"][entry].toString();
+      }
+      if (!dictionary.containsKey("en") ||
+          dictionary["en"] is! Map ||
+          !dictionary["en"].containsKey(entry)) {
         if (kDebugMode) {
           return "!!! $entry";
         } else {

@@ -109,9 +109,11 @@ class FileAccessService {
     final base = name
         .trim()
         .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9\s_-]'), '')
-        .replaceAll(RegExp(r'\s+'), '_');
-    return '$base.md';
+        .replaceAll(RegExp(r'[^\p{L}\p{N}\s_-]', unicode: true), '')
+        .replaceAll(RegExp(r'\s+'), '_')
+        .replaceAll(RegExp(r'^[_-]+|[_-]+$'), '');
+    final stem = base.isEmpty ? 'prompt' : base;
+    return '$stem.md';
   }
 
   /// Converts a filename back to a display name.

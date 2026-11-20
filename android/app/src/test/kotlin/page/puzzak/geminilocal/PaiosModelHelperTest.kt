@@ -2,6 +2,7 @@ package page.puzzak.geminilocal
 
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.GenAiException
+import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -61,15 +62,76 @@ class PaiosModelHelperTest {
     }
 
     @Test
-    fun isBusyException_distinguishesBusyFromPolicyError() {
+    fun isBusyException_distinguishesBusyFromIncompatibleAndPolicyErrors() {
         val busyEx = GenAiException("Busy", null, GenAiException.ErrorCode.BUSY)
+        val incompatibleEx = GenAiException(
+            "AICore incompatible",
+            null,
+            GenAiException.ErrorCode.AICORE_INCOMPATIBLE
+        )
         val policyEx = GenAiException(
             "Policy",
             null,
             GenAiException.ErrorCode.REQUEST_PROCESSING_ERROR
         )
         assertTrue(PaiosModelHelper.isBusyException(busyEx))
+        assertTrue(PaiosModelHelper.isBusyException(Exception("Error 9: BUSY")))
+        assertTrue(PaiosModelHelper.isBusyException(Exception("AICore returned BUSY")))
+        assertTrue(PaiosModelHelper.isBusyException(Exception("Failed with error code 9")))
+
+        assertFalse(PaiosModelHelper.isBusyException(incompatibleEx))
+        assertFalse(PaiosModelHelper.isBusyException(Exception("Error -101: AICORE_INCOMPATIBLE")))
+        assertFalse(PaiosModelHelper.isBusyException(Exception("-101")))
+        assertFalse(PaiosModelHelper.isBusyException(Exception("AICORE_INCOMPATIBLE")))
+        assertFalse(PaiosModelHelper.isBusyException(Exception("Error 90")))
         assertFalse(PaiosModelHelper.isBusyException(policyEx))
+    }
+
+    @Test
+    fun extractGenAiErrorDetails_and_extractRetryDelayMs_surfaceBeta5Metadata() {
+        val busyWithDelay = GenAiException(
+            "Model busy",
+            null,
+            GenAiException.ErrorCode.BUSY,
+            Duration.ofMillis(750),
+            9,
+            1
+        )
+        assertEquals(750L, PaiosModelHelper.extractRetryDelayMs(busyWithDelay))
+        val busyDetails = PaiosModelHelper.extractGenAiErrorDetails(busyWithDelay)
+        assertEquals(GenAiException.ErrorCode.BUSY, busyDetails["errorCode"])
+        assertEquals(9, busyDetails["aiCoreErrorCode"])
+        assertEquals(1, busyDetails["aiCoreErrorType"])
+        assertEquals(750L, busyDetails["retryDelayMs"])
+        assertEquals(false, busyDetails["isContextOverflow"])
+
+        val tooLargeEx = GenAiException(
+            "Prompt too large",
+            null,
+            GenAiException.ErrorCode.REQUEST_TOO_LARGE
+        )
+        assertEquals(true, PaiosModelHelper.extractGenAiErrorDetails(tooLargeEx)["isContextOverflow"])
+
+        val maxTurnsEx = GenAiException(
+            "Max turns exceeded",
+            null,
+            GenAiException.ErrorCode.MAX_TURNS_EXCEEDED
+        )
+        assertEquals(true, PaiosModelHelper.extractGenAiErrorDetails(maxTurnsEx)["isContextOverflow"])
+        assertNull(PaiosModelHelper.extractRetryDelayMs(tooLargeEx))
+    }
+
+    @Test
+    fun computeSampleSize_and_countEstimatedTokens_workDeterministically() {
+        assertEquals(4, PaiosModelHelper.computeSampleSize(4000, 3000, 768))
+        assertEquals(2, PaiosModelHelper.computeSampleSize(1536, 1024, 768))
+        assertEquals(1, PaiosModelHelper.computeSampleSize(768, 512, 768))
+        assertEquals(1, PaiosModelHelper.computeSampleSize(0, 0, 768))
+
+        assertEquals(0, PaiosModelHelper.countEstimatedTokens(""))
+        assertEquals(0, PaiosModelHelper.countEstimatedTokens("   \n\t "))
+        assertEquals(3, PaiosModelHelper.countEstimatedTokens("Hello world"))
+        assertEquals(4, PaiosModelHelper.countEstimatedTokens("你好世界"))
     }
 
     @Test
@@ -1112,8 +1174,17 @@ class PaiosModelHelperTest {
         assertTrue(PaiosModelHelper.isTruncationHeuristic("and ensuring"))
         assertTrue(PaiosModelHelper.isTruncationHeuristic("The model works by providing"))
         assertTrue(PaiosModelHelper.isTruncationHeuristic("and do not"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("for enhanced reasoning"))
+        assertTrue(PaiosModelHelper.isTruncationHeuristic("with advanced processing"))
+        assertTrue(
+            PaiosModelHelper.isTruncationHeuristic(
+                "I am PAIOS, your personal AI assistant. I'm designed to be your personal AI, offering features like multimodal vision, a thinking mode for enhanced reasoning"
+            )
+        )
         assertFalse(PaiosModelHelper.isTruncationHeuristic("Why not"))
         assertFalse(PaiosModelHelper.isTruncationHeuristic("Thanks for everything"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Here are your options.\n- First item\n- Second item"))
+        assertFalse(PaiosModelHelper.isTruncationHeuristic("Overview complete.\n## Next Steps"))
     }
 
     @Test
@@ -1121,5 +1192,116 @@ class PaiosModelHelperTest {
         assertEquals("Hello!", PaiosModelHelper.stripLeadingAssistantLabel("PAIOS: Hello!"))
         assertEquals("The forecast", PaiosModelHelper.stripLeadingAssistantLabel("  paios:  The forecast"))
         assertEquals("PAIOS is ready", PaiosModelHelper.stripLeadingAssistantLabel("PAIOS is ready"))
+    }
+
+    @Test
+    fun trimTrailingIncompleteSentence_trimsDanglingTailClauseAndPreservesCompleteText() {
+        val kyivTruncated =
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at"
+        assertEquals(
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C).",
+            PaiosModelHelper.trimTrailingIncompleteSentence(kyivTruncated)
+        )
+
+        val completeMultiSentence =
+            "The weather in Kyiv today is cloudy with a temperature of 5.5°C (feels like 1.3°C). The wind is blowing at 12 km/h."
+        assertEquals(
+            completeMultiSentence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(completeMultiSentence)
+        )
+
+        val singleIncompleteSentence = "The wind is blowing at"
+        assertEquals(
+            singleIncompleteSentence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(singleIncompleteSentence)
+        )
+
+        val openCodeFence = "Here is a snippet. ```kotlin\nval x ="
+        assertEquals(
+            openCodeFence,
+            PaiosModelHelper.trimTrailingIncompleteSentence(openCodeFence)
+        )
+
+        val toolDraft = """Sure thing. {"tool": "inspect_screen", "args": {"""
+        assertEquals(
+            toolDraft,
+            PaiosModelHelper.trimTrailingIncompleteSentence(toolDraft)
+        )
+
+        val unpunctuatedMultiSentence =
+            "I am PAIOS, your personal AI assistant. I'm designed to be your personal AI, offering features like multimodal vision, a thinking mode for enhanced reasoning"
+        assertEquals(
+            "I am PAIOS, your personal AI assistant.",
+            PaiosModelHelper.trimTrailingIncompleteSentence(unpunctuatedMultiSentence)
+        )
+
+        val markdownListReply = "Here are the available features.\n- Multimodal vision\n- Thinking mode"
+        assertEquals(
+            markdownListReply,
+            PaiosModelHelper.trimTrailingIncompleteSentence(markdownListReply)
+        )
+
+        val markdownHeadingReply = "All checks passed.\n## Summary Details"
+        assertEquals(
+            markdownHeadingReply,
+            PaiosModelHelper.trimTrailingIncompleteSentence(markdownHeadingReply)
+        )
+
+        val jsonBlockReply = """Calling tool now.""" + "\n" + """{"tool": "get_battery_status", "args": {}}"""
+        assertEquals(
+            jsonBlockReply,
+            PaiosModelHelper.trimTrailingIncompleteSentence(jsonBlockReply)
+        )
+    }
+
+    @Test
+    fun stitchOverlayContinuation_and_hasContinuationStutter_catchEarlierSentenceLoopRepeat() {
+        val baseInspect =
+            "The status bar displays \"Tyche\" at 59% and \"Verdandi LTE\" at 100%. You will also see a screen time widget. A bottom app bar includes a grid of squares."
+        val repeatedTail = "The status bar displays \"Tyche\" at 59% and"
+
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.stitchOverlayContinuation(baseInspect, repeatedTail)
+        )
+
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.stitchOverlayContinuation(
+                "$baseInspect The status bar",
+                "displays \"Tyche\" at 59% and"
+            )
+        )
+
+        val combinedWithRepeat = "$baseInspect $repeatedTail"
+        assertTrue(PaiosModelHelper.hasContinuationStutter(combinedWithRepeat))
+        assertFalse(
+            PaiosModelHelper.shouldContinuePartialResponse(
+                finishReason = "1",
+                partialText = combinedWithRepeat,
+                continuationCount = 1,
+                lastRoundAddedChars = repeatedTail.length,
+                isNanoV4 = false
+            )
+        )
+        assertEquals(
+            baseInspect,
+            PaiosModelHelper.trimTrailingIncompleteSentence(combinedWithRepeat)
+        )
+    }
+
+    @Test
+    fun internalToolsHelper_supportsPaiosSelfKnowledgeAliasesAndPrefix() {
+        val docsModule = InternalToolsHelper.moduleById(InternalToolsHelper.MODULE_DOCS)
+        assertNotNull(docsModule)
+        val docsTool = docsModule!!.tools.first()
+        assertTrue(docsTool.description.startsWith("Searches official "))
+        assertTrue(docsTool.description.contains("who are you?"))
+
+        assertTrue(InternalToolsHelper.isInternalTool("query_aicore_documentation"))
+        assertTrue(InternalToolsHelper.isInternalTool("about_paios"))
+        assertTrue(InternalToolsHelper.isInternalTool("paios_info"))
+        assertTrue(InternalToolsHelper.isInternalTool("get_paios_info"))
+        assertEquals(docsModule, InternalToolsHelper.moduleForTool("about_paios"))
     }
 }

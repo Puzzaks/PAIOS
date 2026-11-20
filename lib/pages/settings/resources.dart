@@ -60,7 +60,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                                     cards.cardGroup(
                                         engine.resourceData.grouped[collection]!.map((resource) {
                                           return CardContents.tap(
-                                              title: resource["name"] ?? "",
+                                              title: engine.resourceData.getResourceDisplayName(resource, engine.dict),
                                               subtitle: (resource["value"] ?? "").toString().replaceFirst(RegExp(r'^https?://'), '').split('/')[0],
                                               action: () async {
                                                 await launchUrl(
@@ -81,7 +81,7 @@ class SettingsResourcesState extends State<SettingsResources> {
                               subtitle: engine.dict.value("gh_repo"),
                               action: () async {
                                 await launchUrl(
-                                    Uri.parse('https://github.com/Puzzaks/PAIOS'),
+                                    Uri.parse(engine.config.githubRepoUrl),
                                     mode: LaunchMode.externalApplication
                                 );
                               }

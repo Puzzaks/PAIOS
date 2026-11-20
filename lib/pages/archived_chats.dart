@@ -17,45 +17,20 @@ class ArchivedChatsPage extends StatefulWidget {
 }
 
 class ArchivedChatsPageState extends State<ArchivedChatsPage> {
-  String timeAgo(dynamic time) {
-    DateTime currentTime = DateTime.now();
-    late DateTime pastTimestamp;
-    if (time is int) {
-      pastTimestamp = DateTime.fromMillisecondsSinceEpoch(time);
-    } else if (time is String) {
-      pastTimestamp = DateTime.fromMillisecondsSinceEpoch(int.parse(time));
-    } else if (time is DateTime) {
-      pastTimestamp = time;
-    } else {
-      return "Not a DateTime!";
+  int _chatMessageCount(dynamic chat) {
+    if (chat is! Map) return 0;
+    final cachedCount = chat["messageCount"];
+    if (cachedCount is int) return cachedCount;
+    final rawHistory = chat["history"];
+    if (rawHistory is String && rawHistory.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawHistory);
+        if (decoded is List) return decoded.length;
+      } catch (_) {}
+    } else if (rawHistory is List) {
+      return rawHistory.length;
     }
-    final Duration difference = currentTime.difference(pastTimestamp);
-
-    final int seconds = difference.inSeconds.abs();
-    final int minutes = difference.inMinutes.abs();
-    final int hours = difference.inHours.abs();
-    final int days = difference.inDays.abs();
-
-    if (seconds < 60) {
-      return 'just now';
-    } else if (minutes < 60) {
-      final String unit = minutes == 1 ? 'minute' : 'minutes';
-      return '$minutes $unit';
-    } else if (hours < 24) {
-      final String unit = hours == 1 ? 'hour' : 'hours';
-      return '$hours $unit';
-    } else if (days < 30) {
-      final String unit = days == 1 ? 'day' : 'days';
-      return '$days $unit';
-    } else if (days < 365) {
-      final int months = (days / 30).round();
-      final String unit = months == 1 ? 'month' : 'months';
-      return '$months $unit';
-    } else {
-      final int years = (days / 365).round();
-      final String unit = years == 1 ? 'year' : 'years';
-      return '$years $unit';
-    }
+    return 0;
   }
 
   void _showChatOptionsSheet(BuildContext context, AIEngine engine, String key, Map chat) {
@@ -78,7 +53,12 @@ class ArchivedChatsPageState extends State<ArchivedChatsPage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                   child: Text(
-                    chat["name"] ?? engine.dict.value("archived_chats"),
+                    () {
+                      final raw = chat["name"]?.toString();
+                      if (raw == null || raw.isEmpty) return engine.dict.value("archived_chats");
+                      if (raw == "Still loading") return engine.dict.value("generating_title");
+                      return raw;
+                    }(),
                     style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -213,10 +193,17 @@ class ArchivedChatsPageState extends State<ArchivedChatsPage> {
                 return true;
               },
               child: CardContents.doubleTap(
-                title: chat["name"] ?? "Loading...",
-                subtitle: timeAgo(chat["updated"]) == "just now"
-                    ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"] ?? "[]").length}"
-                    : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"] ?? "[]").length}",
+                title: (() {
+                  final rawName = chat["name"]?.toString();
+                  if (rawName == null || rawName.isEmpty) {
+                    return engine.dict.value("loading");
+                  }
+                  if (rawName == "Still loading") {
+                    return engine.dict.value("generating_title");
+                  }
+                  return rawName;
+                })(),
+                subtitle: "${engine.dict.value("updated")} ${formatTimeAgo(chat["updated"], engine.dict)}, ${engine.dict.value("messages")}: ${_chatMessageCount(chat)}",
                 action: () async {
                   if (!engine.isLoading) {
                     engine.prompt.text = "";
@@ -294,7 +281,7 @@ class ArchivedChatsPageState extends State<ArchivedChatsPage> {
                           cards.cardGroup(
                             archivedChatKeys.map((key) {
                               Map chat = engine.chats[key] ?? {
-                                "name": "Nonameyet",
+                                "name": engine.dict.value("new_chat"),
                                 "tokens": "0",
                                 "history": "[]",
                                 "created": DateTime.now().millisecondsSinceEpoch.toString(),

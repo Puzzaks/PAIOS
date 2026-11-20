@@ -769,6 +769,29 @@ class text {
     );
   }
 
+  static final Map<String, bool> _existingImagePathCache = <String, bool>{};
+
+  static bool _imagePathExists(String? path, {bool useCache = true}) {
+    if (path == null || path.isEmpty) return false;
+    if (useCache) {
+      final cached = _existingImagePathCache[path];
+      if (cached != null) return cached;
+    }
+    bool exists = false;
+    try {
+      exists = File(path).existsSync();
+    } catch (_) {
+      exists = false;
+    }
+    if (useCache || exists) {
+      if (_existingImagePathCache.length >= 256) {
+        _existingImagePathCache.clear();
+      }
+      _existingImagePathCache[path] = exists;
+    }
+    return exists;
+  }
+
   static String _dictOrDefault(Dictionary? dict, String key, String fallback) {
     if (dict == null) return fallback;
     if (!dict.dictionary.containsKey(dict.locale)) return fallback;
@@ -909,11 +932,7 @@ class text {
         if (!hasValidImage &&
             parsed.imagePath != null &&
             parsed.imagePath!.isNotEmpty) {
-          try {
-            hasValidImage = File(parsed.imagePath!).existsSync();
-          } catch (_) {
-            hasValidImage = false;
-          }
+          hasValidImage = _imagePathExists(parsed.imagePath);
         }
         if (rawMsg.isNotEmpty || hasValidImage) {
           splits.add(
@@ -1013,11 +1032,7 @@ class text {
 
     bool hasPendingImage = false;
     if (pendingUserImagePath != null && pendingUserImagePath.isNotEmpty) {
-      try {
-        hasPendingImage = File(pendingUserImagePath).existsSync();
-      } catch (_) {
-        hasPendingImage = false;
-      }
+      hasPendingImage = _imagePathExists(pendingUserImagePath, useCache: false);
     }
 
     // Determine if the pending user prompt is already committed in the conversation list
@@ -1213,8 +1228,8 @@ class _ThoughtProcessBubbleState extends State<ThoughtProcessBubble>
     final dict = widget.dict;
 
     final String label = widget.isStreaming
-        ? (dict?.value('thinking_in_progress') ?? 'Thinking...')
-        : (dict?.value('thought_process') ?? 'Thought process');
+        ? text._dictOrDefault(dict, 'thinking_in_progress', 'Thinking...')
+        : text._dictOrDefault(dict, 'thought_process', 'Thought process');
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1422,26 +1437,29 @@ bool _isVerboseToolDescription(String? desc) {
 String _humanizeToolName(String toolName, {String appName = '', Dictionary? dict}) {
   final trimmed = toolName.trim();
   if (trimmed.isEmpty) {
-    return dict?.value('tool_selecting') ?? 'Selecting a tool...';
+    return text._dictOrDefault(dict, 'tool_selecting', 'Selecting a tool...');
   }
   final lower = trimmed.toLowerCase();
   if (lower == 'query_aicore_documentation') {
-    return 'Searching documentation';
+    return text._dictOrDefault(dict, 'tool_searching_docs', 'Searching documentation');
+  }
+  if (lower == 'inspect_screen') {
+    return text._dictOrDefault(dict, 'tool_inspecting_screen', 'Inspecting screen');
   }
   if (lower == 'get_battery_status') {
-    return dict?.value('tool_checking_battery') ?? 'Checking battery';
+    return text._dictOrDefault(dict, 'tool_checking_battery', 'Checking battery');
   }
   if (lower == 'wikipedia_summary') {
-    return dict?.value('tool_searching_wikipedia') ?? 'Searching Wikipedia';
+    return text._dictOrDefault(dict, 'tool_searching_wikipedia', 'Searching Wikipedia');
   }
   if (lower == 'wikipedia_details') {
-    return dict?.value('tool_reading_wikipedia') ?? 'Reading Wikipedia';
+    return text._dictOrDefault(dict, 'tool_reading_wikipedia', 'Reading Wikipedia');
   }
   if (lower == 'duckduckgo_search') {
-    return dict?.value('tool_searching_duckduckgo') ?? 'Searching DuckDuckGo';
+    return text._dictOrDefault(dict, 'tool_searching_duckduckgo', 'Searching DuckDuckGo');
   }
   if (lower == 'weather_forecast') {
-    return dict?.value('tool_checking_weather') ?? 'Checking weather';
+    return text._dictOrDefault(dict, 'tool_checking_weather', 'Checking weather');
   }
 
   final normalized = trimmed
@@ -1471,7 +1489,7 @@ String _humanizeToolName(String toolName, {String appName = '', Dictionary? dict
     rawTokens.removeAt(0);
   }
   if (rawTokens.isEmpty) {
-    return dict?.value('tool_selecting') ?? 'Selecting a tool...';
+    return text._dictOrDefault(dict, 'tool_selecting', 'Selecting a tool...');
   }
 
   const verbMap = <String, String>{
@@ -1746,15 +1764,17 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
         ? Icons.error_outline_rounded
         : (rawToolName == 'query_aicore_documentation'
             ? Icons.menu_book_rounded
-            : (rawToolName.contains('battery')
-                ? Icons.battery_charging_full_rounded
-                : Icons.build_circle_outlined));
+            : (rawToolName == 'inspect_screen'
+                ? Icons.screenshot_monitor_rounded
+                : (rawToolName.contains('battery')
+                    ? Icons.battery_charging_full_rounded
+                    : Icons.build_circle_outlined)));
 
     final String title;
     if (!_isVerboseToolDescription(desc)) {
       title = desc!;
     } else if (rawToolName.isEmpty) {
-      title = dict?.value('tool_selecting') ?? 'Selecting a tool...';
+      title = text._dictOrDefault(dict, 'tool_selecting', 'Selecting a tool...');
     } else {
       title = _humanizeToolName(rawToolName, appName: appName, dict: dict);
     }
@@ -1769,7 +1789,7 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
         ? colorScheme.error.withValues(alpha: 0.55)
         : colorScheme.outlineVariant.withValues(alpha: 0.5);
 
-    final String resultLabelBase = dict?.value('tool_result') ?? "Tool Result";
+    final String resultLabelBase = text._dictOrDefault(dict, 'tool_result', 'Tool Result');
     final String resultLabel = parsedResult.isError && parsedResult.errorCode != null
         ? '$resultLabelBase (${parsedResult.errorCode})'
         : resultLabelBase;
@@ -1857,7 +1877,7 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
 
             // Tool Request
             Text(
-              dict?.value('tool_request') ?? "Tool Request",
+              text._dictOrDefault(dict, 'tool_request', 'Tool Request'),
               style: theme.textTheme.labelSmall?.copyWith(
                 fontWeight: FontWeight.bold,
                 color: colorScheme.primary,
@@ -1970,4 +1990,81 @@ class _ToolCallBubbleState extends State<ToolCallBubble> {
       },
     );
   }
+}
+
+
+/// Formats an epoch-ms [int], numeric/ISO [String], or [DateTime] into a
+/// localized relative time string (e.g. `"just now"`, `"5 minutes ago"`).
+String formatTimeAgo(dynamic time, [Dictionary? dict]) {
+  late DateTime pastTimestamp;
+  if (time is int) {
+    pastTimestamp = DateTime.fromMillisecondsSinceEpoch(time);
+  } else if (time is String) {
+    final parsedInt = int.tryParse(time.trim());
+    if (parsedInt != null) {
+      pastTimestamp = DateTime.fromMillisecondsSinceEpoch(parsedInt);
+    } else {
+      final parsedDt = DateTime.tryParse(time.trim());
+      if (parsedDt == null) return '';
+      pastTimestamp = parsedDt;
+    }
+  } else if (time is DateTime) {
+    pastTimestamp = time;
+  } else {
+    return '';
+  }
+
+  final Duration difference = DateTime.now().difference(pastTimestamp);
+  final int seconds = difference.inSeconds.abs();
+  final int minutes = difference.inMinutes.abs();
+  final int hours = difference.inHours.abs();
+  final int days = difference.inDays.abs();
+
+  if (seconds < 60) {
+    return text._dictOrDefault(dict, 'just_now', 'just now');
+  }
+
+  final int value;
+  final String singularKey;
+  final String singularFallback;
+  final String pluralKey;
+  final String pluralFallback;
+
+  if (minutes < 60) {
+    value = minutes;
+    singularKey = 'minute_singular';
+    singularFallback = text._dictOrDefault(dict, 'minute', 'minute');
+    pluralKey = 'minutes_plural';
+    pluralFallback = text._dictOrDefault(dict, 'minutes', 'minutes');
+  } else if (hours < 24) {
+    value = hours;
+    singularKey = 'hour_singular';
+    singularFallback = text._dictOrDefault(dict, 'hour', 'hour');
+    pluralKey = 'hours_plural';
+    pluralFallback = text._dictOrDefault(dict, 'hours', 'hours');
+  } else if (days < 30) {
+    value = days;
+    singularKey = 'day_singular';
+    singularFallback = text._dictOrDefault(dict, 'day', 'day');
+    pluralKey = 'days_plural';
+    pluralFallback = text._dictOrDefault(dict, 'days', 'days');
+  } else if (days < 365) {
+    value = (days / 30).round();
+    singularKey = 'month_singular';
+    singularFallback = text._dictOrDefault(dict, 'month', 'month');
+    pluralKey = 'months_plural';
+    pluralFallback = text._dictOrDefault(dict, 'months', 'months');
+  } else {
+    value = (days / 365).round();
+    singularKey = 'year_singular';
+    singularFallback = text._dictOrDefault(dict, 'year', 'year');
+    pluralKey = 'years_plural';
+    pluralFallback = text._dictOrDefault(dict, 'years', 'years');
+  }
+
+  final String unit = value == 1
+      ? text._dictOrDefault(dict, singularKey, singularFallback)
+      : text._dictOrDefault(dict, pluralKey, pluralFallback);
+  final String agoLabel = text._dictOrDefault(dict, 'ago', 'ago');
+  return '$value $unit $agoLabel';
 }

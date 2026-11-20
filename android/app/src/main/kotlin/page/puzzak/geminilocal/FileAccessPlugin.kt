@@ -1,6 +1,7 @@
 package page.puzzak.geminilocal
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
@@ -12,13 +13,21 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class FileAccessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityResultListener {
 
     private lateinit var channel: MethodChannel
+    private lateinit var appContext: Context
     private var activity: Activity? = null
     private var pendingResult: MethodChannel.Result? = null
     private lateinit var prefs: SharedPreferences
+    private var pluginScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
         private const val CHANNEL = "page.puzzak.geminilocal/file_access"
@@ -28,13 +37,16 @@ class FileAccessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRe
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        appContext = binding.applicationContext
+        pluginScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         channel = MethodChannel(binding.binaryMessenger, CHANNEL)
-        prefs = binding.applicationContext.getSharedPreferences(PREF_NAME, Activity.MODE_PRIVATE)
+        prefs = appContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         channel.setMethodCallHandler { call, result -> handleCall(call, result) }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        pluginScope.cancel()
     }
 
     // ── ActivityAware ─────────────────────────────────────────────────────────
@@ -71,7 +83,7 @@ class FileAccessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRe
 
         val treeUri = data.data!!
         // Take persistent read+write permission so access survives restarts
-        activity?.contentResolver?.takePersistableUriPermission(
+        appContext.contentResolver.takePersistableUriPermission(
             treeUri,
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
@@ -133,76 +145,106 @@ class FileAccessPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRe
 
     private fun writeFile(filename: String, content: String, result: MethodChannel.Result) {
         val uri = savedTreeUri() ?: return result.error("NO_DIR", "No directory selected", null)
-        val ctx = activity ?: return result.error("NO_ACTIVITY", "No activity attached", null)
-        try {
-            val dir = DocumentFile.fromTreeUri(ctx, uri) ?: return result.error("BAD_URI", "Cannot open directory", null)
-            // Find existing or create new
-            val existing = dir.findFile(filename)
-            val file = if (existing != null && !existing.isDirectory) {
-                existing
-            } else {
-                dir.createFile("text/markdown", filename)
-                    ?: return result.error("CREATE_FAILED", "Cannot create $filename", null)
+        val ctx = appContext
+        pluginScope.launch {
+            try {
+                val dir = DocumentFile.fromTreeUri(ctx, uri)
+                if (dir == null) {
+                    withContext(Dispatchers.Main) { result.error("BAD_URI", "Cannot open directory", null) }
+                    return@launch
+                }
+                val existing = dir.findFile(filename)
+                val file = if (existing != null && !existing.isDirectory) {
+                    existing
+                } else {
+                    dir.createFile("text/markdown", filename)
+                }
+                if (file == null) {
+                    withContext(Dispatchers.Main) { result.error("CREATE_FAILED", "Cannot create $filename", null) }
+                    return@launch
+                }
+                val stream = ctx.contentResolver.openOutputStream(file.uri, "wt")
+                if (stream == null) {
+                    withContext(Dispatchers.Main) { result.error("WRITE_FAILED", "Cannot open output stream", null) }
+                    return@launch
+                }
+                stream.use { out ->
+                    out.write(content.toByteArray(Charsets.UTF_8))
+                }
+                withContext(Dispatchers.Main) { result.success(true) }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { result.error("WRITE_ERROR", e.message, null) }
             }
-            ctx.contentResolver.openOutputStream(file.uri, "wt")?.use { stream ->
-                stream.write(content.toByteArray(Charsets.UTF_8))
-            } ?: return result.error("WRITE_FAILED", "Cannot open output stream", null)
-            result.success(true)
-        } catch (e: Exception) {
-            result.error("WRITE_ERROR", e.message, null)
         }
     }
 
     private fun readFile(filename: String, result: MethodChannel.Result) {
         val uri = savedTreeUri() ?: return result.error("NO_DIR", "No directory selected", null)
-        val ctx = activity ?: return result.error("NO_ACTIVITY", "No activity attached", null)
-        try {
-            val dir = DocumentFile.fromTreeUri(ctx, uri) ?: return result.error("BAD_URI", "Cannot open directory", null)
-            val file = dir.findFile(filename) ?: return result.success(null)
-            val content = ctx.contentResolver.openInputStream(file.uri)?.use { stream ->
-                stream.bufferedReader(Charsets.UTF_8).readText()
+        val ctx = appContext
+        pluginScope.launch {
+            try {
+                val dir = DocumentFile.fromTreeUri(ctx, uri)
+                if (dir == null) {
+                    withContext(Dispatchers.Main) { result.error("BAD_URI", "Cannot open directory", null) }
+                    return@launch
+                }
+                val file = dir.findFile(filename)
+                if (file == null) {
+                    withContext(Dispatchers.Main) { result.success(null) }
+                    return@launch
+                }
+                val content = ctx.contentResolver.openInputStream(file.uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText()
+                }
+                withContext(Dispatchers.Main) { result.success(content) }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { result.error("READ_ERROR", e.message, null) }
             }
-            result.success(content)
-        } catch (e: Exception) {
-            result.error("READ_ERROR", e.message, null)
         }
     }
 
     private fun listFiles(result: MethodChannel.Result) {
         val uri = savedTreeUri() ?: return result.success(emptyList<String>())
-        val ctx = activity ?: return result.success(emptyList<String>())
-        try {
-            val dir = DocumentFile.fromTreeUri(ctx, uri) ?: return result.success(emptyList<String>())
-            val names = dir.listFiles()
-                .filter { it.isFile && (it.name?.endsWith(".md", ignoreCase = true) == true) }
-                .mapNotNull { it.name }
-            result.success(names)
-        } catch (e: Exception) {
-            result.success(emptyList<String>())
+        val ctx = appContext
+        pluginScope.launch {
+            val names = try {
+                val dir = DocumentFile.fromTreeUri(ctx, uri)
+                dir?.listFiles()
+                    ?.filter { it.isFile && (it.name?.endsWith(".md", ignoreCase = true) == true) }
+                    ?.mapNotNull { it.name }
+                    ?: emptyList()
+            } catch (_: Exception) {
+                emptyList()
+            }
+            withContext(Dispatchers.Main) { result.success(names) }
         }
     }
 
     private fun deleteFile(filename: String, result: MethodChannel.Result) {
         val uri = savedTreeUri() ?: return result.success(false)
-        val ctx = activity ?: return result.success(false)
-        try {
-            val dir = DocumentFile.fromTreeUri(ctx, uri) ?: return result.success(false)
-            val file = dir.findFile(filename) ?: return result.success(false)
-            result.success(file.delete())
-        } catch (e: Exception) {
-            result.success(false)
+        val ctx = appContext
+        pluginScope.launch {
+            val deleted = try {
+                val dir = DocumentFile.fromTreeUri(ctx, uri)
+                dir?.findFile(filename)?.delete() ?: false
+            } catch (_: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) { result.success(deleted) }
         }
     }
 
     private fun renameFile(oldName: String, newName: String, result: MethodChannel.Result) {
         val uri = savedTreeUri() ?: return result.success(false)
-        val ctx = activity ?: return result.success(false)
-        try {
-            val dir = DocumentFile.fromTreeUri(ctx, uri) ?: return result.success(false)
-            val file = dir.findFile(oldName) ?: return result.success(false)
-            result.success(file.renameTo(newName))
-        } catch (e: Exception) {
-            result.success(false)
+        val ctx = appContext
+        pluginScope.launch {
+            val renamed = try {
+                val dir = DocumentFile.fromTreeUri(ctx, uri)
+                dir?.findFile(oldName)?.renameTo(newName) ?: false
+            } catch (_: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) { result.success(renamed) }
         }
     }
 

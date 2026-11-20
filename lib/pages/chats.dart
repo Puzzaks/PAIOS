@@ -42,45 +42,20 @@ class ChatsPageState extends State<ChatsPage> {
     return engine.dict.value("loading");
   }
 
-  String timeAgo(time) {
-    DateTime currentTime = DateTime.now();
-    late DateTime pastTimestamp;
-    if(time is int){
-      pastTimestamp = DateTime.fromMillisecondsSinceEpoch(time);
-    }else if(time is String){
-      pastTimestamp = DateTime.fromMillisecondsSinceEpoch(int.parse(time));
-    }else if(time is DateTime){
-      pastTimestamp = time;
-    }else{
-      return "Not a DateTime!";
+  int _chatMessageCount(dynamic chat) {
+    if (chat is! Map) return 0;
+    final cachedCount = chat["messageCount"];
+    if (cachedCount is int) return cachedCount;
+    final rawHistory = chat["history"];
+    if (rawHistory is String && rawHistory.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawHistory);
+        if (decoded is List) return decoded.length;
+      } catch (_) {}
+    } else if (rawHistory is List) {
+      return rawHistory.length;
     }
-    final Duration difference = currentTime.difference(pastTimestamp);
-
-    final int seconds = difference.inSeconds.abs();
-    final int minutes = difference.inMinutes.abs();
-    final int hours = difference.inHours.abs();
-    final int days = difference.inDays.abs();
-
-    if (seconds < 60) {
-      return 'just now';
-    } else if (minutes < 60) {
-      final String unit = minutes == 1 ? 'minute' : 'minutes';
-      return '$minutes $unit';
-    } else if (hours < 24) {
-      final String unit = hours == 1 ? 'hour' : 'hours';
-      return '$hours $unit';
-    } else if (days < 30) { // Approximates within a month
-      final String unit = days == 1 ? 'day' : 'days';
-      return '$days $unit';
-    } else if (days < 365) {
-      final int months = (days / 30).round();
-      final String unit = months == 1 ? 'month' : 'months';
-      return '$months $unit';
-    } else {
-      final int years = (days / 365).round();
-      final String unit = years == 1 ? 'year' : 'years';
-      return '$years $unit';
-    }
+    return 0;
   }
   @override
   void initState() {
@@ -95,13 +70,17 @@ class ChatsPageState extends State<ChatsPage> {
               Cards cards = Cards(context: context);
               return Consumer<AIEngine>(builder: (context, engine, child) {
                 Widget chatCard (chat, key){
+                  final String? rawName = chat["name"]?.toString();
+                  final String displayTitle = (rawName == null || rawName.isEmpty)
+                      ? engine.dict.value("loading")
+                      : (rawName == "Still loading"
+                          ? engine.dict.value("generating_title")
+                          : rawName);
                   return CardContents.doubleTap(
-                      title: chat["name"]??"Loading...",
+                      title: displayTitle,
                       subtitle: (engine.isLoading && engine.currentChat == key)
-                          ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
-                          : timeAgo(chat["updated"]) == "just now"
-                          ? "${engine.dict.value("updated")} ${engine.dict.value("just_now")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}"
-                          : "${engine.dict.value("updated")} ${timeAgo(chat["updated"]).split(" ")[0]} ${engine.dict.value(timeAgo(chat["updated"]).split(" ")[1])} ${engine.dict.value("ago")}, ${engine.dict.value("messages")}: ${jsonDecode(chat["history"]).length}",
+                          ? engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", (engine.response.tokenCount ?? 0).toString()).replaceAll("%tokenspersec%", ((engine.response.tokenCount?.toInt() ?? 0)/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
+                          : "${engine.dict.value("updated")} ${formatTimeAgo(chat["updated"], engine.dict)}, ${engine.dict.value("messages")}: ${_chatMessageCount(chat)}",
                       action: (engine.isLoading && !(engine.currentChat == key))?(){}:() async {
                         if(!engine.isLoading){
                           engine.prompt.text = "";
@@ -309,7 +288,7 @@ class ChatsPageState extends State<ChatsPage> {
                                   );
                                 },
                                   title: engine.dict.value("loading"),
-                                  subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", engine.response.tokenCount.toString()).replaceAll("%tokenspersec%", (engine.response.tokenCount!.toInt()/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
+                                  subtitle: engine.dict.value("generating_hint").replaceAll("%seconds%", ((engine.response.generationTimeMs??10)/1000).toStringAsFixed(2)).replaceAll("%tokens%", (engine.response.tokenCount ?? 0).toString()).replaceAll("%tokenspersec%", ((engine.response.tokenCount?.toInt() ?? 0)/((engine.response.generationTimeMs??10)/1000)).toStringAsFixed(2))
                               )]),
 
                               if (pinnedChatKeys.isNotEmpty) ...[
@@ -320,9 +299,9 @@ class ChatsPageState extends State<ChatsPage> {
                                 cards.cardGroup(
                                   pinnedChatKeys.map((key) {
                                     Map chat = engine.chats[key] ?? {
-                                      "name": "Nonameyet",
+                                      "name": engine.dict.value("new_chat"),
                                       "tokens": "0",
-                                      "history": {},
+                                      "history": "[]",
                                       "created": DateTime.now().millisecondsSinceEpoch.toString(),
                                       "updated": DateTime.now().millisecondsSinceEpoch.toString(),
                                     };
@@ -338,9 +317,9 @@ class ChatsPageState extends State<ChatsPage> {
                                 cards.cardGroup(
                                   otherChatKeys.map((key) {
                                     Map chat = engine.chats[key] ?? {
-                                      "name": "Nonameyet",
+                                      "name": engine.dict.value("new_chat"),
                                       "tokens": "0",
-                                      "history": {},
+                                      "history": "[]",
                                       "created": DateTime.now().millisecondsSinceEpoch.toString(),
                                       "updated": DateTime.now().millisecondsSinceEpoch.toString(),
                                     };
@@ -374,9 +353,9 @@ class ChatsPageState extends State<ChatsPage> {
                                   if (isArchivedExpanded)
                                     ...archivedChatKeys.map((key) {
                                       Map chat = engine.chats[key] ?? {
-                                        "name": "Nonameyet",
+                                        "name": engine.dict.value("new_chat"),
                                         "tokens": "0",
-                                        "history": {},
+                                        "history": "[]",
                                         "created": DateTime.now().millisecondsSinceEpoch.toString(),
                                         "updated": DateTime.now().millisecondsSinceEpoch.toString(),
                                       };

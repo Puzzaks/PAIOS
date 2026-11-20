@@ -28,7 +28,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final engine = Provider.of<AIEngine>(context, listen: false);
       contentController.text = engine.promptData.getPromptContent(widget.promptId);
-      nameController.text = engine.promptData.getPromptName(widget.promptId);
+      nameController.text = engine.promptData.getPromptDisplayName(widget.promptId, engine.dict);
     });
   }
 
@@ -59,7 +59,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
                       ),
                     ),
                     surfaceTintColor: Colors.transparent,
-                    title: Text(engine.promptData.getPromptName(widget.promptId)),
+                    title: Text(engine.promptData.getPromptDisplayName(widget.promptId, engine.dict)),
                     actions: [
                       IconButton(
                         onPressed: () {
@@ -114,7 +114,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
                             cards.cardGroup([
                               if(!engine.isLoading)
                                 CardContents.doubleTap(
-                                    title: engine.promptData.getPromptName(widget.promptId),
+                                    title: engine.promptData.getPromptDisplayName(widget.promptId, engine.dict),
                                     subtitle: engine.dict.value("change_name"),
                                     action: (){
                                       List<Widget> cardlist = [];
@@ -141,7 +141,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
                                           );
                                         }
                                       }
-                                      nameController.text = engine.promptData.getPromptName(widget.promptId);
+                                      nameController.text = engine.promptData.getPromptDisplayName(widget.promptId, engine.dict);
                                       showDialog(
                                         context: context,
                                         builder: (BuildContext newContext) => AlertDialog(
@@ -234,7 +234,7 @@ class PromptEditorPageState extends State<PromptEditorPage> {
                                     },
                                     icon: Icons.auto_awesome_rounded,
                                     secondAction: () async {
-                                      String newTitle = "Generating...";
+                                      String newTitle = engine.dict.value("generating_title");
                                       setState(() {
                                         engine.isLoading = true;
                                       });

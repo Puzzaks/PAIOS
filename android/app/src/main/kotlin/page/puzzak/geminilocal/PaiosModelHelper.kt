@@ -3,9 +3,13 @@ package page.puzzak.geminilocal
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.google.mlkit.genai.common.FeatureStatus
+import com.google.mlkit.genai.common.FunctionArgValue
+import com.google.mlkit.genai.common.FunctionCall
 import com.google.mlkit.genai.common.GenAiException
+import com.google.mlkit.genai.prompt.Content
 import com.google.mlkit.genai.prompt.Feature
 import com.google.mlkit.genai.prompt.GenerateContentRequest
 import com.google.mlkit.genai.prompt.Generation
@@ -13,13 +17,17 @@ import com.google.mlkit.genai.prompt.GenerativeModel
 import com.google.mlkit.genai.prompt.ImagePart
 import com.google.mlkit.genai.prompt.ModelPreference
 import com.google.mlkit.genai.prompt.ModelReleaseStage
+import com.google.mlkit.genai.prompt.PromptPrefix
 import com.google.mlkit.genai.prompt.SystemInstruction
 import com.google.mlkit.genai.prompt.TextPart
+import com.google.mlkit.genai.prompt.content
 import com.google.mlkit.genai.prompt.generateContentRequest
 import com.google.mlkit.genai.prompt.generationConfig
 import com.google.mlkit.genai.prompt.modelConfig
+import java.io.InputStream
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -46,8 +54,20 @@ object PaiosModelHelper {
     const val SCREEN_CONTEXT_TTL_TURNS = 3
     const val MAX_STOP_CUTOFF_RETRIES = 1
     const val MAX_STOP_CUTOFF_RESCUE_CHARS = 1800
+    private const val MIN_EARLIER_LOOP_REPEAT_CHARS = 24
+    private const val MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS = 25
 
+    val inferenceMutex = Mutex()
+
+    @Volatile
+    var overlayActiveFlag: Boolean = false
+
+    private val BUSY_ERROR_CODE_REGEX = Regex("""(?:\[\s*|\b)(?:Error(?:\s*code)?|ErrorCode|code)\s*[:=]?\s*(?<![-\d])9\b""", RegexOption.IGNORE_CASE)
+    private val NON_PROSE_TAIL_LINE_REGEX = Regex("""^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+|\||```|\{|\[|<ctrl)""")
     private val CONTINUATION_DUPLICATE_FENCE_REGEX = Regex("""^```[a-zA-Z0-9]*\r?\n?""")
+    private val SENTENCE_BOUNDARY_AFTER_PUNCT_REGEX = Regex("""[.!?。！？]["”’'\)\]\*_]*\s+""")
+    private val SENTENCE_END_BEFORE_WHITESPACE_REGEX = Regex("""[.!?。！？]["”’'\)\]\*_]*(?=\s+\S)""")
+    private val LIST_NUMBER_BEFORE_PERIOD_REGEX = Regex("""(?:^|\n)\s*\d+\.$""")
     private val LEADING_CONTINUATION_ELLIPSIS_REGEX = Regex("""^(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*""")
     private val TRAILING_CONTINUATION_ELLIPSIS_REGEX = Regex("""(?:\s*(?:…+|\.{2,}|\.(?:\s+\.){1,}))+\s*$""")
     private val CONTRACTION_TRAILING_APOSTROPHE_REGEX = Regex("""[A-Za-z0-9]['’]$""")
@@ -197,7 +217,9 @@ object PaiosModelHelper {
         val isThinkingModeAvailable: Boolean,
         val isCachingAvailable: Boolean,
         val tokenLimit: Int,
-        val isNanoV4: Boolean
+        val isNanoV4: Boolean,
+        val isStructuredOutputAvailable: Boolean = false,
+        val isFunctionCallingAvailable: Boolean = false
     )
 
     data class ResolvedModelClient(
@@ -429,7 +451,6 @@ object PaiosModelHelper {
         return Generation.getClient(config)
     }
 
-    @Suppress("DEPRECATION")
     suspend fun probeCapabilities(model: GenerativeModel, statusCode: Int): ModelCapabilities {
         if (statusCode != FeatureStatus.AVAILABLE) {
             return ModelCapabilities(
@@ -439,7 +460,9 @@ object PaiosModelHelper {
                 isThinkingModeAvailable = false,
                 isCachingAvailable = false,
                 tokenLimit = 0,
-                isNanoV4 = false
+                isNanoV4 = false,
+                isStructuredOutputAvailable = false,
+                isFunctionCallingAvailable = false
             )
         }
         val rawBaseModelName = runCatching { model.getBaseModelName() }
@@ -451,16 +474,14 @@ object PaiosModelHelper {
         val baseModelName = rawBaseModelName?.takeIf { it.isNotEmpty() } ?: "Unknown"
         val availableFeatures = runCatching { model.getAvailableFeatures() }
             .getOrDefault(emptyList())
-        val isSystemPromptAvailable = runCatching { model.isSystemPromptAvailable() }
-            .getOrDefault(availableFeatures.contains(Feature.SYSTEM_PROMPT))
-        val isThinkingModeAvailable = runCatching { model.isThinkingModeAvailable() }
-            .getOrDefault(availableFeatures.contains(Feature.THINKING_MODE))
-        val isCachingAvailable = runCatching { model.isCachingFeatureAvailable() }
-            .getOrDefault(availableFeatures.contains(Feature.PREFIX_CACHING))
+        val isSystemPromptAvailable = availableFeatures.contains(Feature.SYSTEM_PROMPT)
+        val isThinkingModeAvailable = availableFeatures.contains(Feature.THINKING_MODE)
+        val isCachingAvailable = availableFeatures.contains(Feature.PREFIX_CACHING)
+        val isStructuredOutputAvailable = availableFeatures.contains(Feature.STRUCTURED_OUTPUT)
+        val isFunctionCallingAvailable = availableFeatures.contains(Feature.FUNCTION_CALLING)
         val tokenLimit = runCatching { model.getTokenLimit() }
             .getOrDefault(0)
         val isNanoV4 = isThinkingModeAvailable ||
-            availableFeatures.contains(Feature.THINKING_MODE) ||
             baseModelName.contains("v4", ignoreCase = true) ||
             baseModelName.contains("nano 4", ignoreCase = true) ||
             baseModelName.contains("nano-4", ignoreCase = true)
@@ -472,7 +493,9 @@ object PaiosModelHelper {
             isThinkingModeAvailable = isThinkingModeAvailable,
             isCachingAvailable = isCachingAvailable,
             tokenLimit = tokenLimit,
-            isNanoV4 = isNanoV4
+            isNanoV4 = isNanoV4,
+            isStructuredOutputAvailable = isStructuredOutputAvailable,
+            isFunctionCallingAvailable = isFunctionCallingAvailable
         )
     }
 
@@ -481,7 +504,6 @@ object PaiosModelHelper {
         val baseModelName: String? = null
     )
 
-    @Suppress("DEPRECATION")
     private suspend fun probeComboDetails(
         releaseStage: String,
         preference: String,
@@ -610,7 +632,11 @@ object PaiosModelHelper {
         enableThinking: Boolean = false,
         useNativeSystemInstruction: Boolean = false,
         useThinkingCapability: Boolean = enableThinking,
-        candidateCount: Int? = null
+        candidateCount: Int? = null,
+        bitmaps: List<Bitmap>? = null,
+        topK: Int? = null,
+        seed: Int? = null,
+        promptPrefix: PromptPrefix? = null
     ): GenerateContentRequest {
         val cleanInstructions = instructions?.trim()?.takeIf { it.isNotEmpty() }
         val sysInstruction = if (useNativeSystemInstruction) cleanInstructions else null
@@ -620,6 +646,10 @@ object PaiosModelHelper {
             prompt
         }
         val shouldThink = enableThinking && useThinkingCapability
+        val allBitmaps = buildList {
+            if (image != null) add(image)
+            if (bitmaps != null) addAll(bitmaps)
+        }.take(10)
 
         val configure: GenerateContentRequest.Builder.() -> Unit = {
             if (maxTokens != null && maxTokens > 0) {
@@ -627,6 +657,15 @@ object PaiosModelHelper {
             }
             if (temperature != null) {
                 this.temperature = temperature
+            }
+            if (topK != null && topK > 0) {
+                this.topK = topK
+            }
+            if (seed != null) {
+                this.seed = seed
+            }
+            if (promptPrefix != null) {
+                this.promptPrefix = promptPrefix
             }
             if (candidateCount != null && candidateCount > 0) {
                 this.candidateCount = candidateCount
@@ -636,47 +675,239 @@ object PaiosModelHelper {
             }
         }
 
-        return when {
-            sysInstruction != null && image != null ->
-                generateContentRequest(
-                    SystemInstruction(sysInstruction),
-                    ImagePart(image),
-                    TextPart(effectivePrompt),
-                    configure
-                )
-            sysInstruction != null ->
-                generateContentRequest(
-                    SystemInstruction(sysInstruction),
-                    TextPart(effectivePrompt),
-                    configure
-                )
-            image != null ->
-                generateContentRequest(
-                    ImagePart(image),
-                    TextPart(effectivePrompt),
-                    configure
-                )
-            else ->
-                generateContentRequest(
-                    TextPart(effectivePrompt),
-                    configure
-                )
+        return if (allBitmaps.isNotEmpty()) {
+            val userContent = content(Content.Role.USER) {
+                for (bmp in allBitmaps) {
+                    addPart(ImagePart(bmp))
+                }
+                addPart(TextPart(effectivePrompt))
+            }
+            if (sysInstruction != null) {
+                generateContentRequest(SystemInstruction(sysInstruction), userContent, configure)
+            } else {
+                generateContentRequest(userContent, configure)
+            }
+        } else if (sysInstruction != null) {
+            generateContentRequest(
+                SystemInstruction(sysInstruction),
+                TextPart(effectivePrompt),
+                configure
+            )
+        } else {
+            generateContentRequest(
+                TextPart(effectivePrompt),
+                configure
+            )
+        }
+    }
+
+    fun computeSampleSize(outWidth: Int, outHeight: Int, maxDim: Int): Int {
+        if (outWidth <= 0 || outHeight <= 0 || maxDim <= 0) return 1
+        var sampleSize = 1
+        val longest = maxOf(outWidth, outHeight)
+        while (longest / (sampleSize * 2) >= maxDim) {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
+    private fun finalizeSampledBitmap(raw: Bitmap?, maxDim: Int, downsample: Boolean): Bitmap? {
+        if (raw == null) return null
+        if (!downsample || maxDim <= 0) return raw
+        if (raw.width <= maxDim && raw.height <= maxDim) return raw
+        val scale = maxDim.toFloat() / maxOf(raw.width, raw.height).toFloat()
+        val newW = (raw.width * scale).toInt().coerceAtLeast(1)
+        val newH = (raw.height * scale).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(raw, newW, newH, true)
+        if (scaled !== raw && !raw.isRecycled) {
+            raw.recycle()
+        }
+        return scaled
+    }
+
+    fun decodeSampledBitmapFromStream(
+        openStream: () -> InputStream?,
+        maxDim: Int = 768,
+        downsample: Boolean = true
+    ): Bitmap? {
+        var sampleSize = 1
+        if (downsample && maxDim > 0) {
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            openStream()?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, boundsOpts)
+            }
+            if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                sampleSize = computeSampleSize(boundsOpts.outWidth, boundsOpts.outHeight, maxDim)
+            }
+        }
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val raw = openStream()?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOpts)
+        }
+        return finalizeSampledBitmap(raw, maxDim, downsample)
+    }
+
+    fun decodeSampledBitmapFromBytes(
+        bytes: ByteArray,
+        maxDim: Int = 768,
+        downsample: Boolean = true
+    ): Bitmap? {
+        if (bytes.isEmpty()) return null
+        var sampleSize = 1
+        if (downsample && maxDim > 0) {
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
+            if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                sampleSize = computeSampleSize(boundsOpts.outWidth, boundsOpts.outHeight, maxDim)
+            }
+        }
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+        return finalizeSampledBitmap(raw, maxDim, downsample)
+    }
+
+    fun decodeSampledBitmapFromFile(
+        path: String,
+        maxDim: Int = 768,
+        downsample: Boolean = true
+    ): Bitmap? {
+        if (path.isBlank()) return null
+        var sampleSize = 1
+        if (downsample && maxDim > 0) {
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, boundsOpts)
+            if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                sampleSize = computeSampleSize(boundsOpts.outWidth, boundsOpts.outHeight, maxDim)
+            }
+        }
+        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val raw = BitmapFactory.decodeFile(path, decodeOpts)
+        return finalizeSampledBitmap(raw, maxDim, downsample)
+    }
+
+    private fun isCjkCodePoint(ch: Char): Boolean {
+        val code = ch.code
+        return (code in 0x4E00..0x9FFF) ||
+            (code in 0x3400..0x4DBF) ||
+            (code in 0x3040..0x309F) ||
+            (code in 0x30A0..0x30FF) ||
+            (code in 0xAC00..0xD7AF) ||
+            (code in 0xF900..0xFAFF)
+    }
+
+    fun countEstimatedTokens(text: String): Int {
+        if (text.isBlank()) return 0
+        var cjkCount = 0
+        var otherNonWs = 0
+        for (ch in text) {
+            if (ch.isWhitespace()) continue
+            if (isCjkCodePoint(ch)) {
+                cjkCount++
+            } else {
+                otherNonWs++
+            }
+        }
+        return (cjkCount + ((otherNonWs + 3) / 4)).coerceAtLeast(1)
+    }
+
+    private fun functionArgValueToJson(value: FunctionArgValue): Any = when (value) {
+        is FunctionArgValue.StringValue -> value.value
+        is FunctionArgValue.IntValue -> value.value
+        is FunctionArgValue.LongValue -> value.value
+        is FunctionArgValue.DoubleValue -> value.value
+        is FunctionArgValue.BoolValue -> value.value
+        is FunctionArgValue.ListValue -> JSONArray().apply {
+            for (item in value.values) {
+                put(functionArgValueToJson(item))
+            }
+        }
+        is FunctionArgValue.MapValue -> JSONObject().apply {
+            for ((k, v) in value.map) {
+                put(k, functionArgValueToJson(v))
+            }
+        }
+    }
+
+    fun functionCallToJsonObject(functionCall: FunctionCall): JSONObject {
+        val argsObj = JSONObject()
+        for ((k, v) in functionCall.arguments) {
+            argsObj.put(k, functionArgValueToJson(v))
+        }
+        return JSONObject().apply {
+            put("tool", functionCall.name)
+            put("args", argsObj)
         }
     }
 
     fun isBusyException(e: Throwable): Boolean {
         var current: Throwable? = e
         while (current != null) {
-            if (current is GenAiException && current.errorCode == GenAiException.ErrorCode.BUSY) {
-                return true
+            if (current is GenAiException) {
+                if (current.errorCode == GenAiException.ErrorCode.BUSY) {
+                    return true
+                }
+                if (current.errorCode == GenAiException.ErrorCode.AICORE_INCOMPATIBLE) {
+                    return false
+                }
             }
             val message = current.message ?: ""
-            if (message.contains("-101") || message.contains("BUSY", ignoreCase = true)) {
+            if (!message.contains("-101") &&
+                !message.contains("AICORE_INCOMPATIBLE", ignoreCase = true) &&
+                (message.contains("BUSY", ignoreCase = true) ||
+                    BUSY_ERROR_CODE_REGEX.containsMatchIn(message))
+            ) {
                 return true
             }
             current = current.cause
         }
         return false
+    }
+
+    fun extractRetryDelayMs(e: Throwable): Long? {
+        var current: Throwable? = e
+        while (current != null) {
+            if (current is GenAiException) {
+                val retryDelay: java.time.Duration? = current.retryDelay
+                val millis = retryDelay?.toMillis()
+                if (millis != null && millis > 0L) {
+                    return millis
+                }
+            }
+            current = current.cause
+        }
+        return null
+    }
+
+    fun extractGenAiErrorDetails(e: Throwable): Map<String, Any?> {
+        var genAiEx: GenAiException? = null
+        var isContextOverflow = false
+        var current: Throwable? = e
+        while (current != null) {
+            if (current is GenAiException) {
+                if (genAiEx == null) genAiEx = current
+                if (current.errorCode == GenAiException.ErrorCode.REQUEST_TOO_LARGE ||
+                    current.errorCode == GenAiException.ErrorCode.MAX_TURNS_EXCEEDED
+                ) {
+                    isContextOverflow = true
+                }
+            }
+            val msg = current.message ?: ""
+            if (msg.contains("too large", ignoreCase = true) ||
+                msg.contains("context", ignoreCase = true) ||
+                msg.contains("REQUEST_TOO_LARGE", ignoreCase = true) ||
+                msg.contains("MAX_TURNS_EXCEEDED", ignoreCase = true)
+            ) {
+                isContextOverflow = true
+            }
+            current = current.cause
+        }
+        return mapOf(
+            "errorCode" to genAiEx?.errorCode,
+            "aiCoreErrorCode" to genAiEx?.aiCoreErrorCode,
+            "aiCoreErrorType" to genAiEx?.aiCoreErrorType,
+            "retryDelayMs" to extractRetryDelayMs(e),
+            "isContextOverflow" to isContextOverflow
+        )
     }
 
     fun isPolicyCheckException(e: Throwable): Boolean {
@@ -804,13 +1035,36 @@ object PaiosModelHelper {
             (word.length >= 7 && (word.endsWith("able") || word.endsWith("ible")))
     }
 
-    fun isTruncationHeuristic(text: String): Boolean {
+    private fun isUnpunctuatedProseTail(tailSegment: String, minWords: Int): Boolean {
+        val tail = tailSegment.trim()
+        if (tail.isEmpty()) return false
+        if (TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(tail) ||
+            TERMINAL_PUNCTUATION_REGEX.containsMatchIn(tail)
+        ) {
+            return false
+        }
+        if (tail.contains("```") || tail.startsWith("{") || tail.startsWith("[")) {
+            return false
+        }
+        val nonBlankLines = tail.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (nonBlankLines.isEmpty()) return false
+        if (nonBlankLines.any { NON_PROSE_TAIL_LINE_REGEX.containsMatchIn(it) }) {
+            return false
+        }
+        val words = tail.split(WHITESPACE_SPLIT_REGEX).filter { tok ->
+            tok.any { it.isLetterOrDigit() }
+        }
+        return words.size >= minWords
+    }
+
+    fun isTruncationHeuristic(text: String, finishReasonRaw: Any? = null): Boolean {
         val trimmed = text.trimEnd()
         if (trimmed.isEmpty()) return false
         if (OPEN_MID_CLAUSE_TAIL_REGEX.containsMatchIn(trimmed)) return true
         if (CONTRACTION_TRAILING_APOSTROPHE_REGEX.containsMatchIn(trimmed)) return true
         if (TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(trimmed)) return false
         if (TERMINAL_PUNCTUATION_REGEX.containsMatchIn(trimmed)) return false
+        if (looksLikeIncompleteToolCall(trimmed)) return false
 
         val tokens = trimmed.split(WHITESPACE_SPLIT_REGEX).filter { it.isNotEmpty() }
         if (tokens.isEmpty()) return false
@@ -819,6 +1073,11 @@ object PaiosModelHelper {
 
         val prevWord = if (tokens.size >= 2) {
             tokens[tokens.size - 2].trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
+        } else {
+            ""
+        }
+        val prevPrevWord = if (tokens.size >= 3) {
+            tokens[tokens.size - 3].trim { !it.isLetterOrDigit() }.lowercase(Locale.ROOT)
         } else {
             ""
         }
@@ -834,6 +1093,15 @@ object PaiosModelHelper {
         ) {
             return true
         }
+        if (tokens.size >= 3 &&
+            lastWord.length >= 5 &&
+            lastWord.endsWith("ing") &&
+            !NON_PARTICIPLE_ING_WORDS.contains(lastWord) &&
+            (PRE_MODIFIER_TRIGGERS.contains(prevPrevWord) || PARTICIPLE_PRECEDING_TRIGGERS.contains(prevPrevWord)) &&
+            isLikelyTrailingModifier(prevWord)
+        ) {
+            return true
+        }
         if (tokens.size >= 2 && lastWord == "not" && NEGATION_AUXILIARIES.contains(prevWord)) {
             return true
         }
@@ -845,7 +1113,21 @@ object PaiosModelHelper {
         if (DANGLING_TAIL_WORDS.contains(lastWord)) {
             return true
         }
-        return PRE_MODIFIER_TRIGGERS.contains(prevWord) && isLikelyTrailingModifier(lastWord)
+        if (PRE_MODIFIER_TRIGGERS.contains(prevWord) && isLikelyTrailingModifier(lastWord)) {
+            return true
+        }
+
+        val lastPriorMatch = SENTENCE_END_BEFORE_WHITESPACE_REGEX.findAll(trimmed).lastOrNull { match ->
+            val prefix = trimmed.substring(0, match.range.last + 1).trimEnd()
+            prefix.length >= 2 && !LIST_NUMBER_BEFORE_PERIOD_REGEX.containsMatchIn(prefix)
+        }
+        if (lastPriorMatch != null) {
+            val tailSegment = trimmed.substring(lastPriorMatch.range.last + 1).trim()
+            if (isUnpunctuatedProseTail(tailSegment, minWords = 4)) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun isMeaningfulClauseForStutter(candidate: String): Boolean {
@@ -864,9 +1146,138 @@ object PaiosModelHelper {
         return alnumCount >= 6 && distinctChars.size >= 4
     }
 
+    private fun findTrailingEarlierSentenceRepeatCutIndex(text: String): Int {
+        val trimmed = text.trimEnd()
+        if (trimmed.length < MIN_EARLIER_LOOP_REPEAT_CHARS * 2) return -1
+        for (match in SENTENCE_BOUNDARY_AFTER_PUNCT_REGEX.findAll(trimmed)) {
+            val clauseStart = match.range.last + 1
+            if (clauseStart >= trimmed.length) continue
+            val prefixWithSpace = trimmed.substring(0, clauseStart)
+            val sentenceEndIdx = prefixWithSpace.trimEnd().length
+            if (sentenceEndIdx < MIN_EARLIER_LOOP_REPEAT_CHARS) continue
+
+            val trailingClause = trimmed.substring(clauseStart).trim()
+            if (trailingClause.length < MIN_EARLIER_LOOP_REPEAT_CHARS) continue
+            val minSeed = trailingClause.substring(0, MIN_EARLIER_LOOP_REPEAT_CHARS)
+            if (!isMeaningfulClauseForStutter(minSeed)) continue
+
+            var seedIdx = prefixWithSpace.indexOf(minSeed, ignoreCase = true)
+            while (seedIdx >= 0) {
+                val atBoundary = seedIdx == 0 || !prefixWithSpace[seedIdx - 1].isLetterOrDigit()
+                if (atBoundary) {
+                    return sentenceEndIdx
+                }
+                seedIdx = prefixWithSpace.indexOf(minSeed, seedIdx + 1, ignoreCase = true)
+            }
+        }
+        return -1
+    }
+
+    private fun stripEarlierRepeatedPrefix(base: String, next: String): String {
+        val trimmedNext = next.trimStart()
+        if (trimmedNext.length < MIN_EARLIER_LOOP_REPEAT_CHARS ||
+            base.length < MIN_EARLIER_LOOP_REPEAT_CHARS
+        ) {
+            return next
+        }
+        val seed = trimmedNext.substring(0, MIN_EARLIER_LOOP_REPEAT_CHARS)
+        if (!isMeaningfulClauseForStutter(seed)) return next
+
+        var bestMatchLen = 0
+        var searchIdx = base.indexOf(seed, ignoreCase = true)
+        while (searchIdx >= 0) {
+            val atBoundary = searchIdx == 0 || !base[searchIdx - 1].isLetterOrDigit()
+            if (atBoundary) {
+                var len = MIN_EARLIER_LOOP_REPEAT_CHARS
+                while (searchIdx + len < base.length &&
+                    len < trimmedNext.length &&
+                    base[searchIdx + len].equals(trimmedNext[len], ignoreCase = true)
+                ) {
+                    len++
+                }
+                if (len < trimmedNext.length &&
+                    trimmedNext[len - 1].isLetterOrDigit() &&
+                    trimmedNext[len].isLetterOrDigit()
+                ) {
+                    while (len > MIN_EARLIER_LOOP_REPEAT_CHARS && trimmedNext[len - 1].isLetterOrDigit()) {
+                        len--
+                    }
+                }
+                if (len > bestMatchLen) {
+                    bestMatchLen = len
+                }
+            }
+            searchIdx = base.indexOf(seed, searchIdx + 1, ignoreCase = true)
+        }
+
+        if (bestMatchLen < MIN_EARLIER_LOOP_REPEAT_CHARS) return next
+        val matchedPrefix = trimmedNext.substring(0, bestMatchLen).trimEnd()
+        val remainder = trimmedNext.substring(bestMatchLen).trimStart()
+        if (remainder.isEmpty()) {
+            return ""
+        }
+        val baseTrimmedEnd = base.trimEnd()
+        val baseEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(baseTrimmedEnd) ||
+            TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(baseTrimmedEnd)
+        val matchedEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(matchedPrefix) ||
+            TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(matchedPrefix)
+        return if (!baseEndsAtSentence || matchedEndsAtSentence) {
+            remainder
+        } else {
+            next
+        }
+    }
+
+    fun trimTrailingIncompleteSentence(text: String): String {
+        val trimmed = text.trimEnd()
+        if (trimmed.isBlank()) return text
+        if (Regex("```").findAll(trimmed).count() % 2 == 1) return text
+        if (looksLikeIncompleteToolCall(trimmed)) return text
+
+        val repeatedCutIdx = findTrailingEarlierSentenceRepeatCutIndex(trimmed)
+        if (repeatedCutIdx >= MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS) {
+            val deduped = trimmed.substring(0, repeatedCutIdx).trimEnd()
+            if (deduped.length >= MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS && !isTruncationHeuristic(deduped)) {
+                return deduped
+            }
+        }
+
+        val matches = SENTENCE_END_BEFORE_WHITESPACE_REGEX.findAll(trimmed).toList()
+        val lastCompleteMatch = matches.lastOrNull { match ->
+            val prefix = trimmed.substring(0, match.range.last + 1).trimEnd()
+            prefix.length >= MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS &&
+                !LIST_NUMBER_BEFORE_PERIOD_REGEX.containsMatchIn(prefix)
+        }
+        val hasUnpunctuatedProseTail = if (lastCompleteMatch != null &&
+            !TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(trimmed) &&
+            !TERMINAL_PUNCTUATION_REGEX.containsMatchIn(trimmed)
+        ) {
+            val tailSegment = trimmed.substring(lastCompleteMatch.range.last + 1).trim()
+            isUnpunctuatedProseTail(tailSegment, minWords = 3)
+        } else {
+            false
+        }
+
+        if (!isTruncationHeuristic(trimmed) && !hasUnpunctuatedProseTail) return text
+
+        for (idx in matches.indices.reversed()) {
+            val match = matches[idx]
+            val candidatePrefix = trimmed.substring(0, match.range.last + 1).trimEnd()
+            if (candidatePrefix.length < MIN_COMPLETE_PREFIX_FOR_TRIM_CHARS) continue
+            if (LIST_NUMBER_BEFORE_PERIOD_REGEX.containsMatchIn(candidatePrefix)) continue
+            if (!isTruncationHeuristic(candidatePrefix)) {
+                return candidatePrefix
+            }
+        }
+        return text
+    }
+
     fun hasContinuationStutter(text: String): Boolean {
         val normalizedTail = text.trim().replace(MULTI_SPACE_REGEX, " ")
         if (normalizedTail.length < 36) return false
+        if (findTrailingEarlierSentenceRepeatCutIndex(normalizedTail) > 0) {
+            return true
+        }
         val tail = if (normalizedTail.length > 600) {
             normalizedTail.substring(normalizedTail.length - 600)
         } else {
@@ -1253,6 +1664,18 @@ object PaiosModelHelper {
                 strippedEllipsisAfterOverlap = true
             }
         }
+        if (!isJsonDraft && overlapLen == 0 && !openCodeFence) {
+            val baseTrimmedEnd = stitchedBase.trimEnd()
+            val baseEndsAtSentence = TERMINAL_PUNCTUATION_REGEX.containsMatchIn(baseTrimmedEnd) ||
+                TRAILING_MARKDOWN_WITH_TERMINAL_REGEX.containsMatchIn(baseTrimmedEnd)
+            if (baseEndsAtSentence) {
+                val afterEarlierPrefix = stripEarlierRepeatedPrefix(stitchedBase, next)
+                if (afterEarlierPrefix.isEmpty()) {
+                    return baseTrimmedEnd
+                }
+                next = afterEarlierPrefix
+            }
+        }
         if (next.isEmpty()) return existing
 
         if (isJsonDraft) {
@@ -1260,7 +1683,14 @@ object PaiosModelHelper {
         }
 
         if (overlapLen > 0 && !strippedEllipsisAfterOverlap) {
-            return stitchedBase + next
+            val joinedOverlap = stitchedBase + next
+            if (!openCodeFence) {
+                val cutIdx = findTrailingEarlierSentenceRepeatCutIndex(joinedOverlap)
+                if (cutIdx > 0) {
+                    return joinedOverlap.substring(0, cutIdx).trimEnd()
+                }
+            }
+            return joinedOverlap
         }
 
         val lastChar = stitchedBase.last()
@@ -1285,7 +1715,14 @@ object PaiosModelHelper {
             " "
         }
 
-        return stitchedBase + separator + next
+        val stitchedResult = stitchedBase + separator + next
+        if (!openCodeFence) {
+            val cutIdx = findTrailingEarlierSentenceRepeatCutIndex(stitchedResult)
+            if (cutIdx > 0) {
+                return stitchedResult.substring(0, cutIdx).trimEnd()
+            }
+        }
+        return stitchedResult
     }
 
     data class ParsedToolCall(

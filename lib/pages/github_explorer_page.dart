@@ -127,6 +127,9 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
           : 0,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final engine = Provider.of<AIEngine>(context, listen: false);
+      GitHubService.instance.configureDefaultRepoFromUrl(engine.config.githubRepoUrl);
       if (GitHubService.instance.rootDocs.isEmpty &&
           GitHubService.instance.readmeContent == null) {
         GitHubService.instance.refreshAll();
@@ -333,7 +336,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
               children: [
                 IconButton(
                   icon: const Icon(Icons.arrow_back_rounded, size: 20),
-                  tooltip: 'Back',
+                  tooltip: MaterialLocalizations.of(context).backButtonTooltip,
                   onPressed: () {
                     setState(() {
                       _nestedDocStack.removeLast();
@@ -557,7 +560,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                   child: TextPart.info(
                     title: engine.dict.value('gh_no_issues'),
                     subtitle: 'Tap here to open GitHub and submit an issue.',
-                    action: () => _safeLaunchUrl('https://github.com/${github.owner}/${github.repo}/issues/new'),
+                    action: () => _safeLaunchUrl(github.newIssueUrl),
                     context: context,
                   ),
                 )
@@ -684,7 +687,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
         child: TextPart.info(
           title: engine.dict.value('gh_no_releases'),
           subtitle: engine.dict.value('gh_open_github'),
-          action: () => _safeLaunchUrl('https://github.com/${github.owner}/${github.repo}'),
+          action: () => _safeLaunchUrl(github.repoUrl),
           context: context,
         ),
       );
@@ -815,7 +818,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
                 color: Colors.green,
                 colorBG: scheme.surfaceContainerHighest,
                 action: () => _safeLaunchUrl(
-                  'https://github.com/${github.owner}/${github.repo}/security',
+                  github.securityUrl,
                 ),
                 trailing: const Icon(Icons.open_in_new_rounded, size: 18),
               ),
@@ -864,7 +867,7 @@ class _GitHubExplorerPageState extends State<GitHubExplorerPage>
           TextPart.info(
             title: 'All code, assets, and documentation for ${github.owner}/${github.repo} are hosted publicly on GitHub.',
             subtitle: 'Visit Organization on GitHub',
-            action: () => _safeLaunchUrl('https://github.com/${github.owner}'),
+            action: () => _safeLaunchUrl(github.ownerUrl),
             context: context,
           ),
         ],

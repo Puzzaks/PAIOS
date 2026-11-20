@@ -68,7 +68,7 @@ class PromptsPageState extends State<PromptsPage> {
                                 Map prompt = engine.promptData.defaultPrompts[key];
                                 bool isSelected = (key == activeId);
                                 return CardContents.doubleTap(
-                                    title: prompt["name"] ?? "System Default",
+                                    title: engine.promptData.getPromptDisplayName(key, engine.dict),
                                     subtitle: engine.dict.value("by_author").replaceAll("%author%", prompt["author"] ?? "Google"),
                                     action: () {
                                       Navigator.push(
@@ -95,10 +95,9 @@ class PromptsPageState extends State<PromptsPage> {
                             ),
                             cards.cardGroup([
                               ...engine.promptData.userPrompts.keys.map((key) {
-                                Map prompt = engine.promptData.userPrompts[key];
                                 bool isSelected = (key == activeId);
                                 return CardContents.doubleTap(
-                                    title: prompt["name"] ?? "Custom",
+                                    title: engine.promptData.getPromptDisplayName(key, engine.dict),
                                     subtitle: "",
                                     action: () {
                                       Navigator.push(

@@ -5,7 +5,7 @@
   - `version` Downstream version of this change
 
 ---
-## Phase 1 `AI Core - Basic` 12/16
+## Phase 1 `AI Core - Basic` 13/16
  - [x] **Release** `1.0.0`
     - Text-only interface for the AI Core API (Gemini Nano / Flan T-5) implementation, Play Store and source release
  - [x] **UI and UX** `1.0.1`
@@ -18,8 +18,8 @@
     - Per-chat personas, temperature and token limit settings, etc.
  - [x] **Generation extension** `~1.1.7`, `1.1.8`
     - Workaround for 25s response generation time that ends answers prematurely
- - [x] **AICore controls** `1.2.0`, `1.8.0`, `1.8.3`
-    - Shipped Stable (`gemini-nano-v3`) & Preview/Beta (`gemini-nano-v4-full` / `fast`) switching, unified Multi-Model Manager & parallel background downloader, live capability badges, and auto-continuation with mid-clause/contraction `STOP` cutoff rescue
+ - [x] **AICore controls** `1.2.0`, `1.8.0`, `1.8.3`, `1.8.8`, `1.8.9`
+    - Shipped Stable (`gemini-nano-v3`) & Preview/Beta (`gemini-nano-v4-full` / `fast`) switching, unified Multi-Model Manager & parallel background downloader, live capability badges, ML Kit GenAI `1.0.0-beta5` (`warmup()`, `PromptPrefix` caching, native multi-image `Content` `ImagePart`s, `countTokens`/`getTokenLimit`, `FunctionCall` streaming, `topK`/`seed`, non-deprecated `getAvailableFeatures()`), accurate `GenAiException.ErrorCode` classification (`BUSY (9)` vs `AICORE_INCOMPATIBLE (-101)` / `FEATURE_NOT_FOUND (606)`), and auto-continuation with mid-clause/contraction `STOP` cutoff rescue
  - [x] **Documentation in-app & 3-Tier SWR Multi-Page Explorer** `1.5.3`, `1.5.4`, `1.5.5`
     - In-app Google ML Kit GenAI & AICore 23-page comprehensive offline & SWR documentation hub (`DocExplorerPage`), authentic Google developer specifications (`com.google.mlkit:genai-prompt:1.0.0-beta4`), live Google DevSite HTML-to-Markdown SWR synchronization engine with fallback fetching, canonical Google developer URL routing, cross-page term-frequency search engine, and `query_aicore_documentation` on-device RAG mesh tool
  - [x] **Dual-Branch Onboarding & SWR Remote Slides** `1.5.0`
@@ -33,8 +33,8 @@
     - A neat dashboard of contributions and issue list from this repo, in-app
  - [x] **Master Prompt selector and editor** `~1.1.6`, `~1.1.7`, `~1.1.8`
     - Collection of different Master Prompts and ability to create own ones
- - [ ] **Master Prompt fixes**
-    - Finalizing the master prompt so it delivers more consistency
+ - [x] **Master Prompt fixes** `1.2.0`, `1.8.8`
+    - Slimmed default system prompt (`system_default.md`) to a 2-sentence baseline refreshed from bundled assets, moving PAIOS self-knowledge to on-demand `query_aicore_documentation` RAG lookup for consistent tool/chat behavior and maximum token headroom
  - [ ] **Monetization**
     - Monetize the project to allocate more time to the project
  - [ ] **Finalization**
@@ -62,14 +62,14 @@
     - `Stable` (`gemini-nano-v3`) & `Preview` (`gemini-nano-v4-full` / `fast`) model switcher, live capability badges, collapsible streaming `ChatThoughtsBlock`, and decoupled parallel background downloader with speed (`B/s`–`GB/s`) & remaining-bytes progress.
  - [x] **Overlay Camera & On-Demand `inspect_screen` (3-Turn TTL)** `1.6.0`, `1.8.5`, `1.8.6`
     - Assistant overlay `Take Photo` camera capture with EXIF orientation fix, 768px fast vision downsampling + background visual memory, and lazy `inspect_screen` tool (`3`-turn TTL) replacing passive auto-attached screenshots.
- - [x] **`m3x_chat` UI, Cutoff Rescue & Cancel Hardening** `1.8.3`, `1.8.4`, `1.8.5`, `1.8.6`
-    - Standardized `m3x_chat` shrink-wrap bubbles with author attribution & tap-to-reveal timestamps, auto-continuation + mid-clause/contraction `STOP` rescue, 240-char overlap deduplication, stutter guard, tool JSON repair/fallback, and stream cancel lifecycle hardening.
+ - [x] **`m3x_chat` UI, Cutoff Rescue & Cancel Hardening** `1.8.3`, `1.8.4`, `1.8.5`, `1.8.6`, `1.8.7`, `1.8.8`, `1.8.9`
+    - Standardized `m3x_chat` shrink-wrap bubbles with author attribution & tap-to-reveal timestamps, auto-continuation + mid-clause/contraction `STOP` rescue, 240-char overlap + earlier-sentence loop deduplication, `trimTrailingIncompleteSentence` (including unpunctuated multi-sentence cutoff trimming), token-budgeted sliding window, stutter guard, tool JSON repair/fallback, and stream cancel lifecycle hardening.
  - [x] **Nightly CI/CD & Release Automation** `1.8.3`
     - Hardened `build_releases.ps1` (`-ApkOnly` / `-AabOnly`) and `publish_nightly.ps1` (`dev` branch push, GitHub Nightly Prereleases, Google Play Internal Testing upload).
  - [ ] **Ephemeral Context**
     - Implementing a "Short-Term Memory" buffer for heavy data (files/logs) that doesn't pollute the long-term chat history.
 
-## Phase 3 `Model-agnosticizm` 0/3
+## Phase 3 `Model-agnosticizm` 0/4
  - [ ] **Custom models**
     - Allow users to set up and run custom models (like Gemma 2B) besides Gemini Nano for redundancy
  - [ ] **Connectivity**
@@ -77,6 +77,8 @@
     - This has to be made in a way that allows even users who are not tech-savvy to just install the model and run it
  - [ ] **Failover**
     - Auto-switch to local model if the remote connection drops.
+ - [ ] **Voice Assistant & Voice Confirmation (`M3x Mesh` Companion: PAIOS Voice)**
+    - Planned standalone **PAIOS Voice (`TinyASR` + TTS)** companion M3x Extension app (`android.speech.RecognitionService` + `TextToSpeech` + offline Live Voice loop over `M3xMesh`), split out as a standalone extension APK so PAIOS stays dependency-light.
 
 ## Phase 4 `PAIOS` 0/∞
  - [ ] **File System Access**

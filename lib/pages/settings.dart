@@ -330,7 +330,7 @@ class SettingsPageState extends State<SettingsPage> {
                               ),
                               CardContents.tapIcon(
                                   title: engine.dict.value("prompt_manager_title"),
-                                  subtitle: engine.promptData.getPromptName(engine.config.defaultPromptId),
+                                  subtitle: engine.promptData.getPromptDisplayName(engine.config.defaultPromptId, engine.dict),
                                   icon: Icons.edit_note_rounded,
                                   colorBG: Theme.of(context).colorScheme.primaryFixedDim,
                                   color: Theme.of(context).colorScheme.onPrimaryFixed,
@@ -352,6 +352,8 @@ class SettingsPageState extends State<SettingsPage> {
                                     final picked = await FileAccessService.pickDirectory();
                                     if (picked != null) {
                                       setState(() => _promptDirPath = picked);
+                                      await engine.promptData.importFromDirectory();
+                                      engine.notify();
                                     }
                                   }
                               ),

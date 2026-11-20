@@ -29,10 +29,13 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
     _loadData();
   }
 
+  String _proposalPackage(Map<String, dynamic> p) =>
+      ((p['package']?.toString().trim().isNotEmpty ?? false) ? p['package'] : p['packageName'])?.toString().trim() ?? '';
+
   Map<String, dynamic>? _findProposal(String pkg) {
     final canon = AIEngine.canonicalExtensionId(pkg);
     for (final p in _allProposals) {
-      if (AIEngine.canonicalExtensionId(p['package']?.toString() ?? '') == canon) {
+      if (AIEngine.canonicalExtensionId(_proposalPackage(p)) == canon) {
         return p;
       }
     }
@@ -53,6 +56,10 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
         return Icons.tune_rounded;
       case 'widgets_rounded':
         return Icons.widgets_rounded;
+      case 'record_voice_over_rounded':
+        return Icons.record_voice_over_rounded;
+      case 'mic_rounded':
+        return Icons.mic_rounded;
       default:
         return Icons.extension_rounded;
     }
@@ -170,7 +177,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
 
     // Also verify whether each proposal in mesh_proposals.json is installed via native package manager
     for (final p in proposals) {
-      final pkg = p['package']?.toString() ?? '';
+      final pkg = _proposalPackage(p);
       if (pkg.isNotEmpty) {
         final canon = AIEngine.canonicalExtensionId(pkg);
         if (!allPkgs.contains(canon)) {
@@ -204,13 +211,15 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
     }
   }
 
-  Future<void> _openStoreOrRepo(String pkg, String? fallbackUrl) async {
+  Future<void> _openStoreOrRepo(String pkg, String? fallbackUrl, {bool tryMarket = true}) async {
     final canon = AIEngine.canonicalExtensionId(pkg);
-    final marketUri = Uri.parse('market://details?id=$canon');
-    try {
-      final launched = await launchUrl(marketUri, mode: LaunchMode.externalApplication);
-      if (launched) return;
-    } catch (_) {}
+    if (tryMarket) {
+      final marketUri = Uri.parse('market://details?id=$canon');
+      try {
+        final launched = await launchUrl(marketUri, mode: LaunchMode.externalApplication);
+        if (launched) return;
+      } catch (_) {}
+    }
 
     final urlStr = (fallbackUrl != null && fallbackUrl.trim().isNotEmpty)
         ? fallbackUrl.trim()
@@ -509,7 +518,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
 
               // Filter proposals: SKIP any proposal whose package is already connected
               final uninstalledProposals = _allProposals.where((p) {
-                final pkg = p['package']?.toString() ?? '';
+                final pkg = _proposalPackage(p);
                 if (pkg.isEmpty) return false;
                 final canon = AIEngine.canonicalExtensionId(pkg);
                 return !_connectedPackages.contains(canon) && !_groupedTools.containsKey(canon);
@@ -586,7 +595,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                                     mod.id,
                                     modTools,
                                     isEnabled,
-                                    customTitle: mod.title,
+                                    customTitle: mod.localizedTitle(engine.dict),
                                     customIcon: iconData,
                                   ),
                                   child: Padding(
@@ -623,7 +632,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                                                 children: [
                                                   Flexible(
                                                     child: Text(
-                                                      mod.title,
+                                                      mod.localizedTitle(engine.dict),
                                                       style: const TextStyle(
                                                         fontWeight: FontWeight.bold,
                                                         fontSize: 16,
@@ -666,7 +675,7 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                                               ),
                                               const SizedBox(height: 2),
                                               Text(
-                                                mod.description,
+                                                mod.localizedDescription(engine.dict),
                                                 style: TextStyle(
                                                   color: scheme.onSurfaceVariant,
                                                   fontSize: 13,
@@ -795,14 +804,14 @@ class _ExtensionsSettingsPageState extends State<ExtensionsSettingsPage> {
                                 uninstalledProposals.map((proposal) {
                                   final name = proposal['name']?.toString() ?? '';
                                   final desc = proposal['description']?.toString() ?? '';
-                                  final pkg = proposal['package']?.toString() ?? '';
+                                  final pkg = _proposalPackage(proposal);
                                   final status = proposal['status']?.toString() ?? 'Proposal';
                                   final iconName = proposal['icon']?.toString();
                                   final iconData = _resolveIcon(iconName);
                                   final isAvailable = status.toLowerCase() == 'available';
 
                                   return InkWell(
-                                    onTap: () => _openStoreOrRepo(pkg, proposal['url']?.toString()),
+                                    onTap: () => _openStoreOrRepo(pkg, proposal['url']?.toString(), tryMarket: isAvailable),
                                     child: Padding(
                                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
                                       child: Row(

@@ -76,7 +76,14 @@ class ChatPageState extends State<ChatPage> {
                         icon: Icon(Icons.arrow_back_rounded)
                     ),
                   ),
-                  title: Text(engine.chats[engine.currentChat]?["name"]??engine.dict.value("new_chat")),
+                  title: Text(
+                    () {
+                      final raw = engine.chats[engine.currentChat]?["name"]?.toString();
+                      if (raw == null || raw.isEmpty) return engine.dict.value("new_chat");
+                      if (raw == "Still loading") return engine.dict.value("generating_title");
+                      return raw;
+                    }(),
+                  ),
                   actions: [
                     if(engine.currentChat != "testing")IconButton(
                       icon: Icon(Icons.tune_rounded),
@@ -230,6 +237,8 @@ class ChatPageState extends State<ChatPage> {
                                             engine.pendingImageBytes!,
                                             width: 48,
                                             height: 48,
+                                            cacheWidth: 144,
+                                            cacheHeight: 144,
                                             fit: BoxFit.cover,
                                           ),
                                         ),

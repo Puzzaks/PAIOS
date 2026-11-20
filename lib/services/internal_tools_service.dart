@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:geminilocal/parts/translator.dart';
 
 /// Specification for a single internal PAIOS tool exposed to Gemini Nano / M3x Mesh.
 class InternalToolSpec {
@@ -26,6 +27,8 @@ class InternalExtensionModule {
   final String id;
   final String title;
   final String description;
+  final String? titleKey;
+  final String? descriptionKey;
   final bool defaultEnabled;
   final bool requiresInternet;
   final List<InternalToolSpec> tools;
@@ -34,10 +37,34 @@ class InternalExtensionModule {
     required this.id,
     required this.title,
     required this.description,
+    this.titleKey,
+    this.descriptionKey,
     required this.defaultEnabled,
     required this.requiresInternet,
     required this.tools,
   });
+
+  String _resolveLocalized(Dictionary? dict, String? key, String fallback) {
+    if (dict != null &&
+        key != null &&
+        key.isNotEmpty &&
+        dict.dictionary.containsKey(dict.locale)) {
+      final val = dict.value(key);
+      if (val.isNotEmpty &&
+          val != key &&
+          !val.startsWith('!!!') &&
+          val != 'Loading...') {
+        return val;
+      }
+    }
+    return fallback;
+  }
+
+  String localizedTitle([Dictionary? dict]) =>
+      _resolveLocalized(dict, titleKey, title);
+
+  String localizedDescription([Dictionary? dict]) =>
+      _resolveLocalized(dict, descriptionKey, description);
 
   List<String> get toolNames => tools.map((t) => t.name).toList(growable: false);
 
@@ -74,6 +101,8 @@ class InternalToolsService {
   static const List<InternalExtensionModule> modules = [
     InternalExtensionModule(
       id: moduleDocs,
+      titleKey: 'ext_mod_docs_title',
+      descriptionKey: 'ext_mod_docs_desc',
       title: 'AICore Docs',
       description:
           'Offline & SWR search across Google ML Kit GenAI and AICore documentation.',
@@ -84,7 +113,7 @@ class InternalToolsService {
           name: 'query_aicore_documentation',
           moduleId: moduleDocs,
           description:
-              'Searches official Google ML Kit GenAI and AICore documentation for supported devices, token limits, system prompt guidelines, error codes (-101, -100, BUSY, BACKGROUND_USE_BLOCKED), and multimodal vision specs.',
+              'Searches official PAIOS, Google ML Kit GenAI, and AICore documentation for "who are you?", "tell me about yourself", PAIOS features, extensions, system assistant overlay, model variants, supported devices, token limits, system prompt guidelines, error codes (-101, -100, BUSY, BACKGROUND_USE_BLOCKED), and multimodal vision specs.',
           requiresInternet: false,
           parameters: {
             'type': 'object',
@@ -92,7 +121,7 @@ class InternalToolsService {
               'query': {
                 'type': 'string',
                 'description':
-                    'Search topic, device model, or error code (e.g. "token limits", "-101", "Pixel 9", "system prompt", "vision downsample")',
+                    'Search topic, PAIOS self-info question, device model, or error code (e.g. "who are you", "tell me about yourself", "PAIOS extensions", "token limits", "-101", "Pixel 9")',
               },
             },
             'required': ['query'],
@@ -102,6 +131,8 @@ class InternalToolsService {
     ),
     InternalExtensionModule(
       id: moduleDevice,
+      titleKey: 'ext_mod_device_title',
+      descriptionKey: 'ext_mod_device_desc',
       title: 'Device & Battery',
       description: 'On-device battery level, charging state, and power status.',
       defaultEnabled: true,
@@ -122,6 +153,8 @@ class InternalToolsService {
     ),
     InternalExtensionModule(
       id: moduleWikipedia,
+      titleKey: 'ext_mod_wiki_title',
+      descriptionKey: 'ext_mod_wiki_desc',
       title: 'Wikipedia',
       description:
           'Optional online Wikipedia article summaries and targeted section lookup.',
@@ -178,6 +211,8 @@ class InternalToolsService {
     ),
     InternalExtensionModule(
       id: moduleSearch,
+      titleKey: 'ext_mod_ddg_title',
+      descriptionKey: 'ext_mod_ddg_desc',
       title: 'Web Search (DuckDuckGo)',
       description:
           'Optional online instant answers and quick definitions via DuckDuckGo.',
@@ -205,6 +240,8 @@ class InternalToolsService {
     ),
     InternalExtensionModule(
       id: moduleWeather,
+      titleKey: 'ext_mod_weather_title',
+      descriptionKey: 'ext_mod_weather_desc',
       title: 'Weather (Open-Meteo)',
       description:
           'Optional online current conditions and 2-day forecast via Open-Meteo.',
@@ -1140,6 +1177,24 @@ class InternalToolsService {
     }
 
     switch (toolName.trim()) {
+      case 'query_aicore_documentation':
+      case 'about_paios':
+      case 'paios_info':
+      case 'get_paios_info':
+        if ((args['query']?.toString().trim() ?? '').isEmpty) {
+          final alias = firstNonEmpty(
+            const ['topic', 'q', 'question', 'search', 'subject', 'title', 'term', 'name'],
+          );
+          if (alias.isNotEmpty) {
+            args['query'] = alias;
+          } else if (fallbackQuestion != null &&
+              fallbackQuestion.trim().isNotEmpty) {
+            args['query'] = fallbackQuestion.trim();
+          } else {
+            args['query'] = 'PAIOS overview features';
+          }
+        }
+        break;
       case 'wikipedia_summary':
       case 'wikipedia_details':
       case 'duckduckgo_search':
@@ -1241,6 +1296,34 @@ class InternalToolsService {
     if (decoded['found'] == false) {
       final msg = decoded['message']?.toString().trim();
       if (msg != null && msg.isNotEmpty) return msg;
+    }
+
+    if (normalizedTool == 'query_aicore_documentation' ||
+        normalizedTool == 'about_paios' ||
+        normalizedTool == 'paios_info' ||
+        normalizedTool == 'get_paios_info') {
+      if (decoded['found'] == false) {
+        final content = decoded['content']?.toString().trim() ?? '';
+        if (content.isNotEmpty) return content;
+      }
+      final title = (decoded['sectionTitle']?.toString().trim() ?? '').isNotEmpty
+          ? decoded['sectionTitle']!.toString().trim()
+          : (decoded['title']?.toString().trim() ?? '');
+      final pageTitle = decoded['pageTitle']?.toString().trim() ?? '';
+      final content = decoded['content']?.toString().trim() ?? '';
+      final lines = <String>[];
+      if (title.isNotEmpty) {
+        final header = pageTitle.isNotEmpty && pageTitle != title
+            ? 'Documentation section: $title ($pageTitle)'
+            : 'Documentation section: $title';
+        lines.add(header);
+      }
+      if (content.isNotEmpty) {
+        lines.add(content);
+      }
+      if (lines.isNotEmpty) {
+        return lines.join('\n\n');
+      }
     }
 
     if (normalizedTool == 'wikipedia_summary' ||

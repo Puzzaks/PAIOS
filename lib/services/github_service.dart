@@ -223,6 +223,10 @@ class GitHubService extends ChangeNotifier {
 
   String get owner => _owner;
   String get repo => _repo;
+  String get repoUrl => 'https://github.com/$_owner/$_repo';
+  String get newIssueUrl => '$repoUrl/issues/new';
+  String get securityUrl => '$repoUrl/security';
+  String get ownerUrl => 'https://github.com/$_owner';
   String? get authToken => _authToken;
   String? get authUsername => _authUsername;
   String? get authAvatarUrl => _authAvatarUrl;
@@ -270,6 +274,22 @@ class GitHubService extends ChangeNotifier {
     final limit = response.headers['x-ratelimit-limit'];
     if (remaining != null) _rateLimitRemaining = int.tryParse(remaining) ?? _rateLimitRemaining;
     if (limit != null) _rateLimitTotal = int.tryParse(limit) ?? _rateLimitTotal;
+  }
+
+  /// Configures the initial default repository from a slug (`owner/repo`) or
+  /// full GitHub URL (e.g. `engine.config.githubRepoUrl`) before data is loaded.
+  void configureDefaultRepoFromUrl(String slugOrUrl) {
+    if (_rootDocs.isNotEmpty || _readmeContent != null) return;
+    if (_owner != 'Puzzaks' || _repo != 'PAIOS') return;
+    final cleaned = slugOrUrl
+        .trim()
+        .replaceFirst(RegExp(r'^https?://github\.com/'), '')
+        .replaceAll(RegExp(r'^/+|/+$'), '');
+    final parts = cleaned.split('/');
+    if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+      _owner = parts[0];
+      _repo = parts[1];
+    }
   }
 
   /// Sets the active target repository and resets caches.

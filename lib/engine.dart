@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -291,9 +292,11 @@ class AIEngine with md.ChangeNotifier {
   static const int maxProseSoftStopChars = 1600;
   static const int maxProseHardStopChars = 2400;
   static const int maxContinuationChars = 12000;
-  static const int maxNullReasonContinuations = 2;
+  static const int maxNullReasonContinuations = 3;
   static const int maxStopCutoffContinuations = 1;
   static const int maxEmptyStreamRetries = 1;
+  static const int maxStreamErrorRetries = 3;
+  static const Duration _streamUiTickInterval = Duration(milliseconds: 40);
 
   String _lastFinishReason = ""; // captured from streaming events, read at done
   String _combinedResponse = ""; // accumulates across continuation calls
@@ -315,6 +318,8 @@ class AIEngine with md.ChangeNotifier {
   String _currentUserPromptForSynthesis = "";
   M3xToolCall? _lastToolCall;
   int _recoverableErrorRetries = 0;
+  int _streamErrorRetryCount = 0;
+  bool _checkingPendingAssistantChats = false;
   // Cumulative generation stats across all continuation rounds (exposed to UI)
   int cumulativeGenerationMs = 0;
   int cumulativeTokenCount = 0;
@@ -685,7 +690,79 @@ class AIEngine with md.ChangeNotifier {
 
   bool get isAiCoreAvailable => !isAiCoreKnownUnavailable;
 
+  String lastAiCoreError = "";
+  String unsupportedReason = "";
+
+  static final RegExp _featureNotFound606Regex = RegExp(
+    r'(?:\b606\b|feature[_\s-]*not[_\s-]*found)',
+    caseSensitive: false,
+  );
+
+  static bool _matchesFeatureNotFound606(dynamic raw) {
+    if (raw == null) return false;
+    final text = raw.toString().trim();
+    if (text.isEmpty) return false;
+    return _featureNotFound606Regex.hasMatch(text);
+  }
+
+  /// Returns `true` when AICore / ML Kit GenAI reported `ErrorCode 606`
+  /// (`FEATURE_NOT_FOUND`), indicating the AICore system stub is installed
+  /// without a provisioned on-device Gemini Nano model catalog.
+  bool get isAiCoreFeatureNotFoundError {
+    if (_matchesFeatureNotFound606(lastAiCoreError) ||
+        _matchesFeatureNotFound606(unsupportedReason) ||
+        _matchesFeatureNotFound606(status)) {
+      return true;
+    }
+    for (final key in const [
+      'error',
+      'downloadError',
+      'unsupportedReason',
+      'lastAiCoreError',
+      'version',
+      'status',
+      'statusCode',
+    ]) {
+      if (_matchesFeatureNotFound606(modelInfo[key])) {
+        return true;
+      }
+    }
+    for (final entry in modelDownloadLog) {
+      if (entry is Map) {
+        if (_matchesFeatureNotFound606(entry['status']) ||
+            _matchesFeatureNotFound606(entry['info']) ||
+            _matchesFeatureNotFound606(entry['value'])) {
+          return true;
+        }
+      } else if (_matchesFeatureNotFound606(entry)) {
+        return true;
+      }
+    }
+    for (final dl in variantDownloads.values) {
+      if (_matchesFeatureNotFound606(dl.error)) {
+        return true;
+      }
+    }
+    for (final entry in logs) {
+      if (entry['name'] == 'model' &&
+          entry['type'] == 'error' &&
+          _matchesFeatureNotFound606(entry['message'])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   String _unavailableStatusMessage() {
+    if (isAiCoreFeatureNotFoundError) {
+      final hint = dict.value("aicore_error_606_hint");
+      if (hint.isNotEmpty &&
+          hint != "Loading..." &&
+          hint != "aicore_error_606_hint" &&
+          !hint.startsWith("!!!")) {
+        return hint;
+      }
+    }
     final translated = dict.value("intro_aicore_unsupported_desc");
     if (translated.isNotEmpty &&
         translated != "Loading..." &&
@@ -1271,6 +1348,10 @@ class AIEngine with md.ChangeNotifier {
     notifyListeners();
   }
 
+  void notify() {
+    genericRefresh();
+  }
+
   @override
   void notifyListeners() {
     if (_disposed) return;
@@ -1355,7 +1436,8 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  Future<void> _checkPendingAssistantChatsFromPrefs() async {
+  Future<bool> _checkPendingAssistantChatsFromPrefs() async {
+    bool importedAny = false;
     try {
       final prefs = await SharedPreferences.getInstance();
       final pendingStr = prefs.getString("pending_assistant_chats");
@@ -1368,17 +1450,39 @@ class AIEngine with md.ChangeNotifier {
               final msgs = item["messages"];
               final unarchived = item["unarchived"] == true;
               if (msgs is List && msgs.isNotEmpty) {
-                await chatData.importAssistantChat(
+                final importedId = await chatData.importAssistantChat(
                   msgs,
                   isArchived: unarchived ? false : config.autoArchiveAssistantChats,
                   defaultAssistantAuthor: assistantAuthorLabel,
                 );
+                if (importedId.isNotEmpty) {
+                  importedAny = true;
+                }
               }
             }
           }
         }
       }
     } catch (_) {}
+    return importedAny;
+  }
+
+  /// Drains pending assistant chats queued while the app was backgrounded and
+  /// notifies listeners if any new chats were imported.
+  void onAppResumed() {
+    if (_disposed || !appStarted || _checkingPendingAssistantChats) return;
+    _checkingPendingAssistantChats = true;
+    unawaited(() async {
+      try {
+        final imported = await _checkPendingAssistantChatsFromPrefs()
+            .timeout(const Duration(seconds: 2), onTimeout: () => false);
+        if (imported && !_disposed) {
+          notifyListeners();
+        }
+      } finally {
+        _checkingPendingAssistantChats = false;
+      }
+    }());
   }
 
   Future<void> pickImageAttachment() async {
@@ -1603,72 +1707,87 @@ class AIEngine with md.ChangeNotifier {
     return future;
   }
 
+  Future<void> _runBootStep(Future<void> Function() task, Duration timeout) async {
+    try {
+      await task().timeout(timeout);
+    } catch (_) {}
+  }
+
   Future<void> start() async {
-    try {
-      await M3x.init().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      final info = await PackageInfo.fromPlatform()
-          .timeout(const Duration(seconds: 3));
-      if (info.packageName.isNotEmpty) {
-        _resolvedPackageName = info.packageName;
-      }
-    } catch (_) {}
-    try {
-      await MigrationService.initiateMigration()
-          .timeout(const Duration(seconds: 5));
-    } catch (_) {}
-    try {
-      await logger.initFromHive().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      await config.initFromHive().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      await _syncInternalModulePreferences()
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      await docService.initialize().timeout(const Duration(seconds: 3));
-    } catch (_) {}
+    PackageInfo? cachedPackageInfo;
+    await Future.wait([
+      _runBootStep(() => M3x.init(), const Duration(seconds: 3)),
+      _runBootStep(() async {
+        final info = await PackageInfo.fromPlatform();
+        if (info.packageName.isNotEmpty) {
+          _resolvedPackageName = info.packageName;
+        }
+        cachedPackageInfo = info;
+      }, const Duration(seconds: 3)),
+    ]);
+
+    await _runBootStep(
+      () => MigrationService.initiateMigration(),
+      const Duration(seconds: 5),
+    );
 
     unawaited(log("init", "info", "Starting the app engine"));
     unawaited(log("init", "info", "Starting the translations engine"));
+    final String initialRawBaseUrl = config.rawGithubUrl('');
+    final String cleanRawBase = initialRawBaseUrl.endsWith('/')
+        ? initialRawBaseUrl.substring(0, initialRawBaseUrl.length - 1)
+        : initialRawBaseUrl;
+
     dict = Dictionary(
       path: "assets/translations",
-      url: "https://raw.githubusercontent.com/${config.repo}/main",
+      url: cleanRawBase,
     );
-    try {
-      await dict
-          .setup(log: logger.log, onUpdated: genericRefresh)
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {}
+    promptEngine = Prompt(ghUrl: config.githubRepoUrl);
+
+    await Future.wait([
+      _runBootStep(() => logger.initFromHive(), const Duration(seconds: 3)),
+      _runBootStep(() => config.initFromHive(), const Duration(seconds: 3)),
+      _runBootStep(
+        () => _syncInternalModulePreferences(),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(() => docService.initialize(), const Duration(seconds: 3)),
+      _runBootStep(
+        () => dict.setup(
+          log: logger.log,
+          onUpdated: genericRefresh,
+          deferInactiveLanguages: true,
+        ),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(
+        () => promptData.initFromHive(cleanRawBase),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(
+        () => promptEngine.initialize(packageInfo: cachedPackageInfo),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(
+        () => resourceData.initFromHive(cleanRawBase),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(
+        () => introSlideData.initFromHive(cleanRawBase),
+        const Duration(seconds: 3),
+      ),
+      _runBootStep(() => chatData.initFromHive(), const Duration(seconds: 3)),
+    ]);
+
+    final String resolvedRawBase = config.rawGithubUrl('');
+    final String cleanResolvedRawBase = resolvedRawBase.endsWith('/')
+        ? resolvedRawBase.substring(0, resolvedRawBase.length - 1)
+        : resolvedRawBase;
+    dict.url = cleanResolvedRawBase;
+    promptEngine.ghUrl = config.githubRepoUrl;
+
     unawaited(log("init", "info", "Checking Gemini Nano status"));
-    try {
-      await checkEngine().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    unawaited(log("init", "info", "Initializing the Prompt engine"));
-    promptEngine = Prompt(ghUrl: "https://github.com/${config.repo}");
-    try {
-      await promptData
-          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    try {
-      await promptEngine.initialize().timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    unawaited(log("init", "info", "Initializing the Resource repository"));
-    try {
-      await resourceData
-          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {}
-    unawaited(log("init", "info", "Initializing Intro Slides repository"));
-    try {
-      await introSlideData
-          .initFromHive("https://raw.githubusercontent.com/${config.repo}/main")
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {}
+    await _runBootStep(() => checkEngine(), const Duration(seconds: 3));
 
     unawaited(
       log(
@@ -1677,10 +1796,6 @@ class AIEngine with md.ChangeNotifier {
         "Firebase analytics: ${analytics ? "Enabled" : "Disabled"}",
       ),
     );
-
-    try {
-      await chatData.initFromHive().timeout(const Duration(seconds: 3));
-    } catch (_) {}
     unawaited(
       log(
         "init",
@@ -1711,15 +1826,14 @@ class AIEngine with md.ChangeNotifier {
     );
 
     meshClient.enabled = config.enableMesh;
-    try {
-      await _registerLocalTools().timeout(const Duration(seconds: 3));
-    } catch (_) {}
+    await _runBootStep(() => _registerLocalTools(), const Duration(seconds: 3));
 
     appStarted = true;
     notifyListeners();
     unawaited(log("init", "info", "App initiation complete"));
 
     unawaited(syncActivePersonaToNative());
+    unawaited(chatData.cleanupOrphanedChatImages());
 
     gemini.setAssistantChatHandler((payload) async {
       await _handleIncomingAssistantChat(payload);
@@ -1804,7 +1918,7 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  String convertSize(int size, bool isSpeed) {
+  String convertSize(int size, [bool isSpeed = false]) {
     if (size < 1024) {
       return '$size B${isSpeed ? "/s" : ""}';
     } else if (size < 10240) {
@@ -2129,6 +2243,7 @@ class AIEngine with md.ChangeNotifier {
         final errMsg = (map['error'] ?? map['message'] ?? 'Download failed')
             .toString()
             .trim();
+        lastAiCoreError = errMsg;
         variantDownloads[key] = PaiosVariantDownloadState(
           releaseStage: stage,
           preference: pref,
@@ -2276,6 +2391,7 @@ class AIEngine with md.ChangeNotifier {
       case "Error":
         final errInfo = parts.length > 1 ? parts[1] : "";
         final errDetail = parts.length > 2 ? parts[2] : downloadStatus;
+        lastAiCoreError = errDetail;
         if (variantDownloads.containsKey(activeKey) &&
             variantDownloads[activeKey]!.isDownloading) {
           _downloadSpeedSamples.remove(activeKey);
@@ -2376,6 +2492,33 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
+  static String _compactTitleInput(String input, {int maxChars = 600}) {
+    final trimmed = input.trim();
+    if (trimmed.length <= maxChars) return trimmed;
+    final lines = trimmed
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.length <= 1) {
+      return Prompt.boundHeadAtBoundary(trimmed, maxChars);
+    }
+    final first = Prompt.boundHeadAtBoundary(lines.first, 200);
+    final List<String> tail = <String>[];
+    int used = first.length;
+    final tailStart = lines.length > 3 ? lines.length - 3 : 1;
+    for (int i = lines.length - 1; i >= tailStart; i--) {
+      final part = Prompt.boundHeadAtBoundary(lines[i], 160);
+      if (used + 1 + part.length > maxChars) break;
+      tail.add(part);
+      used += 1 + part.length;
+    }
+    if (tail.isEmpty) {
+      return Prompt.boundHeadAtBoundary(trimmed, maxChars);
+    }
+    return '$first\n${tail.reversed.join('\n')}';
+  }
+
   Future<String> generateChatTitle(String input) async {
     if (_isSynthesizing || isGenerating || isLoading) {
       await log("model", "info", "Postponing chat title generation: AI generation/synthesis in progress", sendRemote: false);
@@ -2383,6 +2526,7 @@ class AIEngine with md.ChangeNotifier {
     }
     ignoreContext = true;
     String newTitle = "";
+    final boundedInput = _compactTitleInput(input);
     await log("model", "info", "Generating new chat title", sendRemote: false);
     await generateTitle("Task: Create a short, 3-5 word title for this conversation.\n"
         "Rules:\n"
@@ -2405,7 +2549,7 @@ class AIEngine with md.ChangeNotifier {
         "Title: Printer troubleshooting\n\n"
         "Conversation: \"sdlkfjsdf\"\n"
         "Title: Random characters\n\n"
-        "Conversation: \n\"$input\"\n"
+        "Conversation: \n\"$boundedInput\"\n"
         "Title: ")
         .then((title) {
       newTitle = title;
@@ -2518,15 +2662,24 @@ class AIEngine with md.ChangeNotifier {
   Future<void> initEngine({
     bool includeTools = true,
     bool hasAttachedImage = false,
+    int? maxHistoryCharsOverride,
+    int? maxSystemPromptCharsOverride,
   }) async {
     if (isInitializing) return;
     isInitializing = true;
     isError = false;
     notifyListeners();
-    unawaited(docService.syncRemoteDocs());
     try {
       String currentPromptId = chatData.chats.containsKey(currentChat) ? chatData.chats[currentChat]["promptId"] ?? config.defaultPromptId : config.defaultPromptId;
       String specificPromptText = promptData.getPromptContent(currentPromptId);
+      if (maxSystemPromptCharsOverride != null &&
+          specificPromptText.length > maxSystemPromptCharsOverride) {
+        specificPromptText = Prompt.boundHeadAtBoundary(
+          specificPromptText,
+          maxSystemPromptCharsOverride,
+          appendEllipsis: false,
+        );
+      }
       
       bool runAddTime = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("addCurrentTime") ? chatData.chats[currentChat]["addCurrentTime"] : addCurrentTimeToRequests;
       bool runShareLocale = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("shareLocale") ? chatData.chats[currentChat]["shareLocale"] : shareLocale;
@@ -2553,6 +2706,10 @@ class AIEngine with md.ChangeNotifier {
         return true;
       }).toList();
 
+      final int historyBudget =
+          maxHistoryCharsOverride ?? (isNanoV4Active ? 3200 : 1400);
+      final int schemaBudget = isNanoV4Active ? 3500 : 2200;
+
       await promptEngine
           .generate(
             specificPromptText,
@@ -2566,6 +2723,8 @@ class AIEngine with md.ChangeNotifier {
             tools: externalTools,
             includeTools: includeTools,
             hasAttachedImage: hasAttachedImage,
+            maxHistoryChars: historyBudget,
+            maxToolSchemaChars: schemaBudget,
           )
           .then((instruction) async {
             await gemini
@@ -2637,6 +2796,7 @@ class AIEngine with md.ChangeNotifier {
     isInitialized = false;
     isInitializing = false;
     _resetTurnLifecycleFlags();
+    lastAiCoreError = e?.toString() ?? "";
     status = "Error during $action: ${e.toString()}";
     notifyListeners();
   }
@@ -2764,6 +2924,19 @@ class AIEngine with md.ChangeNotifier {
     return 0;
   }
 
+  static bool _isContextOverflowError(dynamic error) {
+    if (error == null) return false;
+    final str = error.toString().toLowerCase();
+    return str.contains('request_too_large') ||
+        str.contains('too large') ||
+        str.contains('context') ||
+        str.contains('overflow') ||
+        str.contains('max_tokens') ||
+        str.contains('token limit') ||
+        str.contains('processing error') ||
+        RegExp(r'(?:error|code|status)[\s:=]+12\b|\berror\s*12\b').hasMatch(str);
+  }
+
   /// Cancels any ongoing generation
   Future<void> cancelGeneration() async {
     final wasLoading = isLoading ||
@@ -2771,6 +2944,9 @@ class AIEngine with md.ChangeNotifier {
         isContinuing ||
         _isSynthesizing ||
         _activeToolHandling;
+    final String? orphanImagePath =
+        chatData.lastImagePath ?? _turnImagePathForMemory;
+    final String orphanChatId = _turnChatIdForMemory ?? chatData.currentChat;
     _streamGenerationId++;
     final sub = _aiSubscription;
     _aiSubscription = null;
@@ -2786,6 +2962,7 @@ class AIEngine with md.ChangeNotifier {
     _nullReasonContinuationCount = 0;
     _stopCutoffContinuationCount = 0;
     _emptyStreamRetryCount = 0;
+    _streamErrorRetryCount = 0;
     _toolTurnCount = 0;
     _lastToolCallSignature = "";
     _recoverableErrorRetries = 0;
@@ -2800,7 +2977,12 @@ class AIEngine with md.ChangeNotifier {
     chatData.lastImagePath = null;
     streamingMessageTime = null;
     streamingUserMessageTime = null;
-    status = "Generation cancelled";
+    status = _dictValueOrFallback('generation_cancelled', 'Generation cancelled');
+    if (orphanImagePath != null && orphanImagePath.isNotEmpty) {
+      unawaited(
+        chatData.purgeOrphanedTurnImage(orphanImagePath, chatId: orphanChatId),
+      );
+    }
     notifyListeners();
     scrollChatlog(Duration(milliseconds: 250));
     await log("model", "error", "Cancelling generation", sendRemote: false);
@@ -2819,9 +3001,17 @@ class AIEngine with md.ChangeNotifier {
     }
   }
 
-  Future<void> generateStream({bool isEmptyStreamRetry = false}) async {
-    if (prompt.text.isEmpty && pendingImageBytes == null) {
-      status = "Please enter your prompt";
+  Future<void> generateStream({
+    bool isEmptyStreamRetry = false,
+    bool isErrorRetry = false,
+    int? retryHistoryBudget,
+    int? retrySystemPromptBudget,
+  }) async {
+    final bool hasRetryImage = isErrorRetry &&
+        chatData.lastImagePath != null &&
+        chatData.lastImagePath!.trim().isNotEmpty;
+    if (prompt.text.isEmpty && pendingImageBytes == null && !hasRetryImage) {
+      status = _dictValueOrFallback('prompt', 'Please enter your prompt');
       isError = true;
       notifyListeners();
       return;
@@ -2869,6 +3059,9 @@ class AIEngine with md.ChangeNotifier {
     if (!isEmptyStreamRetry) {
       _emptyStreamRetryCount = 0;
     }
+    if (!isEmptyStreamRetry && !isErrorRetry) {
+      _streamErrorRetryCount = 0;
+    }
     responseText = "";
     _clearThoughtChunk();
     _lastFinishReason = ""; // reset for new generation
@@ -2882,7 +3075,7 @@ class AIEngine with md.ChangeNotifier {
     cumulativeTokenCount = 0;
     streamingUserMessageTime = DateTime.now();
     streamingMessageTime = DateTime.now();
-    status = "Sending prompt...";
+    status = _dictValueOrFallback('sending_prompt', 'Sending prompt...');
     notifyListeners();
 
     // Cancel any old streams
@@ -2896,11 +3089,24 @@ class AIEngine with md.ChangeNotifier {
     String? savedImagePath;
     if (attachedImageBytes != null) {
       savedImagePath = await chatData.saveChatImage(attachedImageBytes);
-      if (myGenId != _streamGenerationId || _disposed) return;
+      if (myGenId != _streamGenerationId || _disposed) {
+        unawaited(
+          chatData.purgeOrphanedTurnImage(
+            savedImagePath,
+            chatId: chatData.currentChat,
+          ),
+        );
+        return;
+      }
       chatData.lastImagePath = savedImagePath;
       pendingImageBytes = null;
       pendingImageName = null;
-      _turnImageBytesForMemory = attachedImageBytes;
+      _turnImageBytesForMemory = null;
+      _turnImagePathForMemory = savedImagePath;
+      _turnChatIdForMemory = chatData.currentChat;
+    } else if (hasRetryImage) {
+      savedImagePath = chatData.lastImagePath;
+      _turnImageBytesForMemory = null;
       _turnImagePathForMemory = savedImagePath;
       _turnChatIdForMemory = chatData.currentChat;
     } else {
@@ -2913,7 +3119,11 @@ class AIEngine with md.ChangeNotifier {
 
     // Ensure engine is ready with current attachment cue in instructions
     if (!isInitializing) {
-      await initEngine(hasAttachedImage: hasAttachedImage);
+      await initEngine(
+        hasAttachedImage: hasAttachedImage,
+        maxHistoryCharsOverride: retryHistoryBudget,
+        maxSystemPromptCharsOverride: retrySystemPromptBudget,
+      );
     }
     if (myGenId != _streamGenerationId || _disposed) return;
 
@@ -2922,6 +3132,14 @@ class AIEngine with md.ChangeNotifier {
       isError = true;
       streamingMessageTime = null;
       streamingUserMessageTime = null;
+      if (savedImagePath != null && savedImagePath.isNotEmpty) {
+        final orphanChatId = _turnChatIdForMemory ?? chatData.currentChat;
+        chatData.lastImagePath = null;
+        _clearTurnVisualMemory();
+        unawaited(
+          chatData.purgeOrphanedTurnImage(savedImagePath, chatId: orphanChatId),
+        );
+      }
       if (isAiCoreKnownUnavailable) {
         status = _unavailableStatusMessage();
         if (!_unavailableToastShown) {
@@ -2930,7 +3148,10 @@ class AIEngine with md.ChangeNotifier {
           if (myGenId != _streamGenerationId || _disposed) return;
         }
       } else if (status.isEmpty) {
-        status = "Failed to initialize Gemini Nano.";
+        status = _dictValueOrFallback(
+          'model_init_failed',
+          'Failed to initialize Gemini Nano.',
+        );
       }
       notifyListeners();
       return;
@@ -2942,6 +3163,8 @@ class AIEngine with md.ChangeNotifier {
     _isCurrentSessionMultimodal = attachedImageBytes != null || hasAttachedImage;
 
     bool receivedTerminalEvent = false;
+    bool emittedFirstStreamTick = false;
+    final Stopwatch uiTickStopwatch = Stopwatch()..start();
     streamingMessageTime = DateTime.now();
 
     double runTemperature = chatData.chats.containsKey(currentChat) && chatData.chats[currentChat].containsKey("chatTemperature") ? chatData.chats[currentChat]["chatTemperature"] : temperature;
@@ -2961,11 +3184,55 @@ class AIEngine with md.ChangeNotifier {
         enableThinking: effectiveEnableThinking,
       ),
       stream: true,
-      imageBytes: attachedImageBytes,
+      imageBytes: hasAttachedImage ? null : attachedImageBytes,
       imagePath: imagePath,
       downsample: config.downsampleImages,
     );
     lastPrompt = effectiveUserPrompt;
+
+    Future<bool> handleErrorWithRetry(dynamic err) async {
+      final bool overflowErr = _isContextOverflowError(err);
+      final bool canOverflowRetry = overflowErr && retryHistoryBudget == null;
+      final bool canTransientRetry =
+          !overflowErr && _streamErrorRetryCount < maxStreamErrorRetries;
+      if (!errorRetry || (!canOverflowRetry && !canTransientRetry)) {
+        return false;
+      }
+      if (canOverflowRetry) {
+        await log(
+          "model",
+          "warning",
+          "Context overflow / request too large detected; retrying with trimmed history (600 chars): $err",
+          sendRemote: false,
+        );
+      } else {
+        _streamErrorRetryCount++;
+      }
+      _resetTurnLifecycleFlags();
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (myGenId != _streamGenerationId || _disposed) return true;
+      unawaited(
+        generateStream(
+          isErrorRetry: true,
+          retryHistoryBudget: canOverflowRetry ? 600 : retryHistoryBudget,
+          retrySystemPromptBudget:
+              canOverflowRetry ? 400 : retrySystemPromptBudget,
+        ),
+      );
+      return true;
+    }
+
+    void purgeTurnImageOnFailure() {
+      final orphanPath = savedImagePath ?? _turnImagePathForMemory;
+      final orphanChatId = _turnChatIdForMemory ?? chatData.currentChat;
+      chatData.lastImagePath = null;
+      _clearTurnVisualMemory();
+      if (orphanPath != null && orphanPath.isNotEmpty) {
+        unawaited(
+          chatData.purgeOrphanedTurnImage(orphanPath, chatId: orphanChatId),
+        );
+      }
+    }
 
     _aiSubscription = stream.listen(
       (AiEvent event) async {
@@ -2983,70 +3250,27 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.streaming:
             isLoading = true;
             streamingMessageTime = DateTime.now();
-            String? finishReason = event.response?.finishReason;
+            final String? finishReason = event.response?.finishReason;
             // Capture finishReason whenever the API reports one (it won't be on the done event)
             if (finishReason != null && finishReason != "null" && finishReason.isNotEmpty) {
               _lastFinishReason = finishReason;
             }
-            if (!(event.response?.finishReason == "null")) {
-              switch (finishReason ?? "null") {
-                case "0":
-                  if (kDebugMode) {
-                    print(
-                      "Generation stopped (STOP): Natural stop point of the model.",
-                    );
-                  }
-                  await log("model", "info", "Generation stopped (STOP)", sendRemote: false);
-                  break;
-                case "1":
-                  if (kDebugMode) {
-                    print(
-                      "Generation stopped (MAX_TOKENS): The maximum number of output tokens as specified in the request was reached.",
-                    );
-                  }
-                  await log("model", "info", "Generation stopped (MAX_TOKENS)", sendRemote: false);
-                  break;
-                case "-100":
-                  if (kDebugMode) {
-                    print("Generation stopped (OTHER): Generic stop reason.");
-                  }
-                  await log("model", "info", "Generation stopped (OTHER)", sendRemote: false);
-                  break;
-                default:
-                  if (kDebugMode) {
-                    print(
-                      "Generation stopped (Code ${event.response?.finishReason}): Reason for stop was not specified",
-                    );
-                  }
-                  await log(
-                    "model",
-                    "info",
-                    "Generation stopped (Code ${event.response?.finishReason})",
-                    sendRemote: false,
-                  );
-                  break;
-              }
-              if (myGenId != _streamGenerationId || _disposed) return;
-            }
-            status = "Streaming response...";
+            status = _dictValueOrFallback('streaming_response', 'Streaming response...');
             _appendThoughtChunk(event.thought);
             if (event.response != null) {
               response = event.response!;
               responseText = event.response!.text;
             }
-            try {
-              scrollChatlog(Duration(milliseconds: 250));
-              await Future.delayed(Duration(milliseconds: 500));
-              if (myGenId != _streamGenerationId || _disposed) return;
-              scrollChatlog(Duration(milliseconds: 250));
-            } catch (e) {
-              if (kDebugMode) {
-                print("Can't scroll: $e");
-              }
-              await Future.delayed(Duration(milliseconds: 500));
-              if (myGenId != _streamGenerationId || _disposed) return;
+            if (!emittedFirstStreamTick ||
+                uiTickStopwatch.elapsed >= _streamUiTickInterval) {
+              emittedFirstStreamTick = true;
+              uiTickStopwatch.reset();
+              genericRefresh();
+              try {
+                scrollChatlog(const Duration(milliseconds: 120));
+              } catch (_) {}
             }
-            break;
+            return;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
@@ -3110,12 +3334,18 @@ class AIEngine with md.ChangeNotifier {
                 if (event.response?.text == null ||
                     _emptyStreamRetryCount >= maxEmptyStreamRetries) {
                   _emptyStreamRetryCount = 0;
+                  purgeTurnImageOnFailure();
                   _resetTurnLifecycleFlags();
                   _clearThoughtChunk();
                   responseText = "";
                   streamingMessageTime = null;
                   streamingUserMessageTime = null;
-                  await _showToast("Unable to generate response.");
+                  await _showToast(
+                    _dictValueOrFallback(
+                      'error_no_response',
+                      'Unable to generate response.',
+                    ),
+                  );
                   await logger.logAiGeneration(
                     success: false,
                     latencyMs: _generationStopwatch.elapsedMilliseconds,
@@ -3131,18 +3361,28 @@ class AIEngine with md.ChangeNotifier {
                   _resetTurnLifecycleFlags();
                   await Future.delayed(Duration(milliseconds: 500));
                   if (myGenId != _streamGenerationId || _disposed) return;
-                  unawaited(generateStream(isEmptyStreamRetry: true));
+                  unawaited(
+                    generateStream(
+                      isEmptyStreamRetry: true,
+                      isErrorRetry: hasAttachedImage,
+                    ),
+                  );
                   return;
                 }
               } else {
                 _emptyStreamRetryCount = 0;
+                purgeTurnImageOnFailure();
                 _resetTurnLifecycleFlags();
                 _clearThoughtChunk();
                 isError = true;
                 streamingMessageTime = null;
                 streamingUserMessageTime = null;
-                status = "Error";
-                responseText = event.error ?? "Unknown stream error";
+                status = _dictValueOrFallback('error_status', 'Error');
+                responseText = event.error ??
+                    _dictValueOrFallback(
+                      'error_no_response',
+                      'Unknown stream error',
+                    );
                 await log("model", "error", responseText, sendRemote: false);
                 await logger.logAiGeneration(
                   success: false,
@@ -3221,6 +3461,8 @@ class AIEngine with md.ChangeNotifier {
                   }
                   await log("mesh", "error", "Discarding incomplete tool call after continuation limit: $responseText");
                   responseText = _buildIncompleteToolFallback();
+                } else {
+                  responseText = trimTrailingIncompleteSentence(responseText);
                 }
                 // Natural stop or cap reached — commit
                 _resetTurnLifecycleFlags();
@@ -3254,33 +3496,28 @@ class AIEngine with md.ChangeNotifier {
 
           case AiEventStatus.error:
             receivedTerminalEvent = true;
-            if (errorRetry) {
-              _resetTurnLifecycleFlags();
-              await Future.delayed(Duration(milliseconds: 500));
-              if (myGenId != _streamGenerationId || _disposed) return;
-              unawaited(generateStream());
+            if (await handleErrorWithRetry(event.error)) {
               return;
-            } else {
-              _clearTurnVisualMemory();
-              _resetTurnLifecycleFlags();
-              isError = true;
-              streamingMessageTime = null;
-              streamingUserMessageTime = null;
-              status = "Error";
-              _clearThoughtChunk();
-              responseText = event.error ?? "Unknown stream error";
-              await log("model", "error", responseText, sendRemote: false);
-              await logger.logAiGeneration(
-                success: false,
-                latencyMs: _generationStopwatch.elapsedMilliseconds,
-                errorType: _classifyError(responseText),
-                errorCode: _extractErrorCode(responseText),
-                finishReason: "error",
-                modelVersion: _getModelVersion(),
-                promptId: _getCurrentPromptId(),
-                isMultimodal: _isCurrentSessionMultimodal,
-              );
             }
+            purgeTurnImageOnFailure();
+            _resetTurnLifecycleFlags();
+            isError = true;
+            streamingMessageTime = null;
+            streamingUserMessageTime = null;
+            status = _dictValueOrFallback('error_status', 'Error');
+            _clearThoughtChunk();
+            responseText = event.error ?? "Unknown stream error";
+            await log("model", "error", responseText, sendRemote: false);
+            await logger.logAiGeneration(
+              success: false,
+              latencyMs: _generationStopwatch.elapsedMilliseconds,
+              errorType: _classifyError(responseText),
+              errorCode: _extractErrorCode(responseText),
+              finishReason: "error",
+              modelVersion: _getModelVersion(),
+              promptId: _getCurrentPromptId(),
+              isMultimodal: _isCurrentSessionMultimodal,
+            );
             break;
         }
         genericRefresh();
@@ -3288,29 +3525,26 @@ class AIEngine with md.ChangeNotifier {
       onError: (e) async {
         if (myGenId != _streamGenerationId || _disposed) return;
         receivedTerminalEvent = true;
-        _resetTurnLifecycleFlags();
-        if (errorRetry) {
-          await Future.delayed(Duration(milliseconds: 500));
-          if (myGenId != _streamGenerationId || _disposed) return;
-          unawaited(generateStream());
+        if (await handleErrorWithRetry(e)) {
           return;
-        } else {
-          _clearThoughtChunk();
-          streamingMessageTime = null;
-          streamingUserMessageTime = null;
-          await log("model", "error", e.toString(), sendRemote: false);
-          analyzeError("Streaming", e);
-          await logger.logAiGeneration(
-            success: false,
-            latencyMs: _generationStopwatch.elapsedMilliseconds,
-            errorType: _classifyError(e),
-            errorCode: _extractErrorCode(e),
-            finishReason: "error",
-            modelVersion: _getModelVersion(),
-            promptId: _getCurrentPromptId(),
-            isMultimodal: _isCurrentSessionMultimodal,
-          );
         }
+        purgeTurnImageOnFailure();
+        _resetTurnLifecycleFlags();
+        _clearThoughtChunk();
+        streamingMessageTime = null;
+        streamingUserMessageTime = null;
+        await log("model", "error", e.toString(), sendRemote: false);
+        analyzeError("Streaming", e);
+        await logger.logAiGeneration(
+          success: false,
+          latencyMs: _generationStopwatch.elapsedMilliseconds,
+          errorType: _classifyError(e),
+          errorCode: _extractErrorCode(e),
+          finishReason: "error",
+          modelVersion: _getModelVersion(),
+          promptId: _getCurrentPromptId(),
+          isMultimodal: _isCurrentSessionMultimodal,
+        );
       },
       onDone: () => _handleUnexpectedStreamClose(myGenId, receivedTerminalEvent),
     );
@@ -3381,13 +3615,59 @@ class AIEngine with md.ChangeNotifier {
     return 0;
   }
 
+  static ({String text, bool detected}) _trimRepeatedTrailingClause(
+    String text, {
+    int minClauseChars = 24,
+  }) {
+    final trimmed = text.trimRight();
+    if (trimmed.length < minClauseChars * 2) {
+      return (text: text, detected: false);
+    }
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) {
+      return (text: text, detected: false);
+    }
+    final boundaryMatches = RegExp(
+      r'[.!?。！？]["”’\x27\)\]\*_]*\s+',
+    ).allMatches(trimmed).toList();
+    if (boundaryMatches.isEmpty) {
+      return (text: text, detected: false);
+    }
+    final lastMatch = boundaryMatches.last;
+    final String beforeBoundary =
+        trimmed.substring(0, lastMatch.end).trimRight();
+    final String trailingClause = trimmed.substring(lastMatch.end).trim();
+    if (trailingClause.length < minClauseChars ||
+        beforeBoundary.length < minClauseChars) {
+      return (text: text, detected: false);
+    }
+
+    int searchFrom = 0;
+    while (searchFrom <= beforeBoundary.length - trailingClause.length) {
+      final int idx = beforeBoundary.indexOf(trailingClause, searchFrom);
+      if (idx < 0) break;
+      final bool startsAtBoundary =
+          idx == 0 || _joinBoundaryCharRegex.hasMatch(beforeBoundary[idx - 1]);
+      if (startsAtBoundary) {
+        return (text: beforeBoundary, detected: true);
+      }
+      searchFrom = idx + 1;
+    }
+    return (text: text, detected: false);
+  }
+
   /// Stitches [incoming] onto [existing] across auto-continuation boundaries,
   /// normalizing ellipses, deduplicating suffix/prefix overlaps and repeated
   /// trailing clauses, and joining mid-word cutoffs seamlessly.
-  static String stitchContinuation(String existing, String incoming) {
+  static String stitchContinuation(String existing, String incoming) =>
+      _stitchContinuationWithMeta(existing, incoming).text;
+
+  static ({String text, bool trimmedLoop}) _stitchContinuationWithMeta(
+    String existing,
+    String incoming,
+  ) {
     String cleaned = stripLeadingEllipsis(incoming);
-    if (existing.isEmpty) return cleaned;
-    if (cleaned.isEmpty) return existing;
+    if (existing.isEmpty) return (text: cleaned, trimmedLoop: false);
+    if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
 
     final trimmedExistingLeft = existing.trimLeft();
     final bool isJsonOrToolDraft = trimmedExistingLeft.startsWith('{') ||
@@ -3403,37 +3683,39 @@ class AIEngine with md.ChangeNotifier {
           cleaned.replaceFirst(RegExp(r'^```(?:json)?\s*', caseSensitive: false), ''),
         );
       }
-      if (cleaned.isEmpty) return existing;
+      if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
       final overlap = _findSuffixPrefixOverlap(existing, cleaned);
       if (overlap >= 4) {
-        return existing + cleaned.substring(overlap);
+        return (text: existing + cleaned.substring(overlap), trimmedLoop: false);
       }
-      return existing + cleaned;
+      return (text: existing + cleaned, trimmedLoop: false);
     }
 
     if (insideCodeBlock) {
       cleaned = stripLeadingEllipsis(
         cleaned.replaceFirst(RegExp(r'^```[a-zA-Z0-9]*\n?'), ''),
       );
-      if (cleaned.isEmpty) return existing;
+      if (cleaned.isEmpty) return (text: existing, trimmedLoop: false);
       final overlap = _findSuffixPrefixOverlap(existing, cleaned);
       if (overlap > 0) {
-        return existing + cleaned.substring(overlap);
+        return (text: existing + cleaned.substring(overlap), trimmedLoop: false);
       }
       final sep = (existing.endsWith('\n') || cleaned.startsWith('\n')) ? '' : '\n';
-      return '$existing$sep$cleaned';
+      return (text: '$existing$sep$cleaned', trimmedLoop: false);
     }
 
     // Plain prose: strip trailing standalone continuation ellipsis from existing
     final String baseExisting = existing.replaceFirst(_trailingEllipsisPattern, '');
-    if (baseExisting.isEmpty) return cleaned;
+    if (baseExisting.isEmpty) return (text: cleaned, trimmedLoop: false);
 
     // 1. Direct suffix-prefix overlap check
     final int directOverlap = _findSuffixPrefixOverlap(baseExisting, cleaned);
     if (directOverlap > 0) {
       final remainder = cleaned.substring(directOverlap);
-      if (remainder.isEmpty) return baseExisting;
-      return baseExisting + remainder;
+      if (remainder.isEmpty) return (text: baseExisting, trimmedLoop: false);
+      final joined = baseExisting + remainder;
+      final clauseTrim = _trimRepeatedTrailingClause(joined);
+      return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
     }
 
     // 2. Trailing-space-trimmed suffix-prefix overlap (e.g. "...to " + "...to\n5.0")
@@ -3442,16 +3724,18 @@ class AIEngine with md.ChangeNotifier {
       final int trimmedOverlap = _findSuffixPrefixOverlap(trimmedBase, cleaned);
       if (trimmedOverlap > 0) {
         final remainder = cleaned.substring(trimmedOverlap);
-        if (remainder.isEmpty) return baseExisting;
-        if (RegExp(r'^\s').hasMatch(remainder)) {
-          return trimmedBase + remainder;
-        }
-        return baseExisting + remainder;
+        if (remainder.isEmpty) return (text: baseExisting, trimmedLoop: false);
+        final joined = RegExp(r'^\s').hasMatch(remainder)
+            ? trimmedBase + remainder
+            : baseExisting + remainder;
+        final clauseTrim = _trimRepeatedTrailingClause(joined);
+        return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
       }
     }
 
     // 3. Repeated trailing clause / sentence rollback within last 280 chars (>= 18 chars)
     const int minClauseMatch = 18;
+    bool strippedPrefix = false;
     if (cleaned.length >= minClauseMatch && baseExisting.length >= minClauseMatch) {
       final int windowStart =
           baseExisting.length > 280 ? baseExisting.length - 280 : 0;
@@ -3474,10 +3758,43 @@ class AIEngine with md.ChangeNotifier {
           }
           final String trailingTail = baseExisting.substring(idx + matchLen);
           if (trailingTail.length <= 28 && !RegExp(r'[.!?]').hasMatch(trailingTail)) {
-            return baseExisting.substring(0, idx) + cleaned;
+            final joined = baseExisting.substring(0, idx) + cleaned;
+            final clauseTrim = _trimRepeatedTrailingClause(joined);
+            return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
           }
           final String deduped = cleaned.substring(matchLen).trimLeft();
-          if (deduped.isEmpty) return baseExisting;
+          if (deduped.isEmpty) return (text: baseExisting, trimmedLoop: true);
+          cleaned = deduped;
+          strippedPrefix = true;
+          break;
+        }
+        searchFrom = idx - 1;
+      }
+    }
+
+    // 3b. Earlier-sentence prefix deduplication across full baseExisting (>= 24 chars)
+    const int minFullPrefixMatch = 24;
+    if (!strippedPrefix &&
+        cleaned.length >= minFullPrefixMatch &&
+        baseExisting.length >= minFullPrefixMatch) {
+      final String probe = cleaned.substring(0, minFullPrefixMatch);
+      int searchFrom = baseExisting.length - minFullPrefixMatch;
+      while (searchFrom >= 0) {
+        final int idx = baseExisting.lastIndexOf(probe, searchFrom);
+        if (idx < 0) break;
+        final bool startsAtBoundary =
+            idx == 0 || _joinBoundaryCharRegex.hasMatch(baseExisting[idx - 1]);
+        if (startsAtBoundary) {
+          int matchLen = minFullPrefixMatch;
+          final int maxMatch = (baseExisting.length - idx) < cleaned.length
+              ? (baseExisting.length - idx)
+              : cleaned.length;
+          while (matchLen < maxMatch &&
+              baseExisting[idx + matchLen] == cleaned[matchLen]) {
+            matchLen++;
+          }
+          final String deduped = cleaned.substring(matchLen).trimLeft();
+          if (deduped.isEmpty) return (text: baseExisting, trimmedLoop: true);
           cleaned = deduped;
           break;
         }
@@ -3506,18 +3823,20 @@ class AIEngine with md.ChangeNotifier {
     final bool startsWithPunct =
         !startsWithDecimal && ',.;:!?)]:"\'’”%'.contains(firstChar);
 
-    if (!endsWithBoundary &&
-        !startsWithBoundary &&
-        !endsWithJoiningPunct &&
-        !startsWithPunct) {
-      return '$baseExisting $cleaned';
-    }
-    return '$baseExisting$cleaned';
+    final String joined = (!endsWithBoundary &&
+            !startsWithBoundary &&
+            !endsWithJoiningPunct &&
+            !startsWithPunct)
+        ? '$baseExisting $cleaned'
+        : '$baseExisting$cleaned';
+    final clauseTrim = _trimRepeatedTrailingClause(joined);
+    return (text: clauseTrim.text, trimmedLoop: clauseTrim.detected);
   }
 
   /// Detects a trailing stutter/repetition loop (3+ consecutive repeats of a
-  /// >=12-char phrase or multi-word sequence like `"and...that"`) and trims
-  /// back to a single occurrence.
+  /// >=12-char phrase or multi-word sequence like `"and...that"`, or a trailing
+  /// clause `>= 24` chars after a sentence boundary that duplicates an earlier
+  /// clause in the message) and trims back cleanly.
   static ({String text, bool detected}) detectAndTrimStutterLoop(String text) {
     final trimmed = text.trimRight();
     if (trimmed.length < 24) return (text: text, detected: false);
@@ -3553,6 +3872,11 @@ class AIEngine with md.ChangeNotifier {
           detected: true,
         );
       }
+    }
+
+    final repeatedClause = _trimRepeatedTrailingClause(trimmed);
+    if (repeatedClause.detected) {
+      return repeatedClause;
     }
 
     return (text: text, detected: false);
@@ -3851,6 +4175,22 @@ class AIEngine with md.ChangeNotifier {
     return false;
   }
 
+  static bool _isLikelyNonProseTail(String trailingTail) {
+    final trimmedLeft = trailingTail.trimLeft();
+    if (trimmedLeft.isEmpty) return true;
+    if (RegExp(r'^(?:#{1,6}\s|[-*•+]\s|\d+[.)]\s|```|\||\{)').hasMatch(trimmedLeft)) {
+      return true;
+    }
+    final lines = trimmedLeft
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) return true;
+    final lastLine = lines.last;
+    return RegExp(r'^(?:#{1,6}\s|[-*•+]\s|\d+[.)]\s|```|\||\{)').hasMatch(lastLine);
+  }
+
   static bool isLikelyMidClauseCutoff(String text) {
     final trimmed = text.trimRight();
     if (trimmed.isEmpty) return false;
@@ -3866,6 +4206,9 @@ class AIEngine with md.ChangeNotifier {
     final lastWord = _normalizeCutoffToken(rawWords.last);
     final penultWord = rawWords.length >= 2
         ? _normalizeCutoffToken(rawWords[rawWords.length - 2])
+        : '';
+    final prePenultWord = rawWords.length >= 3
+        ? _normalizeCutoffToken(rawWords[rawWords.length - 3])
         : '';
 
     if (rawWords.length >= 2 && _danglingTailWords.contains(lastWord)) {
@@ -3887,11 +4230,62 @@ class AIEngine with md.ChangeNotifier {
     }
 
     if (rawWords.length >= 4 &&
+        _prepositionsBeforeDemonstrative.contains(prePenultWord) &&
+        _isLikelyTrailingModifier(penultWord) &&
+        lastWord.endsWith('ing') &&
+        lastWord.length >= 6 &&
+        RegExp(r'^[a-z]+$').hasMatch(lastWord) &&
+        !_nonCutoffIngWords.contains(lastWord)) {
+      return true;
+    }
+
+    if (rawWords.length >= 4 &&
         _isLikelyTrailingIngParticiple(lastWord, penultWord)) {
       return true;
     }
 
+    // Multi-sentence prose tail without terminal punctuation after a completed
+    // sentence (>= 25 chars).
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 0 &&
+        !M3xToolCallParser.looksLikeIncompleteToolCall(trimmed)) {
+      final priorMatches = _priorSentenceEndRegex.allMatches(trimmed).toList();
+      for (int i = priorMatches.length - 1; i >= 0; i--) {
+        final priorPrefix = trimmed.substring(0, priorMatches[i].end).trimRight();
+        if (priorPrefix.length < 25) continue;
+        final trailingTail = trimmed.substring(priorMatches[i].end).trim();
+        if (_countWords(trailingTail) >= 4 && !_isLikelyNonProseTail(trailingTail)) {
+          return true;
+        }
+        break;
+      }
+    }
+
     return false;
+  }
+
+  static final RegExp _priorSentenceEndRegex =
+      RegExp(r'[.!?。！？]["”’\x27\)\]\*_]*(?=\s+\S)');
+
+  /// Trims a trailing incomplete sentence/clause at final commit when a prior
+  /// complete sentence (`>= 25` chars) exists in [text]. Preserves single-sentence
+  /// texts, complete texts, code blocks, and tool JSON drafts unchanged.
+  static String trimTrailingIncompleteSentence(String text) {
+    final trimmed = text.trimRight();
+    if (trimmed.isEmpty) return text;
+    if (RegExp(r'```').allMatches(trimmed).length % 2 == 1) return text;
+    if (M3xToolCallParser.looksLikeIncompleteToolCall(trimmed)) return text;
+    if (!isLikelyMidClauseCutoff(trimmed)) return text;
+
+    final matches = _priorSentenceEndRegex.allMatches(trimmed).toList();
+    for (int i = matches.length - 1; i >= 0; i--) {
+      final candidatePrefix =
+          trimmed.substring(0, matches[i].end).trimRight();
+      if (candidatePrefix.length >= 25 &&
+          !isLikelyMidClauseCutoff(candidatePrefix)) {
+        return candidatePrefix;
+      }
+    }
+    return text;
   }
 
   @visibleForTesting
@@ -4310,11 +4704,16 @@ class AIEngine with md.ChangeNotifier {
   }
 
   String _dictValueOrFallback(String key, String fallback) {
+    final direct = dict.tryValue(key);
+    if (direct != null && direct.isNotEmpty) {
+      return direct;
+    }
     final val = dict.value(key);
     if (val.isEmpty ||
         val == "Loading..." ||
         val == key ||
-        val.startsWith("!!!")) {
+        val.startsWith("!!!") ||
+        val.startsWith("!")) {
       return fallback;
     }
     return val;
@@ -4392,6 +4791,15 @@ class AIEngine with md.ChangeNotifier {
       return;
     }
 
+    final orphanPath = chatData.lastImagePath ?? _turnImagePathForMemory;
+    final orphanChatId = _turnChatIdForMemory ?? chatData.currentChat;
+    chatData.lastImagePath = null;
+    _clearTurnVisualMemory();
+    if (orphanPath != null && orphanPath.isNotEmpty) {
+      unawaited(
+        chatData.purgeOrphanedTurnImage(orphanPath, chatId: orphanChatId),
+      );
+    }
     responseText = "";
     lastPrompt = "";
     _clearThoughtChunk();
@@ -4400,7 +4808,7 @@ class AIEngine with md.ChangeNotifier {
     streamingMessageTime = null;
     streamingUserMessageTime = null;
     if (!isError) {
-      status = "Stream complete";
+      status = _dictValueOrFallback('stream_complete', 'Stream complete');
     }
     genericRefresh();
   }
@@ -4411,6 +4819,8 @@ class AIEngine with md.ChangeNotifier {
     _toolFreeFallbackUsed = true;
     final int myGenId = ++_streamGenerationId;
     bool receivedTerminalEvent = false;
+    bool emittedFirstStreamTick = false;
+    final Stopwatch uiTickStopwatch = Stopwatch()..start();
 
     _resetTurnLifecycleFlags();
     _forcedFinalSynthesis = true;
@@ -4425,7 +4835,7 @@ class AIEngine with md.ChangeNotifier {
     _nullReasonContinuationCount = 0;
     _stopCutoffContinuationCount = 0;
     streamingMessageTime = DateTime.now();
-    status = "Retrying without tools...";
+    status = _dictValueOrFallback('retrying_without_tools', 'Retrying without tools...');
     notifyListeners();
 
     await log(
@@ -4478,7 +4888,7 @@ class AIEngine with md.ChangeNotifier {
         enableThinking: effectiveEnableThinking,
       ),
       stream: true,
-      imageBytes: _turnImageBytesForMemory,
+      imageBytes: hasAttachedImage ? null : _turnImageBytesForMemory,
       imagePath: imagePath,
       downsample: config.downsampleImages,
     );
@@ -4497,7 +4907,7 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.streaming:
             isLoading = true;
             streamingMessageTime = DateTime.now();
-            status = "Streaming response...";
+            status = _dictValueOrFallback('streaming_response', 'Streaming response...');
             _appendThoughtChunk(event.thought);
             final String? fr = event.response?.finishReason;
             if (fr != null && fr != "null" && fr.isNotEmpty) {
@@ -4507,10 +4917,16 @@ class AIEngine with md.ChangeNotifier {
               response = event.response!;
               responseText = stripLeadingEllipsis(event.response!.text);
             }
-            try {
-              scrollChatlog(const Duration(milliseconds: 250));
-            } catch (_) {}
-            break;
+            if (!emittedFirstStreamTick ||
+                uiTickStopwatch.elapsed >= _streamUiTickInterval) {
+              emittedFirstStreamTick = true;
+              uiTickStopwatch.reset();
+              genericRefresh();
+              try {
+                scrollChatlog(const Duration(milliseconds: 120));
+              } catch (_) {}
+            }
+            return;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
@@ -4552,6 +4968,7 @@ class AIEngine with md.ChangeNotifier {
               _combinedResponse = responseText;
               await continueGenerating();
             } else {
+              responseText = trimTrailingIncompleteSentence(responseText);
               _resetTurnLifecycleFlags();
               status = "Done";
               await addToContext();
@@ -4594,6 +5011,8 @@ class AIEngine with md.ChangeNotifier {
     }
     final int myGenId = ++_streamGenerationId;
     bool receivedTerminalEvent = false;
+    bool emittedFirstStreamTick = false;
+    final Stopwatch uiTickStopwatch = Stopwatch()..start();
     isContinuing = true;
     isGenerating = true;
     _lastFinishReason = "";
@@ -4651,8 +5070,16 @@ class AIEngine with md.ChangeNotifier {
             if (hasThought || (event.response != null && responseText != _combinedResponse)) {
               isContinuing = false;
             }
-            try { scrollChatlog(Duration(milliseconds: 250)); } catch (_) {}
-            break;
+            if (!emittedFirstStreamTick ||
+                uiTickStopwatch.elapsed >= _streamUiTickInterval) {
+              emittedFirstStreamTick = true;
+              uiTickStopwatch.reset();
+              genericRefresh();
+              try {
+                scrollChatlog(const Duration(milliseconds: 120));
+              } catch (_) {}
+            }
+            return;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
@@ -4661,7 +5088,9 @@ class AIEngine with md.ChangeNotifier {
                 ? _lastFinishReason
                 : event.reason;
 
-            String stitched = stitchContinuation(_combinedResponse, response.text);
+            final stitchMeta =
+                _stitchContinuationWithMeta(_combinedResponse, response.text);
+            String stitched = stitchMeta.text;
             if (!_isSynthesizing && _isPureGreeting(lastPrompt)) {
               final stripped = _stripGreetingAccidentalToolBlock(stitched);
               if (stripped != null) {
@@ -4676,7 +5105,9 @@ class AIEngine with md.ChangeNotifier {
             }
 
             final stutterCheck = detectAndTrimStutterLoop(stitched);
-            if (stutterCheck.detected) {
+            final bool loopDetected =
+                stitchMeta.trimmedLoop || stutterCheck.detected;
+            if (loopDetected) {
               await log(
                 "model",
                 "warning",
@@ -4704,7 +5135,7 @@ class AIEngine with md.ChangeNotifier {
             await log(
               "model",
               "info",
-              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=${stutterCheck.detected}, totalChars=${responseText.length})",
+              "Continuation #$_continuationCount done. finishReason=$contDoneReason (nanoV4=$isNanoV4Active, netNonWs=$netAddedNonWs, stutter=$loopDetected, totalChars=${responseText.length})",
               sendRemote: false,
             );
             if (myGenId != _streamGenerationId || _disposed) return;
@@ -4714,7 +5145,7 @@ class AIEngine with md.ChangeNotifier {
               responseText,
               lastRoundAddedNonWs: netAddedNonWs,
             );
-            if (netAddedNonWs <= 0 || stutterCheck.detected) {
+            if (netAddedNonWs <= 0 || loopDetected) {
               cutAgain = false;
             }
 
@@ -4772,6 +5203,9 @@ class AIEngine with md.ChangeNotifier {
                 await log("mesh", "error", "Discarding incomplete or unformatted tool response after continuation: $responseText");
                 if (myGenId != _streamGenerationId || _disposed) return;
                 responseText = _buildIncompleteToolFallback();
+              } else {
+                responseText = trimTrailingIncompleteSentence(responseText);
+                _combinedResponse = responseText;
               }
 
               // Commit — cumulative stays as-is; UI shows cumulative + response.x = total
@@ -4999,17 +5433,40 @@ class AIEngine with md.ChangeNotifier {
     } catch (_) {}
   }
 
+  static String _canonicalizeToolName(String rawName) {
+    final norm = rawName.trim();
+    switch (norm.toLowerCase()) {
+      case 'about_paios':
+      case 'paios_info':
+      case 'get_paios_info':
+        return 'query_aicore_documentation';
+      default:
+        return norm;
+    }
+  }
+
   Future<void> _handleSynthesisToolCall(
     Map<String, dynamic> nextToolMap,
     String effectivePrompt,
   ) async {
-    final nextCall = M3xToolCall.fromJson(nextToolMap);
+    final rawCall = M3xToolCall.fromJson(nextToolMap);
+    final canonName = _canonicalizeToolName(rawCall.tool);
+    final nextCall = canonName == rawCall.tool
+        ? rawCall
+        : M3xToolCall(
+            id: rawCall.id,
+            name: canonName,
+            app: rawCall.app,
+            arguments: rawCall.arguments,
+          );
     final nextSig = "${nextCall.tool}:${jsonEncode(nextCall.arguments)}";
 
     if (!_forcedFinalSynthesis && _toolTurnCount < 6 && nextSig != _lastToolCallSignature) {
       _isSynthesizing = false;
+      final normalizedMap = Map<String, dynamic>.from(nextToolMap);
+      normalizedMap['tool'] = nextCall.tool;
       await _handleToolCall(
-        nextToolMap,
+        normalizedMap,
         originalPrompt: effectivePrompt,
         isFollowUpTurn: true,
       );
@@ -5051,7 +5508,16 @@ class AIEngine with md.ChangeNotifier {
   }) async {
     final int myGenId = _streamGenerationId;
     _toolTurnCount++;
-    final call = M3xToolCall.fromJson(toolMap);
+    final rawCall = M3xToolCall.fromJson(toolMap);
+    final canonName = _canonicalizeToolName(rawCall.tool);
+    final call = canonName == rawCall.tool
+        ? rawCall
+        : M3xToolCall(
+            id: rawCall.id,
+            name: canonName,
+            app: rawCall.app,
+            arguments: rawCall.arguments,
+          );
     _lastToolCall = call;
     final matchedTool = toolRegistry.get(call.tool);
     final effectiveApp = (call.app != null && call.app!.isNotEmpty)
@@ -5199,8 +5665,10 @@ class AIEngine with md.ChangeNotifier {
   }) async {
     final int myGenId = ++_streamGenerationId;
     bool receivedTerminalEvent = false;
+    bool emittedFirstStreamTick = false;
+    final Stopwatch uiTickStopwatch = Stopwatch()..start();
     _forcedFinalSynthesis = forceFinalNoTools;
-    status = "Synthesizing answer...";
+    status = _dictValueOrFallback('synthesizing_answer', 'Synthesizing answer...');
     isLoading = true;
     isGenerating = true;
     isContinuing = false;
@@ -5312,7 +5780,7 @@ class AIEngine with md.ChangeNotifier {
           case AiEventStatus.streaming:
             isLoading = true;
             streamingMessageTime = DateTime.now();
-            status = "Streaming response...";
+            status = _dictValueOrFallback('streaming_response', 'Streaming response...');
             _appendThoughtChunk(event.thought);
             final String? fr = event.response?.finishReason;
             if (fr != null && fr != "null" && fr.isNotEmpty) {
@@ -5323,10 +5791,16 @@ class AIEngine with md.ChangeNotifier {
               responseText = stripLeadingEllipsis(event.response!.text);
               _combinedResponse = responseText;
             }
-            try {
-              scrollChatlog(const Duration(milliseconds: 250));
-            } catch (_) {}
-            break;
+            if (!emittedFirstStreamTick ||
+                uiTickStopwatch.elapsed >= _streamUiTickInterval) {
+              emittedFirstStreamTick = true;
+              uiTickStopwatch.reset();
+              genericRefresh();
+              try {
+                scrollChatlog(const Duration(milliseconds: 120));
+              } catch (_) {}
+            }
+            return;
 
           case AiEventStatus.done:
             receivedTerminalEvent = true;
@@ -5411,8 +5885,9 @@ class AIEngine with md.ChangeNotifier {
                   M3xToolCallParser.looksLikeIncompleteToolCall(responseText) ||
                       _looksLikeUnformattedToolEcho(responseText) ||
                       _looksLikeHallucinatedNormalOnError(responseText);
-              final finalMessage =
-                  badOutput ? _buildIncompleteToolFallback() : responseText;
+              final finalMessage = badOutput
+                  ? _buildIncompleteToolFallback()
+                  : trimTrailingIncompleteSentence(responseText);
               _forcedFinalSynthesis = false;
               await _commitSynthesisMessage(
                 finalMessage,
@@ -5459,7 +5934,7 @@ class AIEngine with md.ChangeNotifier {
   }
 
   Future<void> _captureVisualMemoryIfNeeded() async {
-    final Uint8List? bytes = _turnImageBytesForMemory;
+    Uint8List? bytes = _turnImageBytesForMemory;
     final String? imagePath = _turnImagePathForMemory;
     final String? chatId =
         (_turnChatIdForMemory != null &&
@@ -5471,9 +5946,7 @@ class AIEngine with md.ChangeNotifier {
                 : null);
     _clearTurnVisualMemory();
 
-    if (bytes == null ||
-        bytes.isEmpty ||
-        imagePath == null ||
+    if (imagePath == null ||
         imagePath.isEmpty ||
         chatId == null ||
         chatId.isEmpty) {
@@ -5492,6 +5965,17 @@ class AIEngine with md.ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 50));
       if (isGenerating || isLoading || _isSynthesizing || isContinuing) {
         return;
+      }
+
+      if (bytes == null || bytes.isEmpty) {
+        final imageFile = File(imagePath);
+        if (!await imageFile.exists()) {
+          return;
+        }
+        bytes = await imageFile.readAsBytes();
+        if (bytes.isEmpty || isGenerating || isLoading || _isSynthesizing || isContinuing) {
+          return;
+        }
       }
 
       final note = (await gemini.generateInternalInference(

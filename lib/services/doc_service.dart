@@ -536,11 +536,53 @@ class DocService with ChangeNotifier {
 
     final results = <DocSearchResult>[];
 
+    final bool isSelfIdentityQuery = lowerQuery.contains('who are you') ||
+        lowerQuery.contains('about yourself') ||
+        lowerQuery.contains('tell me about yourself') ||
+        lowerQuery.contains('what is paios') ||
+        lowerQuery.contains('about paios');
+
+    const domainKeywords = <String>{
+      'busy',
+      'background',
+      'token',
+      'quota',
+      'pixel',
+      'vision',
+      'paios',
+      'puzzak',
+      'yourself',
+      'who',
+      'about',
+      'assistant',
+      'overlay',
+      'extension',
+      'extensions',
+      'mesh',
+      'feature',
+      'features',
+      'v3',
+      'v4',
+      'nano',
+      'privacy',
+      'offline',
+      'weather',
+      'wikipedia',
+    };
+
     for (final page in _pages.values) {
       for (final section in page.sections) {
         double score = 0.0;
         final lowerTitle = section.title.toLowerCase();
         final lowerContent = section.content.toLowerCase();
+
+        if (isSelfIdentityQuery) {
+          if (lowerTitle.contains('paios overview')) {
+            score += 120.0;
+          } else if (lowerTitle.contains('paios')) {
+            score += 50.0;
+          }
+        }
 
         // Exact full query match in title (highest confidence)
         if (lowerTitle.contains(lowerQuery)) {
@@ -575,12 +617,7 @@ class DocService with ChangeNotifier {
 
           // Specific boost for domain keywords and error codes
           if (term.startsWith('-') ||
-              term == 'busy' ||
-              term == 'background' ||
-              term == 'token' ||
-              term == 'quota' ||
-              term == 'pixel' ||
-              term == 'vision' ||
+              domainKeywords.contains(term) ||
               term.startsWith('downsampl')) {
             if (lowerTitle.contains(term) || lowerTitle.contains(stem)) {
               score += 25.0;
@@ -744,13 +781,13 @@ Documentation for $title.
       M3xTool(
         name: 'query_aicore_documentation',
         app: 'paios',
-        description: "Searches official Google ML Kit GenAI documentation for Gemini Nano architecture, capabilities, supported devices, token limits, system prompts, thinking mode, function calling, and AICore APIs.",
+        description: "Searches official PAIOS, Google ML Kit GenAI, and AICore documentation for \"who are you?\", \"tell me about yourself\", PAIOS features, extensions, system assistant overlay, model variants, Gemini Nano architecture, supported devices, token limits, system prompts, thinking mode, function calling, and AICore APIs.",
         parameters: {
           'type': 'object',
           'properties': {
             'query': {
               'type': 'string',
-              'description': 'Search topic, device model, or error code (e.g. "token limits", "-101", "Pixel 9", "system prompt", "vision downsample")',
+              'description': 'Search topic, PAIOS self-info question, device model, or error code (e.g. "who are you", "tell me about yourself", "PAIOS extensions", "token limits", "-101", "Pixel 9")',
             },
           },
           'required': ['query'],
